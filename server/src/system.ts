@@ -69,6 +69,9 @@ export async function systemInfo(running: NonNullable<SystemInfo['running']>): P
  * once, and systemd then stops this process (and everything it started) and starts it again.
  */
 export function restartService(): void {
+  if (process.env.ANYWHERE_LAB_DISABLE_RESTART === '1') {
+    throw new Error('实验环境已禁用网页重启，请在实验虚拟机内管理 anywhere-lab.service');
+  }
   if (!unit) throw new Error('服务不是由 systemd 管理的（例如用 npm start 直接启动），请在终端里手动重启');
   // Answer the request first; the restart follows a moment later.
   setTimeout(() => {
