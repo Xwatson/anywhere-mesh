@@ -1,0 +1,132 @@
+@import 'tailwindcss';
+
+@theme {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: ui-monospace, 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
+  --color-claude: #d97757;
+  --color-codex: #7dd3fc;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+/* Dark native controls and slim scrollbars that match the theme. */
+:root {
+  color-scheme: dark;
+}
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-zinc-700) transparent;
+}
+*:hover {
+  scrollbar-color: var(--color-zinc-600) transparent;
+}
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-zinc-700);
+  border: 2px solid transparent;
+  border-radius: 8px;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--color-zinc-600);
+}
+
+body {
+  background: var(--color-zinc-950);
+  color: var(--color-zinc-100);
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
+}
+
+/* Markdown rendered from agent replies */
+.md {
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+.md > * + * { margin-top: 0.6em; }
+.md h1, .md h2, .md h3, .md h4 { font-weight: 600; margin-top: 1em; }
+.md h1 { font-size: 1.25em; }
+.md h2 { font-size: 1.12em; }
+.md h3 { font-size: 1.02em; }
+.md ul { list-style: disc; padding-left: 1.4em; }
+.md ol { list-style: decimal; padding-left: 1.4em; }
+.md li + li { margin-top: 0.2em; }
+.md a { color: var(--color-emerald-400); text-decoration: underline; }
+.md blockquote { border-left: 3px solid var(--color-zinc-700); padding-left: 0.8em; color: var(--color-zinc-400); }
+.md :not(pre) > code {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  background: var(--color-zinc-800);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+}
+.md .code-block {
+  background: var(--color-zinc-900);
+  border: 1px solid var(--color-zinc-800);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.md .code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5em;
+  padding: 0.15em 0.35em 0.15em 0.9em;
+  border-bottom: 1px solid var(--color-zinc-800);
+  background: var(--color-zinc-900);
+  color: var(--color-zinc-500);
+  font-family: var(--font-mono);
+  font-size: 0.75em;
+  line-height: 1.6;
+}
+.md pre {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  background: var(--color-zinc-900);
+  border: 1px solid var(--color-zinc-800);
+  border-radius: 8px;
+  padding: 0.75em 0.9em;
+  overflow-x: auto;
+}
+.md .code-block pre {
+  border: 0;
+  border-radius: 0;
+  background: var(--color-zinc-950);
+}
+.md table { border-collapse: collapse; display: block; overflow-x: auto; font-size: 0.9em; }
+.md th, .md td { border: 1px solid var(--color-zinc-700); padding: 0.3em 0.6em; }
+.md hr { border-color: var(--color-zinc-800); }
+
+.xterm { padding: 6px; height: 100%; }
+
+/* Syntax highlighting (rehype-highlight / highlight.js classes), GitHub-dark palette */
+.md .hljs-comment, .md .hljs-quote { color: #8b949e; font-style: italic; }
+.md .hljs-keyword, .md .hljs-selector-tag, .md .hljs-type, .md .hljs-template-tag,
+.md .hljs-meta .hljs-keyword, .md .hljs-doctag { color: #ff7b72; }
+.md .hljs-string, .md .hljs-regexp, .md .hljs-meta .hljs-string, .md .hljs-template-variable { color: #a5d6ff; }
+.md .hljs-number, .md .hljs-literal, .md .hljs-variable.constant_, .md .hljs-attr,
+.md .hljs-attribute, .md .hljs-selector-attr, .md .hljs-selector-class, .md .hljs-selector-id,
+.md .hljs-operator, .md .hljs-variable, .md .hljs-property { color: #79c0ff; }
+.md .hljs-title, .md .hljs-title.function_, .md .hljs-section { color: #d2a8ff; }
+.md .hljs-title.class_, .md .hljs-title.class_.inherited__, .md .hljs-built_in,
+.md .hljs-symbol, .md .hljs-subst { color: #ffa657; }
+.md .hljs-params { color: inherit; }
+.md .hljs-name, .md .hljs-tag, .md .hljs-selector-pseudo { color: #7ee787; }
+.md .hljs-variable.language_ { color: #ff7b72; }
+.md .hljs-meta { color: #79c0ff; }
+.md .hljs-bullet { color: #f2cc60; }
+.md .hljs-emphasis { font-style: italic; }
+.md .hljs-strong { font-weight: 600; }
+.md .hljs-addition { color: #aff5b4; background: rgba(46, 160, 67, 0.15); }
+.md .hljs-deletion { color: #ffdcd7; background: rgba(248, 81, 73, 0.15); }
