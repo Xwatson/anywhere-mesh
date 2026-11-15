@@ -3,7 +3,8 @@ import { spawn } from 'node:child_process';
 import { readdirSync, readFileSync } from 'node:fs';
 import { StringDecoder } from 'node:string_decoder';
 import { fileURLToPath } from 'node:url';
-import { id, exact, string, integer, validateRequest, validateScope, turnKey, sameTurn, TERMINAL, fail, summary } from './protocol.mjs';
+import { id, exact, string, integer, hash, canonical, validateRequest, validateScope, turnKey, sameTurn, TERMINAL, fail, summary } from './protocol.mjs';
+import { GrantAuthority, assertIdentity } from './grants.mjs';
 
 export function groupAlive(group) {
   // Confirms the supervised outer process group. DC additionally uses a fresh
@@ -20,10 +21,12 @@ export function groupAlive(group) {
 const signalGroup = (pid, signal) => { try { process.kill(-pid, signal); } catch (e) { if (e.code !== 'ESRCH') throw e; } };
 
 export class LocalAgent extends EventEmitter {
-  constructor(journal, grant, { stateDir, fault = () => {}, outputBytes = 65536, launcher, maxChildren = 4 } = {}) {
+  constructor(journal, grant, { stateDir, fault = () => {}, outputBytes = 65536, launcher, maxChildren = 4, workspace } = {}) {
     super(); this.journal = journal; this.grant = grant; this.stateDir = stateDir;
     this.fault = fault; this.outputBytes = outputBytes; this.children = new Map();
     this.launcher = launcher; this.maxChildren = maxChildren;
+    this.workspace = workspace;
+    if (workspace) { this.authority = new GrantAuthority(journal, grant); this.grant = this.authority.current; }
     this.instanceId = id(); this.connectionEpoch = 0; this.closing = false;
     // No PID reattachment: the VM service manager kills the old cgroup first.
     // A side effect may have happened before the durable result was written.
@@ -42,9 +45,20 @@ export class LocalAgent extends EventEmitter {
     if (epoch <= previous) fail('STALE_CONNECTION');
     this.journal.put('meta', 'epoch', epoch); this.connectionEpoch = epoch;
   }
-  authorize(envelope) {
+  authorize(envelope, historical = false) {
     exact(envelope, ['operationId', 'requestHash', 'request']);
     string(envelope.operationId);
+    if (this.authority) {
+      assertIdentity(envelope.request?.scope, this.grant);
+      if (hash(envelope.request) !== envelope.requestHash) fail('HASH_MISMATCH');
+      const prior = this.journal.get('ops', envelope.operationId);
+      if (prior) {
+        if (prior.requestHash !== envelope.requestHash || canonical(prior.request) !== canonical(envelope.request)) fail('OPERATION_CONFLICT');
+        return prior;
+      }
+      const grant = historical ? this.authority.historical(envelope.request.scope.grantVersion) : this.grant;
+      validateRequest(envelope.request, grant); return undefined;
+    }
     const requestHash = validateRequest(envelope.request, this.grant);
     if (envelope.requestHash !== requestHash) fail('HASH_MISMATCH');
     const op = this.journal.get('ops', envelope.operationId);
@@ -69,7 +83,7 @@ export class LocalAgent extends EventEmitter {
   start(envelope) {
     let op;
     this.journal.tx(() => {
-      op = this.authorize(envelope);
+      op = this.authorize(envelope, Boolean(this.authority));
       if (op) return; // Scope and immutable request checked before deduplication.
       this.checkTurn(envelope.request.scope);
       // A peer cannot sidestep an unresolved side effect using a fresh tool ID.
@@ -77,6 +91,10 @@ export class LocalAgent extends EventEmitter {
           o.request.scope.workspaceId === envelope.request.scope.workspaceId)) fail('WORKSPACE_RECOVERING');
       if (this.children.size + this.journal.all('ops').filter((o) => o.state === 'accepted').length >= this.maxChildren) fail('EXECUTOR_BUSY');
       op = this.create(envelope);
+      if (this.authority) {
+        try { validateRequest(op.request, this.grant); }
+        catch (e) { op.state = 'rejected'; op.reason = e.code; this.journal.put('ops', op.operationId, op); }
+      }
       if (Date.now() >= op.request.expiresAt) { op.state = 'rejected'; op.reason = 'deadline_expired'; this.journal.put('ops', op.operationId, op); }
     });
     this.fault('agent_after_accept');
@@ -91,7 +109,7 @@ export class LocalAgent extends EventEmitter {
     try {
       validateRequest(op.request, this.grant); this.checkTurn(op.request.scope);
       if (Date.now() >= op.request.expiresAt) fail('DEADLINE_EXPIRED');
-      spec = this.launcher?.(op);
+      spec = this.launcher?.(op, this.grant);
       if (!spec && op.request.kind !== 'mock.task') fail('EXECUTOR_UNAVAILABLE');
     } catch (e) {
       op.state = 'rejected'; op.reason = e.code || 'AUTHORIZATION_FAILED';
@@ -186,7 +204,7 @@ export class LocalAgent extends EventEmitter {
     exact(params, ['operationId', 'requestHash', 'request', 'cancelId']); string(params.cancelId);
     const envelope = envelopeOf(params); let op;
     this.journal.tx(() => {
-      op = this.authorize(envelope); this.checkTurn(params.request.scope, true);
+      op = this.authorize(envelope, Boolean(this.authority)); this.checkTurn(params.request.scope, true);
       if (!op) op = this.create(envelope, 'cancelled');
       const priorCancel = this.journal.get('cancels', params.cancelId);
       if (priorCancel && (priorCancel.operationId !== op.operationId || priorCancel.requestHash !== op.requestHash)) fail('CANCEL_CONFLICT');
@@ -200,7 +218,8 @@ export class LocalAgent extends EventEmitter {
     this.emit('changed'); return summary(op);
   }
   stopTurn(params) {
-    exact(params, ['scope', 'cancelId']); validateScope(params.scope, this.grant); string(params.cancelId);
+    exact(params, ['scope', 'cancelId']); validateScope(params.scope,
+      this.authority ? this.authority.historical(params.scope.grantVersion) : this.grant); string(params.cancelId);
     this.journal.tx(() => {
       this.checkTurn(params.scope, true);
       this.journal.put('turns', turnKey(params.scope), { scope: params.scope, stopped: true, cancelId: params.cancelId });
@@ -216,29 +235,51 @@ export class LocalAgent extends EventEmitter {
     if (method === 'cancel') return this.cancel(params);
     if (method === 'stopTurn') return this.stopTurn(params);
     if (method === 'ping') return { instanceId: this.instanceId, now: Date.now() };
+    if (method === 'workspaceInfo' && this.authority) { exact(params, []); return this.workspaceInfo(); }
     if (method === 'sync') {
       exact(params, ['items']);
       if (!Array.isArray(params.items) || params.items.length > 2) fail('INVALID_BATCH');
       return params.items.map((item) => {
         exact(item, ['operationId', 'requestHash', 'request', 'afterSeq']);
-        const op = this.authorize(envelopeOf(item));
+        const op = this.authorize(envelopeOf(item), Boolean(this.authority));
         if (!op) return { operationId: item.operationId, state: 'not_received' };
         integer(item.afterSeq, 0, op.lastSeq);
         return { ...summary(op), output: this.journal.output(op.operationId, item.afterSeq, op.lastSeq) };
       });
     }
     if (method === 'status') {
-      const op = this.authorize(params); return op ? summary(op) : { state: 'not_received' };
+      const op = this.authorize(params, Boolean(this.authority)); return op ? summary(op) : { state: 'not_received' };
     }
     if (method === 'output' || method === 'ackOutput') {
       exact(params, ['operationId', 'requestHash', 'request', 'afterSeq']);
-      const op = this.authorize(envelopeOf(params)); if (!op) fail('NOT_FOUND');
+      const op = this.authorize(envelopeOf(params), Boolean(this.authority)); if (!op) fail('NOT_FOUND');
       integer(params.afterSeq, 0, op.lastSeq);
       if (method === 'output') return this.journal.output(op.operationId, params.afterSeq, op.lastSeq);
       op.acknowledgedSeq = Math.max(op.acknowledgedSeq, params.afterSeq); this.journal.put('ops', op.operationId, op);
       return { acknowledgedSeq: op.acknowledgedSeq };
     }
     fail('METHOD_NOT_FOUND');
+  }
+  workspaceInfo() {
+    if (!this.authority) fail('WORKSPACE_UNMANAGED');
+    const ops = this.journal.all('ops');
+    return { grant: this.grant, label: this.workspace.label,
+      pendingCancellations: ops.filter((o) => o.state === 'cancelling').map((o) => o.operationId),
+      unknownOperations: ops.filter((o) => o.state === 'unknown').map((o) => o.operationId),
+      sandbox: { network: false, readOnly: !this.grant.capabilities.includes('workspace.write') } };
+  }
+  control(method, params) {
+    if (!this.authority) fail('WORKSPACE_UNMANAGED');
+    if (method === 'status') { exact(params, []); return this.workspaceInfo(); }
+    if (method !== 'setMode') fail('METHOD_NOT_FOUND');
+    const decision = this.authority.change(params);
+    // A retry of an old change must not roll the live policy back.
+    this.grant = this.authority.current;
+    for (const op of this.journal.all('ops')) if (!TERMINAL.has(op.state) && op.request.scope.grantVersion < this.grant.grantVersion) {
+      this.cancel({ ...envelopeOf(op), cancelId: `grant:${this.grant.grantVersion}:${op.operationId}` });
+    }
+    this.emit('changed');
+    return { decisionVersion: decision.grantVersion, ...this.workspaceInfo() };
   }
   async close() {
     this.closing = true;

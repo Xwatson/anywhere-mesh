@@ -22,6 +22,7 @@ if (cfg.desktop) {
   desktop.register();
   if (role === 'agent') launcher = desktop.makeLauncher(cfg.desktop);
 }
+if (cfg.workspace) CAPABILITIES.push('workspace.grants.v1');
 const store = new Journal(`${cfg.stateDir}/journal.sqlite`);
 const certificate = readFileSync(cfg.cert), key = readFileSync(cfg.key), ca = readFileSync(cfg.ca);
 const peerFingerprint = new X509Certificate(readFileSync(cfg.peerCert)).fingerprint256;
@@ -34,7 +35,7 @@ const takeFault = (point) => {
 };
 let stopping = false, stop;
 if (role === 'broker') {
-  const broker = new Broker(store, cfg.grant);
+  const broker = new Broker(store, cfg.grant, { workspace: cfg.workspace });
   const wss = new WebSocketServer({ noServer: true, maxPayload: 65536, perMessageDeflate: false });
   const server = https.createServer({ key, cert: certificate, ca, requestCert: true,
     rejectUnauthorized: true, minVersion: 'TLSv1.3' }, (_req, res) => { res.writeHead(404); res.end(); });
@@ -53,8 +54,9 @@ if (role === 'broker') {
   console.log(JSON.stringify({ role, listening: `${cfg.host}:${cfg.port}`, realCli: false }));
 } else {
   const agent = new LocalAgent(store, cfg.grant, { stateDir: cfg.stateDir,
-    launcher, maxChildren: cfg.desktop ? 1 : 4,
+    launcher, maxChildren: cfg.desktop ? 1 : 4, workspace: cfg.workspace,
     fault: (point) => { if (takeFault(point)) process.kill(process.pid, 'SIGKILL'); } });
+  const localControl = cfg.workspace ? await serveControl(cfg.workspace.controlSocket, agent) : null;
   let rpc, timer, failures = 0;
   const connect = () => {
     if (stopping) return;
@@ -99,7 +101,7 @@ if (role === 'broker') {
     if (!noticeTimer) noticeTimer = setTimeout(() => { noticeTimer = null; rpc?.notify('changed', {}); }, 50);
   });
   connect();
-  stop = async () => { clearTimeout(timer); clearTimeout(noticeTimer); rpc?.close(); await agent.close(); };
+  stop = async () => { clearTimeout(timer); clearTimeout(noticeTimer); localControl?.close(); rpc?.close(); await agent.close(); };
 }
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, async () => {
   if (stopping) return; stopping = true;

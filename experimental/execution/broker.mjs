@@ -1,11 +1,14 @@
 import { id, exact, string, integer, hash, validateRequest, turnKey, callKey, sameTurn, fail,
   TERMINAL, CAPABILITIES, resultDigest } from './protocol.mjs';
 import { envelopeOf } from './agent.mjs';
+import { grantFor, validateGrant } from './grants.mjs';
 
 export class Broker {
-  constructor(journal, grant) {
+  constructor(journal, grant, { workspace } = {}) {
     this.journal = journal; this.grant = grant; this.phase = 'offline'; this.rpc = null;
     this.syncPromise = null; this.again = false; this.lastError = null;
+    this.workspace = workspace;
+    if (workspace) this.grant = validateGrant(journal.get('meta', 'remoteGrant') ?? grantFor(grant, 'revoked', 1), grant);
     this.timer = setInterval(() => { if (!this.syncPromise) this.kick(); }, 1000);
   }
   hello(rpc, params) {
@@ -38,6 +41,14 @@ export class Broker {
       do {
         this.again = false;
         if (this.rpc !== rpc) return;
+        if (this.workspace) {
+          const info = await rpc.request('workspaceInfo', {});
+          if (this.rpc !== rpc) return;
+          const grant = validateGrant(info.grant, this.grant);
+          if (grant.grantVersion < this.grant.grantVersion ||
+              (grant.grantVersion === this.grant.grantVersion && hash(grant) !== hash(this.grant))) fail('GRANT_ROLLBACK');
+          this.journal.put('meta', 'remoteGrant', grant); this.grant = grant; this.workspaceStatus = info;
+        }
         // Durable stop intentions always precede status reconciliation/new work.
         for (const turn of this.journal.all('turns')) if (turn.stopped && !turn.stopConfirmed) {
           await rpc.request('stopTurn', { scope: turn.scope, cancelId: turn.cancelId });
@@ -115,7 +126,8 @@ export class Broker {
        (TERMINAL.has(o.state) && (o.delivery !== 'consumed' || o.receivedSeq < o.lastSeq))));
   }
   prepare(params) {
-    exact(params, ['sessionId', 'turnId', 'turnEpoch', 'toolCallId', 'kind', 'cwdRelative', 'args', 'expiresAt']);
+    exact(params, ['sessionId', 'turnId', 'turnEpoch', 'toolCallId', 'kind', 'cwdRelative', 'args', 'expiresAt', 'expectedGrantVersion']);
+    if (this.workspace && params.expectedGrantVersion !== this.grant.grantVersion) fail('GRANT_CHANGED');
     const scope = { accountId: this.grant.accountId, deviceId: this.grant.deviceId,
       workspaceId: this.grant.workspaceId, grantVersion: this.grant.grantVersion,
       sessionId: params.sessionId, turnId: params.turnId, turnEpoch: params.turnEpoch };
@@ -130,6 +142,7 @@ export class Broker {
       }
       if (this.phase !== 'ready') fail('DEVICE_RECOVERING');
       if (this.blockers(scope.workspaceId).length) fail('WORKSPACE_RECOVERING');
+      if (this.workspace && this.journal.all('ops').some((o) => !TERMINAL.has(o.state))) fail('EXECUTOR_BUSY');
       const turn = this.journal.get('turns', turnKey(scope));
       if (turn?.stopped) fail('TURN_STOPPED');
       if (this.journal.all('ops').length >= 128) fail('JOURNAL_CAPACITY');
@@ -163,6 +176,20 @@ export class Broker {
     this.kick(); return this.get(operationId);
   }
   async control(method, params = {}) {
+    if (method === 'lookupCall') {
+      exact(params, ['sessionId', 'turnId', 'turnEpoch', 'toolCallId']);
+      string(params.sessionId); string(params.turnId); string(params.toolCallId); integer(params.turnEpoch, 1, 1e9);
+      const mapping = this.journal.get('calls', callKey({ scope: params, toolCallId: params.toolCallId }));
+      return mapping ? this.get(mapping.operationId) : null;
+    }
+    if (method === 'operation') { exact(params, ['operationId']); return this.get(params.operationId); }
+    if (method === 'workspace' && this.workspace) {
+      exact(params, []);
+      return { phase: this.phase, grant: this.grant, label: this.workspace.label,
+        confirmed: this.phase === 'ready', blockers: this.blockers(this.grant.workspaceId).map((o) => o.operationId),
+        activeOperations: this.journal.all('ops').filter((o) => !TERMINAL.has(o.state)).map((o) => o.operationId),
+        sandbox: this.workspaceStatus?.sandbox ?? { network: false, readOnly: true } };
+    }
     if (method === 'snapshot') return { phase: this.phase, epoch: this.rpc?.epoch || null,
       lastError: this.lastError, ops: this.journal.all('ops'), turns: this.journal.all('turns'),
       blockers: this.blockers(this.grant.workspaceId).map((o) => o.operationId) };

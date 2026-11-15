@@ -51,12 +51,13 @@ export function register() {
 export function makeLauncher(profile) {
   const root = realpathSync(profile.workspaceRoot);
   if (root !== profile.workspaceRoot || !lstatSync(root).isDirectory() || lstatSync(root).isSymbolicLink()) fail('WORKSPACE_ROOT_DENIED');
-  return (op) => {
+  return (op, grant) => {
     if (!op.request.kind.startsWith('dc.')) return;
     // The workspace root is installed by root, never selected by a tool argument.
     if (realpathSync(profile.workspaceRoot) !== root) fail('WORKSPACE_ROOT_CHANGED');
     return { command: process.execPath, args: [fileURLToPath(new URL('./worker.mjs', import.meta.url))],
       env: { PATH: '/usr/local/bin:/usr/bin:/bin', LANG: 'C.UTF-8' },
-      input: { request: op.request, profile: { workspaceRoot: root, readOnly: Boolean(profile.readOnly) } } };
+      input: { request: op.request, profile: { workspaceRoot: root,
+        readOnly: Boolean(profile.readOnly) || (grant && !grant.capabilities.includes('workspace.write')) } } };
   };
 }

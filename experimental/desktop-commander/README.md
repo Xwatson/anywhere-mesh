@@ -56,6 +56,6 @@ node experimental/desktop-commander/lab/integration.mjs
 
 ## 仍需完成
 
-本轮不代表 B2 或整个产品完成。未覆盖 Windows/macOS、图形桌面、浏览器/Office/PDF 工具、长期 PTY/REPL 会话、依赖在线安装、多项目并发、动态权限撤销、并发本地编辑的原子冲突保护，以及正式沙箱安装/升级/卸载流程。当前新建 MCP server 的启动成本需要后续评估；不能直接通过共用长期 session 规避成本而丢失任务隔离和崩溃语义。
+本轮不代表 B2 或整个产品完成。未覆盖 Windows/macOS、图形桌面、浏览器/Office/PDF 工具、长期 PTY/REPL 会话、依赖在线安装、多项目并发、并发本地编辑的原子冲突保护，以及正式沙箱安装/升级/卸载流程。后续统一工具接口和动态权限撤销的实验实现见 [Workspace MCP](../workspace/README.md)。当前新建 MCP server 的启动成本需要后续评估；不能直接通过共用长期 session 规避成本而丢失任务隔离和崩溃语义。
 
 工作区授权、任务可靠性和平台隔离由 Anywhere 负责，Desktop Commander 提供执行能力。最终 F 阶段仍须检查两种真实 CLI 的工具发现、调用关联、上下文消费、停止/恢复及实际编程效果，不能以本轮测试宣称模型能力与本地 CLI 等价。
