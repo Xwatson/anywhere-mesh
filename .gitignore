@@ -3,3 +3,7 @@ dist/
 .env
 *.log
 *.tsbuildinfo
+
+# Native Linux helper tests
+__pycache__/
+*.py[cod]

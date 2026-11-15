@@ -1,0 +1,14 @@
+[Unit]
+Description=Anywhere network helper control socket (%i)
+
+[Socket]
+ListenStream=/run/anywhere-network/%i.sock
+SocketUser=root
+SocketGroup=anywhere-net-clients
+SocketMode=0660
+DirectoryMode=0755
+RemoveOnStop=yes
+Service=anywhere-network@%i.service
+
+[Install]
+WantedBy=sockets.target

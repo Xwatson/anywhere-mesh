@@ -11,7 +11,10 @@
     "dev": "npm run dev -w server & npm run dev -w web",
     "build": "npm run build -w web && npm run build -w server",
     "start": "npm run start -w server",
-    "user": "npm run user -w server --"
+    "user": "npm run user -w server --",
+    "network-helper": "node native/linux/network-helper/cli.mjs",
+    "test:network-helper": "python3 -m unittest discover -s native/linux/network-helper -v && node --test native/linux/network-helper/test_client.mjs",
+    "test:network-helper:integration": "node native/linux/network-helper/lab/integration.mjs"
   },
   "allowScripts": {
     "node-pty@1.1.0": true,
