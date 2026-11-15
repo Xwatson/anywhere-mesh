@@ -30,6 +30,29 @@ function request(args = {}) {
 test('canonical request digest is independent of object key order', () => {
   assert.equal(hash({ a: 1, b: { x: 2, y: 3 } }), hash({ b: { y: 3, x: 2 }, a: 1 }));
 });
+test('structured executor exit without a result stays unknown and blocks retries', async (t) => {
+  const { agent, journal } = setup(t, { launcher: () => ({ command: process.execPath,
+    args: ['-e', 'process.stdin.resume();process.stdin.on("end",()=>process.exit(0))'], input: {} }) });
+  const r = request(); agent.start(r);
+  await until(() => journal.get('ops', r.operationId).state === 'unknown');
+  assert.equal(agent.start(r).starts, 1);
+  assert.throws(() => agent.start(request()), /WORKSPACE_RECOVERING/);
+});
+test('structured tool error cannot become success merely because the wrapper exited zero', async (t) => {
+  const { agent, journal } = setup(t, { launcher: () => ({ command: process.execPath,
+    args: ['-e', 'process.stdin.resume();process.stdin.on("end",()=>{require("fs").writeSync(3,JSON.stringify({version:1,ok:false,error:"tool_error"}))})'], input: {} }) });
+  const r = request(); agent.start(r);
+  const op = await until(() => { const o = journal.get('ops', r.operationId); return o.state === 'failed' && o; });
+  assert.equal(op.result.tool.error, 'tool_error'); assert.equal(op.result.exitCode, 0);
+});
+test('reported executor completion survives cancellation during wrapper shutdown', async (t) => {
+  const { agent, journal } = setup(t, { launcher: () => ({ command: process.execPath,
+    args: ['-e', 'process.stdin.resume();process.stdin.on("end",()=>{require("fs").writeSync(3,JSON.stringify({version:1,ok:true}));setTimeout(()=>console.log("result-sent"),50);setInterval(()=>{},1000)})'], input: {} }) });
+  const r = request(); agent.start(r);
+  await until(() => journal.get('ops', r.operationId).lastSeq > 0);
+  agent.cancel({ ...r, cancelId: id() });
+  await until(() => journal.get('ops', r.operationId).state === 'succeeded');
+});
 test('concurrent retransmissions produce one stable task and one mock side effect', async (t) => {
   const { agent, journal, path } = setup(t), r = request();
   const a = agent.start(r), b = agent.start(r); assert.equal(a.taskId, b.taskId);

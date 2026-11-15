@@ -53,8 +53,11 @@ export class Broker {
           this.journal.put('ops', op.operationId, current);
         }
         const pending = this.journal.all('ops').filter((o) => !TERMINAL.has(o.state) || o.receivedSeq < o.lastSeq);
-        for (let i = 0; i < pending.length; i += 2) {
-          const page = pending.slice(i, i + 2);
+        // DC returns structured tool content, so one result plus a bounded output
+        // page must fit the 64 KiB frame even at the maximum accepted result size.
+        const batchSize = this.grant.capabilities.some((c) => c.startsWith('dc.')) ? 1 : 2;
+        for (let i = 0; i < pending.length; i += batchSize) {
+          const page = pending.slice(i, i + batchSize);
           const batch = await rpc.request('sync', { items: page.map((o) => ({ ...envelopeOf(o), afterSeq: o.receivedSeq })) });
           if (this.rpc !== rpc) return;
           if (!Array.isArray(batch) || batch.length !== page.length) fail('INVALID_SYNC_RESPONSE');
@@ -112,12 +115,12 @@ export class Broker {
        (TERMINAL.has(o.state) && (o.delivery !== 'consumed' || o.receivedSeq < o.lastSeq))));
   }
   prepare(params) {
-    exact(params, ['sessionId', 'turnId', 'turnEpoch', 'toolCallId', 'args', 'expiresAt']);
+    exact(params, ['sessionId', 'turnId', 'turnEpoch', 'toolCallId', 'kind', 'cwdRelative', 'args', 'expiresAt']);
     const scope = { accountId: this.grant.accountId, deviceId: this.grant.deviceId,
       workspaceId: this.grant.workspaceId, grantVersion: this.grant.grantVersion,
       sessionId: params.sessionId, turnId: params.turnId, turnEpoch: params.turnEpoch };
-    const request = { scope, toolCallId: params.toolCallId, kind: 'mock.task', args: params.args,
-      cwdRelative: '.', expiresAt: params.expiresAt };
+    const request = { scope, toolCallId: params.toolCallId, kind: params.kind ?? 'mock.task', args: params.args,
+      cwdRelative: params.cwdRelative ?? '.', expiresAt: params.expiresAt };
     const requestHash = validateRequest(request, this.grant), key = callKey(request);
     return this.journal.tx(() => {
       const mapping = this.journal.get('calls', key);

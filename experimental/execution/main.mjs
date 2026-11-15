@@ -16,6 +16,12 @@ if (hostname() !== 'anywhere-crossborder-lab' || !existsSync('/etc/anywhere-cros
 const role = process.argv[2];
 if (!['agent', 'broker'].includes(role)) throw new Error('INVALID_ROLE');
 const cfg = JSON.parse(readFileSync(process.argv[3], 'utf8'));
+let launcher;
+if (cfg.desktop) {
+  const desktop = await import('../desktop-commander/adapter.mjs');
+  desktop.register();
+  if (role === 'agent') launcher = desktop.makeLauncher(cfg.desktop);
+}
 const store = new Journal(`${cfg.stateDir}/journal.sqlite`);
 const certificate = readFileSync(cfg.cert), key = readFileSync(cfg.key), ca = readFileSync(cfg.ca);
 const peerFingerprint = new X509Certificate(readFileSync(cfg.peerCert)).fingerprint256;
@@ -47,6 +53,7 @@ if (role === 'broker') {
   console.log(JSON.stringify({ role, listening: `${cfg.host}:${cfg.port}`, realCli: false }));
 } else {
   const agent = new LocalAgent(store, cfg.grant, { stateDir: cfg.stateDir,
+    launcher, maxChildren: cfg.desktop ? 1 : 4,
     fault: (point) => { if (takeFault(point)) process.kill(process.pid, 'SIGKILL'); } });
   let rpc, timer, failures = 0;
   const connect = () => {

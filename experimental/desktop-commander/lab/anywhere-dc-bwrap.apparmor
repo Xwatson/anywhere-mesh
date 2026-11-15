@@ -1,0 +1,8 @@
+abi <abi/4.0>,
+include <tunables/global>
+
+# Only the root-owned copy used by this VM experiment may create user
+# namespaces. Do not disable Ubuntu's system-wide AppArmor userns restriction.
+profile anywhere-dc-bwrap /usr/lib/anywhere-dc/bwrap flags=(unconfined) {
+  userns,
+}

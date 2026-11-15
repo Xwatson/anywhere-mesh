@@ -1,0 +1,31 @@
+{
+  "package": "@wonderwhy-er/desktop-commander",
+  "version": "0.3.3",
+  "commit": "bce370e9395f5bc74eda34913e5ae1dee48df8f8",
+  "dist": {
+    "shasum": "3715d27c27d1e9c2efddb203467f6e14bd62cd35",
+    "tarball": "https://registry.npmjs.org/@wonderwhy-er/desktop-commander/-/desktop-commander-0.3.3.tgz",
+    "fileCount": 311,
+    "integrity": "sha512-htFuEj7ndaQ206P/eQY6mAPx/JEhMoWN5oITlWiwBgXnW8Uw698Mkx0Yydr3O17i6uVMo1pr1mDBusPsThRYBA==",
+    "signatures": [
+      {
+        "sig": "MEQCIG6KeeidE+pmTBD/3MA/5T9aROpRfvUygYMxz46wqpxRAiA4ezqlJW8f8125YLL840NHASVmxO9jT4gRcCqcwxvCFw==",
+        "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+      },
+      {
+        "sig": "MEYCIQC7qbgqXNFV4Vda6LOfTtoEYBbQk6st8LcN8tZ3/AtPzQIhAMHjx4Q3esxzl9qVJ2Kd4Vk9ABqdxjisdQvz2ttlco53",
+        "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+      }
+    ],
+    "attestations": {
+      "url": "https://registry.npmjs.org/-/npm/v1/attestations/@wonderwhy-er%2fdesktop-commander@0.3.3",
+      "provenance": {
+        "predicateType": "https://slsa.dev/provenance/v1"
+      }
+    },
+    "unpackedSize": 4349837
+  },
+  "sha256": "42390020cceb1cdfa537506fcd70f61eae10ab226c098403f1c5a77c350b07b3",
+  "scriptsSkipped": true,
+  "source_url": "https://github.com/wonderwhy-er/DesktopCommanderMCP/tree/bce370e9395f5bc74eda34913e5ae1dee48df8f8"
+}

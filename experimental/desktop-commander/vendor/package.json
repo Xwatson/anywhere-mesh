@@ -1,0 +1,9 @@
+{
+  "name": "anywhere-dc-pinned-runtime",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@wonderwhy-er/desktop-commander": "0.3.3",
+    "@modelcontextprotocol/sdk": "1.32.1"
+  }
+}

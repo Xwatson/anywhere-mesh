@@ -6,8 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { id, exact, string, integer, validateRequest, validateScope, turnKey, sameTurn, TERMINAL, fail, summary } from './protocol.mjs';
 
 export function groupAlive(group) {
-  // Only used for our fixed mock worker, whose descendants cannot setsid().
-  // Arbitrary commands will require a separate per-task OS sandbox/cgroup.
+  // Confirms the supervised outer process group. DC additionally uses a fresh
+  // bwrap PID namespace: killing its init also kills descendants using setsid().
   return readdirSync('/proc').some((name) => {
     if (!/^\d+$/.test(name)) return false;
     try {
@@ -20,9 +20,10 @@ export function groupAlive(group) {
 const signalGroup = (pid, signal) => { try { process.kill(-pid, signal); } catch (e) { if (e.code !== 'ESRCH') throw e; } };
 
 export class LocalAgent extends EventEmitter {
-  constructor(journal, grant, { stateDir, fault = () => {}, outputBytes = 65536 } = {}) {
+  constructor(journal, grant, { stateDir, fault = () => {}, outputBytes = 65536, launcher, maxChildren = 4 } = {}) {
     super(); this.journal = journal; this.grant = grant; this.stateDir = stateDir;
     this.fault = fault; this.outputBytes = outputBytes; this.children = new Map();
+    this.launcher = launcher; this.maxChildren = maxChildren;
     this.instanceId = id(); this.connectionEpoch = 0; this.closing = false;
     // No PID reattachment: the VM service manager kills the old cgroup first.
     // A side effect may have happened before the durable result was written.
@@ -74,7 +75,7 @@ export class LocalAgent extends EventEmitter {
       // A peer cannot sidestep an unresolved side effect using a fresh tool ID.
       if (this.journal.all('ops').some((o) => o.state === 'unknown' &&
           o.request.scope.workspaceId === envelope.request.scope.workspaceId)) fail('WORKSPACE_RECOVERING');
-      if (this.children.size >= 4 || this.journal.all('ops').filter((o) => o.state === 'accepted').length >= 4) fail('EXECUTOR_BUSY');
+      if (this.children.size + this.journal.all('ops').filter((o) => o.state === 'accepted').length >= this.maxChildren) fail('EXECUTOR_BUSY');
       op = this.create(envelope);
       if (Date.now() >= op.request.expiresAt) { op.state = 'rejected'; op.reason = 'deadline_expired'; this.journal.put('ops', op.operationId, op); }
     });
@@ -86,22 +87,30 @@ export class LocalAgent extends EventEmitter {
     if (this.closing) return;
     let op = this.journal.get('ops', operationId);
     if (op.state !== 'accepted') return;
+    let spec;
     try {
       validateRequest(op.request, this.grant); this.checkTurn(op.request.scope);
       if (Date.now() >= op.request.expiresAt) fail('DEADLINE_EXPIRED');
+      spec = this.launcher?.(op);
+      if (!spec && op.request.kind !== 'mock.task') fail('EXECUTOR_UNAVAILABLE');
     } catch (e) {
       op.state = 'rejected'; op.reason = e.code || 'AUTHORIZATION_FAILED';
       this.journal.put('ops', operationId, op); this.emit('changed'); return;
     }
     op.state = 'running'; op.starts++; op.reason = 'launch_intent';
     this.journal.put('ops', operationId, op); this.fault('agent_after_intent');
-    const child = spawn(process.execPath, [fileURLToPath(new URL('./mock-worker.mjs', import.meta.url))], {
-      cwd: this.stateDir, detached: true, stdio: ['pipe', 'pipe', 'pipe'],
-      env: { PATH: '/usr/bin:/bin', LANG: 'C.UTF-8' },
+    const child = spawn(spec?.command ?? process.execPath, spec?.args ?? [fileURLToPath(new URL('./mock-worker.mjs', import.meta.url))], {
+      cwd: this.stateDir, detached: true, stdio: spec ? ['pipe', 'pipe', 'pipe', 'pipe'] : ['pipe', 'pipe', 'pipe'],
+      env: spec?.env ?? { PATH: '/usr/bin:/bin', LANG: 'C.UTF-8' },
     });
-    const entry = { child, timer: null, killTimer: null }; this.children.set(operationId, entry);
+    const entry = { child, timer: null, killTimer: null, structured: Boolean(spec), resultBytes: 0, resultChunks: [] }; this.children.set(operationId, entry);
+    if (spec) child.stdio[3].on('data', (chunk) => {
+      entry.resultBytes += chunk.length;
+      if (entry.resultBytes <= 24576) entry.resultChunks.push(chunk);
+      else this.signal(entry);
+    });
     child.stdin.on('error', () => {});
-    child.stdin.end(JSON.stringify({ args: op.request.args, operationId, effectsPath: `${this.stateDir}/mock-effects.jsonl` }));
+    child.stdin.end(JSON.stringify(spec?.input ?? { args: op.request.args, operationId, effectsPath: `${this.stateDir}/mock-effects.jsonl` }));
     for (const [stream, pipe] of [['stdout', child.stdout], ['stderr', child.stderr]]) {
       const decoder = new StringDecoder('utf8');
       pipe.on('data', (chunk) => {
@@ -142,12 +151,28 @@ export class LocalAgent extends EventEmitter {
       }
       this.fault('agent_before_result');
       const op = this.journal.get('ops', operationId);
+      let toolResult;
+      if (entry.structured && entry.resultBytes <= 24576) {
+        try {
+          toolResult = JSON.parse(Buffer.concat(entry.resultChunks).toString('utf8'));
+          if (typeof toolResult.ok !== 'boolean' || toolResult.version !== 1) toolResult = undefined;
+        } catch { /* No durable result: the task may have had side effects. */ }
+      }
       if (entry.child.pid && groupAlive(entry.child.pid)) {
         op.state = 'unknown'; op.reason = 'process_tree_unconfirmed';
+      } else if (entry.structured && toolResult) {
+        // Completion reported before a late cancel wins the race, even if the
+        // wrapper is signalled while shutting down after reporting the result.
+        op.state = toolResult.ok ? 'succeeded' : 'failed'; op.reason = toolResult.ok ? null : 'tool_failed';
+      } else if (entry.structured && op.state === 'cancelling' && signal) {
+        op.state = 'cancelled'; op.reason = 'sandbox_stopped';
+      } else if (entry.structured && !toolResult) {
+        op.state = 'unknown'; op.reason = 'executor_result_missing';
       } else if (code === 0) { op.state = 'succeeded'; op.reason = null; }
       else if (op.state === 'cancelling' && signal) { op.state = 'cancelled'; op.reason = 'process_tree_stopped'; }
       else { op.state = 'failed'; op.reason = error || signal || 'nonzero_exit'; }
       op.result = { exitCode: code, signal: signal || null }; op.pid = null;
+      if (toolResult) op.result.tool = toolResult;
       this.journal.put('ops', operationId, op); this.children.delete(operationId); this.emit('changed');
     };
     confirm();

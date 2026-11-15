@@ -44,8 +44,14 @@ export class Journal {
   }
   output(operationId, afterSeq, lastSeq) {
     const first = this.db.prepare('SELECT MIN(seq) AS n FROM output WHERE operation_id=?').get(operationId).n ?? lastSeq + 1;
+    const rows = []; let encodedBytes = 0;
+    for (const row of this.db.prepare('SELECT seq,stream,data FROM output WHERE operation_id=? AND seq>? ORDER BY seq LIMIT 8').all(operationId, afterSeq)) {
+      const size = Buffer.byteLength(JSON.stringify(row));
+      if (encodedBytes + size > 16384) break;
+      rows.push(row); encodedBytes += size;
+    }
     return { firstAvailableSeq: first, truncatedThrough: first - 1, lastSeq,
-      rows: this.db.prepare('SELECT seq,stream,data FROM output WHERE operation_id=? AND seq>? ORDER BY seq LIMIT 8').all(operationId, afterSeq) };
+      rows };
   }
   close() { this.db.close(); }
 }

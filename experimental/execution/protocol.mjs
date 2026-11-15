@@ -2,6 +2,12 @@ import { createHash, randomUUID } from 'node:crypto';
 
 export const VERSION = 1;
 export const CAPABILITIES = ['mock.task.v1', 'journal.v1', 'cancel.v1', 'output.v1'];
+const executors = new Map();
+// Registration is local bootstrap code, never a module/path supplied by a caller.
+export function registerExecutor(kind, validate) {
+  if (executors.has(kind)) throw new Error('EXECUTOR_ALREADY_REGISTERED');
+  executors.set(kind, validate); CAPABILITIES.push(`${kind}.v1`);
+}
 export const TERMINAL = new Set(['succeeded', 'failed', 'cancelled', 'rejected']);
 export const id = () => randomUUID();
 export class ProtocolError extends Error {
@@ -40,7 +46,11 @@ export function validateRequest(request, grant) {
   exact(request, ['scope', 'toolCallId', 'kind', 'args', 'cwdRelative', 'expiresAt']);
   validateScope(request.scope, grant);
   string(request.toolCallId);
-  if (request.kind !== 'mock.task' || !grant.capabilities.includes(request.kind)) fail('CAPABILITY_DENIED');
+  if (!grant.capabilities.includes(request.kind)) fail('CAPABILITY_DENIED');
+  integer(request.expiresAt, 1, Number.MAX_SAFE_INTEGER);
+  if (request.expiresAt > Date.now() + 24 * 3600_000) fail('DEADLINE_TOO_FAR');
+  if (executors.has(request.kind)) { executors.get(request.kind)(request, grant); return hash(request); }
+  if (request.kind !== 'mock.task') fail('CAPABILITY_DENIED');
   // A fixed mock program is the entire advertised execution capability in B1.
   // Neither a command, path, environment nor arbitrary file operation is accepted.
   if (request.cwdRelative !== '.') fail('CWD_DENIED');
