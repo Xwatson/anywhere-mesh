@@ -5,7 +5,8 @@
   "type": "module",
   "workspaces": [
     "server",
-    "web"
+    "web",
+    "experimental/execution"
   ],
   "scripts": {
     "dev": "npm run dev -w server & npm run dev -w web",
@@ -14,7 +15,9 @@
     "user": "npm run user -w server --",
     "network-helper": "node native/linux/network-helper/cli.mjs",
     "test:network-helper": "python3 -m unittest discover -s native/linux/network-helper -v && node --test native/linux/network-helper/test_client.mjs",
-    "test:network-helper:integration": "node native/linux/network-helper/lab/integration.mjs"
+    "test:network-helper:integration": "node native/linux/network-helper/lab/integration.mjs",
+    "test:execution": "npm run test -w @anywhere/execution-lab",
+    "test:execution:integration": "node experimental/execution/lab/integration.mjs"
   },
   "allowScripts": {
     "node-pty@1.1.0": true,
