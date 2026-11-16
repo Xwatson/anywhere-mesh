@@ -1,14 +1,20 @@
 'use strict';
-const { app, BrowserWindow, ipcMain, protocol, session, net, screen } = require('electron');
+const { app, BrowserWindow, ipcMain, protocol, session, net, screen, dialog } = require('electron');
 const { spawn } = require('node:child_process');
 const { realpathSync, mkdirSync, existsSync } = require('node:fs');
 const { resolve, sep, extname } = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { createInterface } = require('node:readline');
-const { validate, trustedSender } = require('./contract.cjs');
+const { trustedSender } = require('./contract.cjs');
+const sessionsProfile = process.argv.includes('--lab-sessions');
+const appDir = sessionsProfile ? resolve(__dirname, '../desktop-sessions') : __dirname;
+const contract = require(resolve(appDir, 'contract.cjs'));
+const validate = contract.internalValidate ?? contract.validate;
+const validatePublic = contract.publicValidate ?? contract.validate;
+let testPickerPath;
 
 if (process.platform !== 'linux' || !existsSync('/etc/anywhere-crossborder-lab')) throw Error('LAB_LINUX_REQUIRED');
-const profile = '/srv/anywhere-lab/desktop-d/shell-profile';
+const profile = sessionsProfile ? '/srv/anywhere-lab/desktop-d2/shell-profile' : '/srv/anywhere-lab/desktop-d/shell-profile';
 mkdirSync(profile, { recursive: true, mode: 0o700 });
 app.setPath('userData', profile);
 app.setName('Anywhere Desktop · 实验版');
@@ -42,7 +48,7 @@ async function stop() {
   })(); return stopping;
 }
 if (single) app.whenReady().then(async () => {
-  const assets = realpathSync(resolve(__dirname, 'dist'));
+  const assets = realpathSync(resolve(appDir, 'dist'));
   protocol.handle('anywhere-desktop', async req => {
     try {
       const u = new URL(req.url);
@@ -56,7 +62,7 @@ if (single) app.whenReady().then(async () => {
   ses.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
   ses.setPermissionCheckHandler(() => false);
   ses.on('will-download', event => event.preventDefault());
-  child = spawn('/usr/local/bin/node', [resolve(__dirname, 'controller.mjs')], {
+  child = spawn('/usr/local/bin/node', [resolve(appDir, 'controller.mjs')], {
     stdio: ['pipe', 'pipe', 'pipe'], env: { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: '/home/lab', LANG: 'C.UTF-8', NODE_NO_WARNINGS: '1' },
   });
   child.stderr.on('data', chunk => process.stderr.write(chunk));
@@ -80,19 +86,35 @@ if (single) app.whenReady().then(async () => {
   const area = screen.getPrimaryDisplay().workAreaSize;
   win = new BrowserWindow({ width: Math.min(area.width, 1280), height: Math.min(area.height, 900), minWidth: 900, minHeight: 680,
     show: false, backgroundColor: '#09090b', title: 'Anywhere Desktop · Linux 实验版', autoHideMenuBar: true,
-    webPreferences: { preload: resolve(__dirname, 'preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false,
+    webPreferences: { preload: resolve(appDir, 'preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false,
       webSecurity: true, allowRunningInsecureContent: false, webviewTag: false, devTools: false, spellcheck: false },
   });
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', event => event.preventDefault());
   win.webContents.on('will-attach-webview', event => event.preventDefault());
-  ipcMain.handle('desktop:request', (event, method, params) => {
+  ipcMain.handle('desktop:request', async (event, method, params) => {
     if (!trustedSender(event, win?.webContents)) throw Error('UNTRUSTED_DESKTOP_SENDER');
+    validatePublic(method, params);
+    if (sessionsProfile && method === 'chooseWorkspace') {
+      const picked = testPickerPath && process.argv.includes('--lab-sessions-smoke') ? { canceled: false, filePaths: [testPickerPath] } :
+        await dialog.showOpenDialog(win, { title: '选择本地项目（实验目录）', defaultPath: '/srv/anywhere-lab/desktop-d2/projects',
+          buttonLabel: '添加项目', properties: ['openDirectory', 'dontAddToRecent'] });
+      testPickerPath = undefined;
+      return picked.canceled ? request('state', {}) : request('registerWorkspace', { path: picked.filePaths[0] });
+    }
     return request(method, params);
   });
   win.once('ready-to-show', () => win.show());
   win.on('closed', () => { win = null; });
   await win.loadURL('anywhere-desktop://app/index.html');
+  if (sessionsProfile && process.argv.includes('--lab-sessions-smoke')) {
+    const { smoke } = await import('../desktop-sessions/lab/ui-smoke.mjs');
+    smoke({ app, win, request, ready: () => backendReady, pick: path => { testPickerPath = path; } }).catch(e => { console.error(e.stack); app.quit(); });
+  }
+  if (sessionsProfile && process.argv.includes('--lab-sessions-crash-smoke')) {
+    const { crashSmoke } = await import('../desktop-sessions/lab/crash-smoke.mjs');
+    crashSmoke({ request, ready: () => backendReady, backendPid: child.pid }).catch(e => { console.error(e.stack); process.exitCode = 1; app.quit(); });
+  }
   if (process.argv.includes('--lab-smoke')) {
     const { smoke } = await import('./lab/ui-smoke.mjs');
     smoke({ app, win, request, ready: () => backendReady }).catch(e => { console.error(e.stack); process.exitCode = 1; app.quit(); });
