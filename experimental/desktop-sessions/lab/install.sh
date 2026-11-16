@@ -23,7 +23,17 @@ ln -sfn "$vendor" "$runtime/experimental/desktop-commander/vendor"
 install -m 0644 "$src/native/linux/network-helper/client.mjs" "$runtime/native/linux/network-helper/client.mjs"
 install -m 0644 "$src/experimental/desktop-sessions/lab/"*.mjs "$runtime/experimental/desktop-sessions/lab/"
 install -m 0755 "$src/experimental/desktop-sessions/lab/"*.sh "$runtime/experimental/desktop-sessions/lab/"
-cp -a "$src/experimental/desktop-sessions/dist" "$runtime/experimental/desktop-sessions/"
+python3 - <<'PY'
+from pathlib import Path
+import shutil,tempfile,uuid
+target=Path('/usr/lib/anywhere-desktop2-runtime/experimental/desktop-sessions')
+stage=Path(tempfile.mkdtemp(prefix='.bundle-',dir=target))/'dist'
+shutil.copytree('/srv/anywhere-lab/source/experimental/desktop-sessions/dist',stage)
+if (target/'dist').exists():
+ backup=Path('/srv/anywhere-lab/desktop-d2/bundle-backups');backup.mkdir(parents=True,exist_ok=True)
+ (target/'dist').rename(backup/str(uuid.uuid4()))
+stage.rename(target/'dist');stage.parent.rmdir()
+PY
 chown -R root:root "$runtime"
 find "$runtime/experimental/desktop-sessions/dist" -type d -exec chmod 0755 '{}' +
 find "$runtime/experimental/desktop-sessions/dist" -type f -exec chmod 0644 '{}' +
