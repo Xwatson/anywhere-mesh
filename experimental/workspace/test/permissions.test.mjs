@@ -24,15 +24,19 @@ test('initial deny, version compare-and-swap and durable idempotent permission d
   assert.throws(()=>p.change({...request,requestId:'second'}),/GRANT_VERSION_CONFLICT/);
   assert.equal(new GrantAuthority(j,identity).current.mode,'edit');
 });
-test('authorization history exhaustion still permits a final durable revocation',t=>{
+test('authorization history compacts beyond 64 changes and storage exhaustion still permits revocation',t=>{
   const j=store(t),p=new GrantAuthority(j,identity);
-  while(p.current.grantVersion<64)p.change({requestId:id(),expectedVersion:p.current.grantVersion,mode:'execute'});
-  assert.throws(()=>p.change({requestId:id(),expectedVersion:64,mode:'edit'}),/GRANT_HISTORY_CAPACITY/);
-  const revoke={requestId:id(),expectedVersion:64,mode:'revoked'};
-  assert.equal(p.change(revoke).grantVersion,65);assert.equal(p.change(revoke).mode,'revoked');
+  const early={requestId:id(),expectedVersion:1,mode:'execute'};p.change(early);
+  while(p.current.grantVersion<200)p.change({requestId:id(),expectedVersion:p.current.grantVersion,mode:'execute'});
+  assert.equal(p.historical(2).mode,'execute');assert.equal(p.change(early).grantVersion,2);assert.equal(p.current.grantVersion,200);
+  assert.equal(j.all('grants').length,32);assert.ok(j.storage().archivedRecords>100);
+  j.maxHistoryBytes=1;
+  assert.throws(()=>p.change({requestId:id(),expectedVersion:200,mode:'edit'}),/HISTORY_STORAGE_FULL/);
+  const revoke={requestId:id(),expectedVersion:200,mode:'revoked'};
+  assert.equal(p.change(revoke).grantVersion,201);assert.equal(p.change(revoke).mode,'revoked');
   assert.equal(new GrantAuthority(j,identity).current.revoked,true);
-  assert.throws(()=>p.change({requestId:id(),expectedVersion:65,mode:'execute'}),/GRANT_HISTORY_CAPACITY/);
-  assert.equal(j.all('grants').length,65);
+  assert.throws(()=>p.change({requestId:id(),expectedVersion:201,mode:'execute'}),/HISTORY_STORAGE_FULL/);
+  assert.equal(j.all('grants').length,32);
 });
 test('accepted work is cancelled by local revocation before its deferred launch',async t=>{
   const j=store(t),agent=new LocalAgent(j,identity,options);change(agent,'edit');const req=envelope(agent);

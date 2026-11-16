@@ -11,7 +11,7 @@ export function relative(value) {
 const text = (v, max = 8192) => { if (typeof v !== 'string' || v.length > max) fail('INVALID_TEXT'); };
 const toolFields = {
   read_file: ['path', 'offset', 'length'], read_multiple_files: ['paths'],
-  write_file: ['path', 'content', 'mode'], edit_block: ['file_path', 'old_string', 'new_string', 'expected_replacements'],
+  write_file: ['path', 'content', 'mode', 'expectedRevision'], edit_block: ['file_path', 'old_string', 'new_string', 'expected_replacements', 'expectedRevision'],
   list_directory: ['path', 'depth'], get_file_info: ['path'], create_directory: ['path'],
 };
 export function validate(request, grant) {
@@ -40,6 +40,8 @@ export function validate(request, grant) {
   if (['write_file', 'edit_block', 'create_directory'].includes(a.tool) && !grant.capabilities.includes('workspace.write')) fail('WRITE_DENIED');
   if (a.tool === 'write_file') { text(p.content); if (!['rewrite', 'append'].includes(p.mode)) fail('INVALID_WRITE_MODE'); }
   if (a.tool === 'edit_block') { string(p.old_string, 8192); text(p.new_string); integer(p.expected_replacements, 1, 20); }
+  if (p.expectedRevision !== undefined && p.expectedRevision !== null &&
+      (typeof p.expectedRevision !== 'string' || !/^file-v1:[a-f0-9]{64}$/.test(p.expectedRevision))) fail('INVALID_FILE_REVISION');
   if (p.offset !== undefined) integer(p.offset, -10000, 1000000);
   if (p.length !== undefined) integer(p.length, 1, 200);
   if (p.depth !== undefined) integer(p.depth, 1, 4);
@@ -57,7 +59,8 @@ export function makeLauncher(profile) {
     if (realpathSync(profile.workspaceRoot) !== root) fail('WORKSPACE_ROOT_CHANGED');
     return { command: process.execPath, args: [fileURLToPath(new URL('./worker.mjs', import.meta.url))],
       env: { PATH: '/usr/local/bin:/usr/bin:/bin', LANG: 'C.UTF-8' },
-      input: { request: op.request, profile: { workspaceRoot: root,
-        readOnly: Boolean(profile.readOnly) || (grant && !grant.capabilities.includes('workspace.write')) } } };
+      input: { request: op.request, operationId: op.operationId, profile: { workspaceRoot: root,
+        readOnly: Boolean(profile.readOnly) || (grant && !grant.capabilities.includes('workspace.write')),
+        guardedFiles: Boolean(profile.guardedFiles), stateDir: profile.stateDir } } };
   };
 }

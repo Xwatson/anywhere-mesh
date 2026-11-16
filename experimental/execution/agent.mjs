@@ -1,10 +1,11 @@
 import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
-import { readdirSync, readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, unlinkSync } from 'node:fs';
 import { StringDecoder } from 'node:string_decoder';
 import { fileURLToPath } from 'node:url';
-import { id, exact, string, integer, hash, canonical, validateRequest, validateScope, turnKey, sameTurn, TERMINAL, fail, summary } from './protocol.mjs';
+import { id, exact, string, integer, hash, canonical, validateRequest, validateScope, turnKey, sameTurn, TERMINAL, fail, summary, resultDigest } from './protocol.mjs';
 import { GrantAuthority, assertIdentity } from './grants.mjs';
+import { compactOperations } from './retention.mjs';
 
 export function groupAlive(group) {
   // Confirms the supervised outer process group. DC additionally uses a fresh
@@ -36,6 +37,7 @@ export class LocalAgent extends EventEmitter {
           op.state = 'unknown'; op.reason = 'agent_restart_requires_review'; op.pid = null;
           journal.put('ops', op.operationId, op);
         }
+        if (op.state === 'unknown' && op.pid) { op.pid = null; journal.put('ops', op.operationId, op); }
       }
     });
   }
@@ -76,6 +78,7 @@ export class LocalAgent extends EventEmitter {
   }
   create(envelope, state = 'accepted') {
     if (this.journal.all('ops').length >= 128) fail('JOURNAL_CAPACITY');
+    if (state === 'accepted') this.journal.ensureCapacity();
     const op = { ...envelope, taskId: id(), state, lastSeq: 0, result: null,
       pid: null, starts: 0, reason: null, cancelId: null, acknowledgedSeq: 0 };
     this.journal.put('ops', op.operationId, op); return op;
@@ -90,7 +93,14 @@ export class LocalAgent extends EventEmitter {
       if (this.journal.all('ops').some((o) => o.state === 'unknown' &&
           o.request.scope.workspaceId === envelope.request.scope.workspaceId)) fail('WORKSPACE_RECOVERING');
       if (this.children.size + this.journal.all('ops').filter((o) => o.state === 'accepted').length >= this.maxChildren) fail('EXECUTOR_BUSY');
-      op = this.create(envelope);
+      try { op = this.create(envelope); }
+      catch (error) {
+        if (error.code !== 'HISTORY_STORAGE_FULL') throw error;
+        // Admission reserves space for definitive rejections and cancellation.
+        // Do not leave a known non-execution looking like a lost start reply.
+        op = this.create(envelope, 'rejected'); op.reason = error.code;
+        this.journal.put('ops', op.operationId, op);
+      }
       if (this.authority) {
         try { validateRequest(op.request, this.grant); }
         catch (e) { op.state = 'rejected'; op.reason = e.code; this.journal.put('ops', op.operationId, op); }
@@ -189,7 +199,8 @@ export class LocalAgent extends EventEmitter {
       } else if (code === 0) { op.state = 'succeeded'; op.reason = null; }
       else if (op.state === 'cancelling' && signal) { op.state = 'cancelled'; op.reason = 'process_tree_stopped'; }
       else { op.state = 'failed'; op.reason = error || signal || 'nonzero_exit'; }
-      op.result = { exitCode: code, signal: signal || null }; op.pid = null;
+      op.result = { exitCode: code, signal: signal || null };
+      op.pid = op.reason === 'process_tree_unconfirmed' ? entry.child.pid : null;
       if (toolResult) op.result.tool = toolResult;
       this.journal.put('ops', operationId, op); this.children.delete(operationId); this.emit('changed');
     };
@@ -236,6 +247,14 @@ export class LocalAgent extends EventEmitter {
     if (method === 'stopTurn') return this.stopTurn(params);
     if (method === 'ping') return { instanceId: this.instanceId, now: Date.now() };
     if (method === 'workspaceInfo' && this.authority) { exact(params, []); return this.workspaceInfo(); }
+    if (method === 'consumeResult' && this.workspace?.reliability) {
+      exact(params, ['operationId', 'requestHash', 'request', 'digest']);
+      const op = this.authorize(envelopeOf(params), true);
+      if (!op || !TERMINAL.has(op.state) || resultDigest(op) !== params.digest || op.acknowledgedSeq < op.lastSeq) fail('RESULT_NOT_READY');
+      op.resultConsumed = true; this.journal.put('ops', op.operationId, op);
+      compactOperations(this.journal, 'agent'); this.cleanConsumedBackups();
+      return { consumed: true, digest: params.digest };
+    }
     if (method === 'sync') {
       exact(params, ['items']);
       if (!Array.isArray(params.items) || params.items.length > 2) fail('INVALID_BATCH');
@@ -266,11 +285,55 @@ export class LocalAgent extends EventEmitter {
     return { grant: this.grant, label: this.workspace.label,
       pendingCancellations: ops.filter((o) => o.state === 'cancelling').map((o) => o.operationId),
       unknownOperations: ops.filter((o) => o.state === 'unknown').map((o) => o.operationId),
-      sandbox: { network: false, readOnly: !this.grant.capabilities.includes('workspace.write') } };
+      sandbox: { network: false, readOnly: !this.grant.capabilities.includes('workspace.write'),
+        guardedFileWrites: Boolean(this.workspace.reliability), fileWriteProtection: this.workspace.reliability ? 'optimistic-version-check-with-preimage' : null }, history: this.journal.storage() };
+  }
+  cleanConsumedBackups() {
+    // State belongs to the service; never derive a filesystem path from a caller
+    // operation ID. Keep unknown/unconsumed and the recent completed preimages.
+    const retained = new Set(this.journal.all('ops').map(o => hash(o.operationId) + '.json'));
+    const archived = this.journal.db.prepare("SELECT key,value FROM archive_records WHERE bucket='ops'").all();
+    for (const row of archived) {
+      const op = JSON.parse(row.value), name = hash(row.key) + '.json';
+      if (!op.resultConsumed || retained.has(name)) continue;
+      try { unlinkSync(`${this.stateDir}/file-backups/${name}`); }
+      catch (error) { if (error.code !== 'ENOENT') this.backupCleanupError = 'BACKUP_CLEANUP_PENDING'; }
+    }
+  }
+  reviewPreview(operationId) {
+    string(operationId); const op = this.journal.get('ops', operationId);
+    if (!op || op.state !== 'unknown') fail('NOT_UNKNOWN');
+    if (!this.grant.revoked) fail('REVOKE_BEFORE_REVIEW');
+    if (this.children.has(operationId) || (op.pid && groupAlive(op.pid))) fail('PROCESS_STILL_ACTIVE');
+    const evidence = { operationId, requestHash: op.requestHash, taskId: op.taskId, request: op.request,
+      state: op.state, reason: op.reason, starts: op.starts, lastSeq: op.lastSeq, result: op.result,
+      grantVersion: this.grant.grantVersion };
+    return { ...evidence, expectedDigest: hash(evidence), instruction: 'Inspect effects locally. Acknowledge uncertainty to close the task; this never declares execution successful or retries it.' };
+  }
+  reviewUnknown(params) {
+    exact(params, ['requestId', 'operationId', 'expectedDigest', 'disposition', 'note']);
+    string(params.requestId); string(params.operationId); string(params.expectedDigest); string(params.note, 2048);
+    if (params.disposition !== 'acknowledge_unknown') fail('INVALID_REVIEW_DISPOSITION');
+    const decision = this.journal.tx(() => {
+      const prior = this.journal.get('reviews', params.requestId);
+      if (prior) { if (prior.digest !== hash(params)) fail('REVIEW_CONFLICT'); return prior; }
+      const preview = this.reviewPreview(params.operationId);
+      if (preview.expectedDigest !== params.expectedDigest) fail('REVIEW_STALE');
+      const op = this.journal.get('ops', params.operationId);
+      const original = { state: op.state, reason: op.reason, result: op.result };
+      op.state = 'reviewed'; op.reason = 'operator_acknowledged_unknown';
+      op.result = { executionOutcome: 'unknown', review: { actor: 'local-device-operator',
+        note: params.note, at: Date.now(), requestId: params.requestId, original } };
+      const record = { digest: hash(params), operationId: op.operationId, resultDigest: resultDigest(op) };
+      this.journal.put('ops', op.operationId, op); this.journal.put('reviews', params.requestId, record); return record;
+    });
+    this.emit('changed'); return { ...decision, state: 'reviewed', executionOutcome: 'unknown' };
   }
   control(method, params) {
     if (!this.authority) fail('WORKSPACE_UNMANAGED');
     if (method === 'status') { exact(params, []); return this.workspaceInfo(); }
+    if (method === 'reviewPreview' && this.workspace.reliability) { exact(params, ['operationId']); return this.reviewPreview(params.operationId); }
+    if (method === 'reviewUnknown' && this.workspace.reliability) return this.reviewUnknown(params);
     if (method !== 'setMode') fail('METHOD_NOT_FOUND');
     const decision = this.authority.change(params);
     // A retry of an old change must not roll the live policy back.

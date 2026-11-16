@@ -23,7 +23,7 @@ function setup(t){
   return{broker,facade,executor,control};
 }
 test('host ticket is stable, binds arguments and recovers a prepare response lost before local commit',async t=>{
-  const {executor,facade}=setup(t),args={path:'hello.txt',content:'once',mode:'append'};
+  const {executor,facade}=setup(t),args={path:'hello.txt',content:'once',mode:'append',expectedRevision:null};
   const [first,concurrent]=await Promise.all([executor.issue('call','workspace_write_file',args),executor.issue('call','workspace_write_file',args)]);
   assert.deepEqual(first,concurrent);
   const key=executor.key('call'),record=facade.get('calls',key);record.operationId=null;facade.put('calls',key,record);

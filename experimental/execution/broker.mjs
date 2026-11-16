@@ -2,6 +2,7 @@ import { id, exact, string, integer, hash, validateRequest, turnKey, callKey, sa
   TERMINAL, CAPABILITIES, resultDigest } from './protocol.mjs';
 import { envelopeOf } from './agent.mjs';
 import { grantFor, validateGrant } from './grants.mjs';
+import { compactOperations } from './retention.mjs';
 
 export class Broker {
   constructor(journal, grant, { workspace } = {}) {
@@ -63,10 +64,19 @@ export class Broker {
           current.cancelConfirmed = TERMINAL.has(remote.state);
           this.journal.put('ops', op.operationId, current);
         }
+        if (this.workspace?.reliability) {
+          for (const op of this.journal.all('ops')) if (TERMINAL.has(op.state) && op.delivery === 'consumed' && !op.consumeConfirmed) {
+            await rpc.request('consumeResult', { ...envelopeOf(op), digest: op.resultDigest });
+            if (this.rpc !== rpc) return;
+            const current = this.get(op.operationId); current.consumeConfirmed = true;
+            this.journal.put('ops', op.operationId, current);
+          }
+          compactOperations(this.journal, 'broker');
+        }
         const pending = this.journal.all('ops').filter((o) => !TERMINAL.has(o.state) || o.receivedSeq < o.lastSeq);
         // DC returns structured tool content, so one result plus a bounded output
         // page must fit the 64 KiB frame even at the maximum accepted result size.
-        const batchSize = this.grant.capabilities.some((c) => c.startsWith('dc.')) ? 1 : 2;
+        const batchSize = this.workspace || this.grant.capabilities.some((c) => c.startsWith('dc.')) ? 1 : 2;
         for (let i = 0; i < pending.length; i += batchSize) {
           const page = pending.slice(i, i + batchSize);
           const batch = await rpc.request('sync', { items: page.map((o) => ({ ...envelopeOf(o), afterSeq: o.receivedSeq })) });
@@ -141,6 +151,7 @@ export class Broker {
         return this.journal.get('ops', mapping.operationId);
       }
       if (this.phase !== 'ready') fail('DEVICE_RECOVERING');
+      this.journal.ensureCapacity();
       if (this.blockers(scope.workspaceId).length) fail('WORKSPACE_RECOVERING');
       if (this.workspace && this.journal.all('ops').some((o) => !TERMINAL.has(o.state))) fail('EXECUTOR_BUSY');
       const turn = this.journal.get('turns', turnKey(scope));
@@ -188,7 +199,8 @@ export class Broker {
       return { phase: this.phase, grant: this.grant, label: this.workspace.label,
         confirmed: this.phase === 'ready', blockers: this.blockers(this.grant.workspaceId).map((o) => o.operationId),
         activeOperations: this.journal.all('ops').filter((o) => !TERMINAL.has(o.state)).map((o) => o.operationId),
-        sandbox: this.workspaceStatus?.sandbox ?? { network: false, readOnly: true } };
+        sandbox: this.workspaceStatus?.sandbox ?? { network: false, readOnly: true },
+        history: { ...this.journal.storage(), device: this.workspaceStatus?.history ?? null } };
     }
     if (method === 'snapshot') return { phase: this.phase, epoch: this.rpc?.epoch || null,
       lastError: this.lastError, ops: this.journal.all('ops'), turns: this.journal.all('turns'),
@@ -198,6 +210,7 @@ export class Broker {
     if (method === 'dispatch') { exact(params, ['operationId']); return this.dispatch(params.operationId); }
     if (method === 'cancel') {
       exact(params, ['operationId']); const op = this.get(params.operationId);
+      if (TERMINAL.has(op.state)) return { cancelId: op.cancelId, confirmed: true, state: op.state, alreadyTerminal: true };
       op.cancelId ||= id(); this.journal.put('ops', op.operationId, op); this.kick();
       return { cancelId: op.cancelId, confirmed: op.cancelConfirmed, state: op.state };
     }
@@ -206,14 +219,18 @@ export class Broker {
       const key = turnKey(params), turn = this.journal.get('turns', key); if (!turn) fail('NOT_FOUND');
       if (method === 'stopTurn') { turn.stopped = true; turn.cancelId ||= id(); }
       else turn.reasoning = 'idle';
-      this.journal.put('turns', key, turn); this.kick(); return turn;
+      this.journal.tx(() => {
+        if (method === 'stopTurn') this.journal.activate('turns', key);
+        this.journal.put('turns', key, turn);
+      });
+      this.kick(); return turn;
     }
     if (method === 'ackResult') {
       exact(params, ['operationId', 'digest', 'stage']); const op = this.get(params.operationId);
       if (!TERMINAL.has(op.state) || op.receivedSeq < op.lastSeq || params.digest !== op.resultDigest) fail('RESULT_NOT_READY');
       if (!['presented', 'consumed'].includes(params.stage)) fail('INVALID_STAGE');
       if (op.delivery !== 'consumed') op.delivery = params.stage;
-      this.journal.put('ops', op.operationId, op); return op;
+      this.journal.put('ops', op.operationId, op); if (this.workspace?.reliability) this.kick(); return op;
     }
     if (method === 'output') {
       exact(params, ['operationId', 'afterSeq']); const op = this.get(params.operationId);

@@ -20,9 +20,10 @@ let launcher;
 if (cfg.desktop) {
   const desktop = await import('../desktop-commander/adapter.mjs');
   desktop.register();
-  if (role === 'agent') launcher = desktop.makeLauncher(cfg.desktop);
+  if (role === 'agent') launcher = desktop.makeLauncher({ ...cfg.desktop, guardedFiles: Boolean(cfg.workspace?.reliability), stateDir: cfg.stateDir });
 }
 if (cfg.workspace) CAPABILITIES.push('workspace.grants.v1');
+if (cfg.workspace?.reliability) CAPABILITIES.push('history.archive.v1', 'review.v1');
 const store = new Journal(`${cfg.stateDir}/journal.sqlite`);
 const certificate = readFileSync(cfg.cert), key = readFileSync(cfg.key), ca = readFileSync(cfg.ca);
 const peerFingerprint = new X509Certificate(readFileSync(cfg.peerCert)).fingerprint256;

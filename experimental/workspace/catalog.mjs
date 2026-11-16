@@ -3,6 +3,7 @@ import { validate } from '../desktop-commander/adapter.mjs';
 
 const path = { type: 'string', minLength: 1, maxLength: 512, description: 'Path relative to the authorized workspace root.' };
 const text = { type: 'string', maxLength: 8192 };
+const revision = { type: ['string', 'null'], pattern: '^file-v1:[a-f0-9]{64}$', description: 'Revision returned by the last file read. Null requires that the path does not exist.' };
 const count = (minimum, maximum, value) => ({ type: 'integer', minimum, maximum, ...(value === undefined ? {} : { default: value }) });
 const schema = (properties, required) => ({ type: 'object', properties, required, additionalProperties: false });
 const file = (tool, args) => ({ kind: 'dc.tool', cwdRelative: '.', args: { tool, arguments: args } });
@@ -14,9 +15,9 @@ const definitions = [
   ['workspace_list_directory', 'List files and subdirectories within a bounded depth.', 'read', { path, depth: count(1, 4, 2) }, ['path'],
     a => file('list_directory', { path: a.path, depth: a.depth ?? 2 })],
   ['workspace_file_info', 'Read file metadata.', 'read', { path }, ['path'], a => file('get_file_info', a)],
-  ['workspace_write_file', 'Write text with an explicit append or rewrite mode.', 'write', { path, content: text, mode: { type: 'string', enum: ['rewrite', 'append'] } }, ['path', 'content', 'mode'], a => file('write_file', a)],
-  ['workspace_edit_file', 'Replace exact matching text; ambiguous or missing matches fail.', 'write', { path, oldText: { ...text, minLength: 1 }, newText: text, expectedMatches: count(1, 20, 1) }, ['path', 'oldText', 'newText'],
-    a => file('edit_block', { file_path: a.path, old_string: a.oldText, new_string: a.newText, expected_replacements: a.expectedMatches ?? 1 })],
+  ['workspace_write_file', 'Write text using its last read revision; changed files are refused. Explicit append/rewrite mode required.', 'write', { path, content: text, mode: { type: 'string', enum: ['rewrite', 'append'] }, expectedRevision: revision }, ['path', 'content', 'mode', 'expectedRevision'], a => file('write_file', a)],
+  ['workspace_edit_file', 'Replace exact matching text at the last read revision; changes and ambiguous matches fail.', 'write', { path, oldText: { ...text, minLength: 1 }, newText: text, expectedMatches: count(1, 20, 1), expectedRevision: revision }, ['path', 'oldText', 'newText', 'expectedRevision'],
+    a => file('edit_block', { file_path: a.path, old_string: a.oldText, new_string: a.newText, expected_replacements: a.expectedMatches ?? 1, expectedRevision: a.expectedRevision })],
   ['workspace_create_directory', 'Create a directory inside the workspace.', 'write', { path }, ['path'], a => file('create_directory', a)],
   ['workspace_search', 'Search file names or text. Results may be partial when limits are reached.', 'read', { path, pattern: { type: 'string', minLength: 1, maxLength: 1024 }, searchType: { type: 'string', enum: ['files', 'content'], default: 'content' }, literal: { type: 'boolean', default: true }, maxResults: count(1, 50, 50) }, ['path', 'pattern'],
     a => ({ kind: 'dc.search', cwdRelative: '.', args: { path: a.path, pattern: a.pattern, searchType: a.searchType ?? 'content', literalSearch: a.literal ?? true, maxResults: a.maxResults ?? 50 } })],

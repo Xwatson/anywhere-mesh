@@ -46,14 +46,14 @@ export class GrantAuthority {
       const prior = this.journal.get('grantChanges', params.requestId);
       if (prior) { if (prior.digest !== hash(params)) fail('GRANT_CHANGE_CONFLICT'); return prior.grant; }
       if (params.expectedVersion !== this.current.grantVersion) fail('GRANT_VERSION_CONFLICT');
-      // Capacity may disable new grants, but must never trap a device in an
-      // authorized mode. Reserve one final record for revocation at the limit.
-      if (this.journal.all('grants').length >= 64 &&
-          !(params.mode === 'revoked' && this.current.mode !== 'revoked')) fail('GRANT_HISTORY_CAPACITY');
+      // Storage limits block new authority, never revocation or old retries.
+      if (params.mode !== 'revoked') this.journal.ensureCapacity();
       const next = grantFor(this.identity, params.mode, this.current.grantVersion + 1);
       this.journal.put('grants', String(next.grantVersion), next);
       this.journal.put('meta', 'workspaceGrant', next);
       this.journal.put('grantChanges', params.requestId, { digest: hash(params), grant: next });
+      for (const r of this.journal.entries('grants')) if (r.value.grantVersion <= next.grantVersion - 32) this.journal.archive('grants', r.key);
+      for (const r of this.journal.entries('grantChanges')) if (r.value.grant.grantVersion <= next.grantVersion - 32) this.journal.archive('grantChanges', r.key);
       return next;
     });
   }

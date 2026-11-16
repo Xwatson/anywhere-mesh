@@ -5,7 +5,7 @@ export interface WorkspaceBinding {
 }
 export type PermissionMode = 'revoked' | 'read' | 'edit' | 'execute';
 export type TaskState = 'prepared' | 'dispatching' | 'not_received' | 'accepted' | 'running' |
-  'cancelling' | 'cancelled' | 'succeeded' | 'failed' | 'rejected' | 'unknown';
+  'cancelling' | 'cancelled' | 'succeeded' | 'failed' | 'rejected' | 'unknown' | 'reviewed';
 export interface LocalPermissionChange {
   requestId: string; expectedVersion: number; mode: PermissionMode;
 }

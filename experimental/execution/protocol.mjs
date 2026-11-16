@@ -8,7 +8,7 @@ export function registerExecutor(kind, validate) {
   if (executors.has(kind)) throw new Error('EXECUTOR_ALREADY_REGISTERED');
   executors.set(kind, validate); CAPABILITIES.push(`${kind}.v1`);
 }
-export const TERMINAL = new Set(['succeeded', 'failed', 'cancelled', 'rejected']);
+export const TERMINAL = new Set(['succeeded', 'failed', 'cancelled', 'rejected', 'reviewed']);
 export const id = () => randomUUID();
 export class ProtocolError extends Error {
   constructor(code) { super(code); this.code = code; }

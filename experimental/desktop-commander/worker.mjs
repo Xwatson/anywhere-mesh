@@ -2,10 +2,14 @@ import { Client } from './vendor/node_modules/@modelcontextprotocol/sdk/dist/esm
 import { StdioClientTransport } from './vendor/node_modules/@modelcontextprotocol/sdk/dist/esm/client/stdio.js';
 import { writeSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { prepareFileGuard } from './file-guard.mjs';
 const started = Date.now();
 let data = '';
 for await (const chunk of process.stdin) { data += chunk; if (data.length > 32768) throw new Error('INPUT_LIMIT'); }
-const { request, profile } = JSON.parse(data);
+const { request, profile, operationId } = JSON.parse(data);
+let fileGuard, guardFailure;
+try { if (profile.guardedFiles) fileGuard = await prepareFileGuard(request, profile, operationId); }
+catch (error) { guardFailure = error; }
 const vendor = fileURLToPath(new URL('./vendor', import.meta.url));
 const entry = fileURLToPath(new URL('./sandbox-entry.mjs', import.meta.url));
 const args = ['--unshare-user', '--unshare-pid', '--unshare-net', '--unshare-ipc', '--unshare-uts',
@@ -13,7 +17,7 @@ const args = ['--unshare-user', '--unshare-pid', '--unshare-net', '--unshare-ipc
   '--symlink', 'usr/bin', '/bin', '--symlink', 'usr/lib', '/lib', '--symlink', 'usr/lib64', '/lib64',
   '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp', '--tmpfs', '/home', '--dir', '/home/worker',
   '--ro-bind', vendor, '/opt/vendor', '--ro-bind', entry, '/opt/sandbox-entry.mjs',
-  profile.readOnly ? '--ro-bind' : '--bind', profile.workspaceRoot, '/workspace',
+  profile.readOnly ? '--ro-bind' : '--bind', fileGuard?.staging ?? profile.workspaceRoot, '/workspace',
   '--setenv', 'HOME', '/home/worker', '--setenv', 'PATH', '/usr/local/bin:/usr/bin:/bin',
   '--setenv', 'LANG', 'C.UTF-8', '--setenv', 'ANYWHERE_DC_MINIMAL', '1', '--setenv', 'UV_THREADPOOL_SIZE', '4',
   '/usr/local/bin/node', '/opt/sandbox-entry.mjs', request.cwdRelative];
@@ -33,11 +37,13 @@ async function call(name, parameters) {
 }
 function paths(parameters) {
   const p = { ...parameters };
+  delete p.expectedRevision;
   for (const key of ['path', 'file_path']) if (p[key] !== undefined) p[key] = `/workspace/${p[key]}`;
   if (p.paths) p.paths = p.paths.map((x) => `/workspace/${x}`);
   return p;
 }
 try {
+  if (guardFailure) throw guardFailure;
   const connecting = client.connect(transport);
   // stderr is capped; credentials are not present in the child environment.
   let diagnosticBytes = 0;
@@ -91,22 +97,39 @@ try {
         outputTruncated: Boolean(state.evictedLines) } };
     }
   } else throw new Error('UNKNOWN_KIND');
+  if (fileGuard && result.ok) {
+    result.fileVersions = fileGuard.versions;
+    if (fileGuard.writing) {
+      const committed = await fileGuard.commit();
+      if (!committed.ok) result = { ok: false, response: { isError: true, content: [{ type: 'text', text: committed.error }] } };
+      else { result.fileGuard = committed; result.fileVersions = [{ path: fileGuard.versions[0].path, revision: committed.revision, size: committed.size }]; }
+    }
+    if (result.fileVersions) result.response?.content?.push({ type: 'text', text: 'File versions (use expectedRevision for writes): ' + JSON.stringify(result.fileVersions) });
+  }
 } catch (error) {
   // Transport failure after dispatch can hide a completed write/command. No result
   // on fd 3 makes B1 retain unknown and block automatic retries in that workspace.
-  uncertain = calls > 0;
+  uncertain = calls > 0 && !error.beforeMutation;
   result = { ok: false, error: error.message, beforeDispatch: !calls };
   process.stderr.write(`adapter: ${error.message}\n`);
 } finally {
   await client.close().catch(() => {});
+  await fileGuard?.close().catch(() => {});
 }
 if (uncertain) process.exit(70);
 result = { version: 1, ...result, timing: { initMs: initMs ?? null, elapsedMs: Date.now() - started }, calls };
 let encoded = JSON.stringify(result);
 if (Buffer.byteLength(encoded) > 22000) {
-  // The invocation has finished, but the result cannot be delivered losslessly.
-  // Keep unknown rather than invite another potentially mutating invocation.
-  process.stderr.write('adapter: RESULT_TOO_LARGE; manual reconciliation required\n'); process.exit(70);
+  const readOnly = ['dc.search', 'dc.inspect'].includes(request.kind) || (request.kind === 'dc.tool' &&
+    ['read_file', 'read_multiple_files', 'list_directory', 'get_file_info'].includes(request.args.tool));
+  if (readOnly) {
+    result = { version: 1, ok: false, error: 'RESULT_TOO_LARGE', noWorkspaceMutation: true,
+      response: { isError: true, content: [{ type: 'text', text: 'RESULT_TOO_LARGE: reduce the read page, file count, directory depth or search result limit. No workspace files were modified.' }] } };
+    encoded = JSON.stringify(result);
+  } else {
+    // A mutating invocation may have completed. Never invite automatic replay.
+    process.stderr.write('adapter: RESULT_TOO_LARGE; manual reconciliation required\n'); process.exit(70);
+  }
 }
 await new Promise((resolve) => process.stdout.write('', resolve));
 writeSync(3, encoded);

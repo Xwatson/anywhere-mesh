@@ -104,11 +104,11 @@ try{
   await setMode('edit');await assert.rejects(read.executor.issue('old-grant','workspace_read_file',{path:'source.txt'}),/GRANT_CHANGED/);
   r=await invoke(read,'workspace_read_file',{path:'source.txt'},readTicket);assert.equal(r.structuredContent.task.state,'succeeded');
   const edit=await openHost();assert.equal((await edit.client.listTools()).tools.length,12);
-  const append={path:'once.txt',content:'only-once\n',mode:'append'},ticket=await edit.executor.issue('append','workspace_write_file',append);
+  const append={path:'once.txt',content:'only-once\n',mode:'append',expectedRevision:null},ticket=await edit.executor.issue('append','workspace_write_file',append);
   const duplicate=await Promise.all([invoke(edit,'workspace_write_file',append,ticket),invoke(edit,'workspace_write_file',append,ticket)]);
   assert.ok(duplicate.every(x=>x.structuredContent.task.operationId===ticket.operationId));assert.equal((await operation(ticket.operationId)).starts,1);assert.equal(await readWorkspace('once.txt'),'only-once');
   r=await invoke(edit,'workspace_write_file',{...append,content:'twice'},ticket);assert.match(content(r),/CALL_TICKET_MISMATCH/);await consume(edit,duplicate[0]);
-  await call(edit,'workspace_edit_file',{path:'source.txt',oldText:'初始版本',newText:'正式接口验证'});
+  await call(edit,'workspace_edit_file',{path:'source.txt',oldText:'初始版本',newText:'正式接口验证',expectedRevision:null});
   r=await call(edit,'workspace_search',{path:'.',pattern:'正式接口验证'});assert.match(content(r),/source.txt/);
   record('edit_search_stable_host_call_identity_and_concurrent_mcp_retry_deduplication');
   await setMode('execute');let execute=await openHost();assert.equal((await execute.client.listTools()).tools.length,13);
@@ -153,7 +153,7 @@ try{
   await resumed.executor.consumeAfterPersist({operationId:reconnect.operationId,resultDigest:r.structuredContent.task.resultDigest,receiptId:`mock-history:${reconnect.operationId}`});
   record('mcp_process_restart_replays_same_task_and_lost_consumption_ack_is_idempotent');
   await run('sudo','-n','-u','anywhere-exec-agent','python3','-c',`from pathlib import Path;Path('${base}/agent/fault.json').write_text('{"point":"agent_before_result"}')`);
-  const crashArgs={path:'unknown.txt',content:'one-effect\n',mode:'append'},crash=await resumed.executor.issue('crash','workspace_write_file',crashArgs);
+  const crashArgs={path:'unknown.txt',content:'one-effect\n',mode:'append',expectedRevision:null},crash=await resumed.executor.issue('crash','workspace_write_file',crashArgs);
   const crashing=invoke(resumed,'workspace_write_file',crashArgs,crash);
   await until(async()=>(await run('systemctl','show','-p','ActiveState','--value','anywhere-workspace-agent.service'))==='failed');
   await svc('start','agent');await ready();r=await crashing;

@@ -15,7 +15,7 @@ export class WorkspaceExecutor {
     return { workspaceId: info.grant.workspaceId, label: info.label, connection: info.phase,
       permission: { mode: info.grant.mode, version: info.grant.grantVersion, confirmed: info.confirmed }, bindingCurrent,
       tools: listTools(info.grant, info.confirmed && bindingCurrent), activeOperations: info.activeOperations,
-      blockers: info.blockers, sandbox: info.sandbox,
+      blockers: info.blockers, sandbox: info.sandbox, history: info.history,
       limits: { maxRuntimeMs: 120000, maxReadLines: 200, maxSearchResults: 50, maxResultBytes: 22000, retainedOutputBytes: 65536, concurrentTasks: 1 } };
   }
   key(callId) { string(callId); return hash({ binding: this.binding, callId }); }
@@ -37,6 +37,7 @@ export class WorkspaceExecutor {
       if (!info.confirmed) fail('DEVICE_RECOVERING');
       expiresAt ??= Date.now() + 120000; integer(expiresAt, 1, Number.MAX_SAFE_INTEGER);
       if (expiresAt <= Date.now() || expiresAt > Date.now() + 120000) fail('INVALID_DEADLINE');
+      this.compact();
       record = this.journal.tx(() => {
         const concurrent = this.journal.get('calls', key);
         if (concurrent) {
@@ -44,6 +45,7 @@ export class WorkspaceExecutor {
           return concurrent;
         }
         if (this.journal.all('calls').length >= 128) fail('TICKET_CAPACITY');
+        this.journal.ensureCapacity();
         const { sessionId, turnId, turnEpoch, grantVersion } = this.binding;
         const params = { sessionId, turnId, turnEpoch, toolCallId: callId, ...normalized, expiresAt, expectedGrantVersion: grantVersion };
         const request = { scope: this.binding, toolCallId: callId, ...normalized, expiresAt };
@@ -113,7 +115,8 @@ export class WorkspaceExecutor {
         `Task ${op.state}; result is not ready. Poll workspace_task_status. Do not repeat the operation.` }];
     if (output.rows.length) content.push({ type: 'text', text: output.rows.map(r => r.data).join('') });
     if (output.truncatedThrough) content.push({ type: 'text', text: `Output before sequence ${output.firstAvailableSeq} was truncated.` });
-    return { isError: ['failed', 'rejected', 'unknown', 'cancelled'].includes(op.state), content,
+    if (op.state === 'reviewed') content.push({ type: 'text', text: 'Locally reviewed and closed with execution outcome still unknown. No automatic retry. ' + op.result.review.note });
+    return { isError: ['failed', 'rejected', 'unknown', 'cancelled', 'reviewed'].includes(op.state), content,
       structuredContent: { version: 1, workspaceId: this.binding.workspaceId, task, result: op.result?.tool ?? op.result, output } };
   }
   async output(operationId, afterSeq = 0) {
@@ -138,6 +141,17 @@ export class WorkspaceExecutor {
     await this.control('ackResult', { operationId, digest: resultDigest, stage: 'consumed' });
     const ref = this.journal.get('operations', operationId), record = this.journal.get('calls', ref.key);
     record.consumed = true; this.journal.put('calls', ref.key, record);
+    this.compact();
     return { consumed: true };
+  }
+  compact() {
+    this.journal.tx(() => {
+      const settled = this.journal.entries('calls').filter(r => r.value.consumed ||
+        (!r.value.operationId && r.value.params.expiresAt < Date.now()));
+      for (const { key, value: record } of settled.slice(0, Math.max(0, settled.length - 32))) {
+        this.journal.archive('calls', key); this.journal.archive('tokens', hash(record.token));
+        if (record.operationId) { this.journal.archive('operations', record.operationId); this.journal.archive('receipts', record.operationId); }
+      }
+    });
   }
 }
