@@ -77,6 +77,29 @@ export class WorkspaceExecutor {
     if (canonical(record.binding) !== canonical(this.binding)) fail('TASK_NOT_BOUND');
     return record;
   }
+  // Host restart recovery is query-only. In particular it must not prepare or
+  // dispatch a call that may have been interrupted before the original send.
+  async recover(callId) {
+    const key = this.key(callId), record = this.journal.get('calls', key);
+    if (!record) return null;
+    if (canonical(record.binding) !== canonical(this.binding)) fail('TASK_NOT_BOUND');
+    if (record.operationId) {
+      await this.operation(record.operationId);
+      return { operationId: record.operationId, requestHash: record.requestHash };
+    }
+    const { sessionId, turnId, turnEpoch, toolCallId } = record.params;
+    const op = await this.control('lookupCall', { sessionId, turnId, turnEpoch, toolCallId });
+    if (!op) return null;
+    this.verifyOperation(record, op);
+    this.journal.tx(() => {
+      const current = this.journal.get('calls', key);
+      if (current.operationId && current.operationId !== op.operationId) fail('TASK_BINDING_MISMATCH');
+      current.operationId = op.operationId;
+      this.journal.put('calls', key, current);
+      this.journal.put('operations', op.operationId, { key });
+    });
+    return { operationId: op.operationId, requestHash: record.requestHash };
+  }
   async operation(operationId) {
     return this.verifyOperation(this.recordForOperation(operationId), await this.control('operation', { operationId }));
   }

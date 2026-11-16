@@ -1,0 +1,7 @@
+{
+  "name": "anywhere-linux-desktop-lab",
+  "version": "0.1.0",
+  "private": true,
+  "main": "main.cjs",
+  "description": "Isolated Linux desktop validation; no production or real CLI access"
+}

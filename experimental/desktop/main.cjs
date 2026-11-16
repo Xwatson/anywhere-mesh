@@ -1,0 +1,120 @@
+'use strict';
+const { app, BrowserWindow, ipcMain, protocol, session, net, screen } = require('electron');
+const { spawn } = require('node:child_process');
+const { realpathSync, mkdirSync, existsSync } = require('node:fs');
+const { resolve, sep, extname } = require('node:path');
+const { pathToFileURL } = require('node:url');
+const { createInterface } = require('node:readline');
+const { validate, trustedSender } = require('./contract.cjs');
+
+if (process.platform !== 'linux' || !existsSync('/etc/anywhere-crossborder-lab')) throw Error('LAB_LINUX_REQUIRED');
+const profile = '/srv/anywhere-lab/desktop-d/shell-profile';
+mkdirSync(profile, { recursive: true, mode: 0o700 });
+app.setPath('userData', profile);
+app.setName('Anywhere Desktop · 实验版');
+app.disableHardwareAcceleration();
+app.enableSandbox();
+protocol.registerSchemesAsPrivileged([{ scheme: 'anywhere-desktop', privileges: { standard: true, secure: true, supportFetchAPI: false, corsEnabled: false } }]);
+let win, child, stopping, childExited = false, allowQuit = false, nextId = 1, backendReady = false;
+const pending = new Map();
+const single = app.requestSingleInstanceLock();
+if (!single) { allowQuit = true; app.quit(); }
+function request(method, params) {
+  validate(method, params);
+  if (!child || childExited || stopping) return Promise.reject(Error('DESKTOP_BACKEND_UNAVAILABLE'));
+  if (pending.size >= 16) return Promise.reject(Error('TOO_MANY_REQUESTS'));
+  const id = nextId++;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { pending.delete(id); reject(Error('DESKTOP_REQUEST_TIMEOUT')); }, 40000);
+    pending.set(id, { resolve, reject, timer });
+    child.stdin.write(JSON.stringify({ id, method, params }) + '\n');
+  });
+}
+async function stop() {
+  if (stopping) return stopping;
+  stopping = (async () => {
+    if (!child || childExited) return;
+    child.stdin.end();
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(Error('BACKEND_STOP_TIMEOUT')), 50000);
+      child.once('exit', code => { clearTimeout(timer); code === 0 ? resolve() : reject(Error('BACKEND_STOP_FAILED')); });
+    });
+  })(); return stopping;
+}
+if (single) app.whenReady().then(async () => {
+  const assets = realpathSync(resolve(__dirname, 'dist'));
+  protocol.handle('anywhere-desktop', async req => {
+    try {
+      const u = new URL(req.url);
+      if (req.method !== 'GET' || u.host !== 'app' || u.username || u.password || u.search || u.hash) return new Response('Denied', { status: 403 });
+      const path = realpathSync(resolve(assets, '.' + decodeURIComponent(u.pathname)));
+      if (!path.startsWith(assets + sep) || !['.html', '.css', '.js', '.svg', '.png', '.woff2'].includes(extname(path))) return new Response('Denied', { status: 403 });
+      return net.fetch(pathToFileURL(path).href);
+    } catch { return new Response('Not found', { status: 404 }); }
+  });
+  const ses = session.defaultSession;
+  ses.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
+  ses.setPermissionCheckHandler(() => false);
+  ses.on('will-download', event => event.preventDefault());
+  child = spawn('/usr/local/bin/node', [resolve(__dirname, 'controller.mjs')], {
+    stdio: ['pipe', 'pipe', 'pipe'], env: { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: '/home/lab', LANG: 'C.UTF-8', NODE_NO_WARNINGS: '1' },
+  });
+  child.stderr.on('data', chunk => process.stderr.write(chunk));
+  const lines = createInterface({ input: child.stdout });
+  lines.on('line', line => {
+    if (line.length > 256 * 1024) { child.stdin.end(); return; }
+    let msg; try { msg = JSON.parse(line); } catch { child.stdin.end(); return; }
+    if (msg.event === 'ready') backendReady = true;
+    if (!msg.id) return;
+    const waiter = pending.get(msg.id); if (!waiter) return;
+    pending.delete(msg.id); clearTimeout(waiter.timer);
+    msg.error ? waiter.reject(Error(msg.error)) : waiter.resolve(msg.value);
+  });
+  child.once('exit', () => {
+    childExited = true;
+    for (const p of pending.values()) { clearTimeout(p.timer); p.reject(Error('DESKTOP_BACKEND_EXITED')); }
+    pending.clear();
+    if (!stopping) app.quit();
+  });
+  child.on('error', e => console.error('Desktop backend:', e.message));
+  const area = screen.getPrimaryDisplay().workAreaSize;
+  win = new BrowserWindow({ width: Math.min(area.width, 1280), height: Math.min(area.height, 900), minWidth: 900, minHeight: 680,
+    show: false, backgroundColor: '#09090b', title: 'Anywhere Desktop · Linux 实验版', autoHideMenuBar: true,
+    webPreferences: { preload: resolve(__dirname, 'preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false,
+      webSecurity: true, allowRunningInsecureContent: false, webviewTag: false, devTools: false, spellcheck: false },
+  });
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  win.webContents.on('will-navigate', event => event.preventDefault());
+  win.webContents.on('will-attach-webview', event => event.preventDefault());
+  ipcMain.handle('desktop:request', (event, method, params) => {
+    if (!trustedSender(event, win?.webContents)) throw Error('UNTRUSTED_DESKTOP_SENDER');
+    return request(method, params);
+  });
+  win.once('ready-to-show', () => win.show());
+  win.on('closed', () => { win = null; });
+  await win.loadURL('anywhere-desktop://app/index.html');
+  if (process.argv.includes('--lab-smoke')) {
+    const { smoke } = await import('./lab/ui-smoke.mjs');
+    smoke({ app, win, request, ready: () => backendReady }).catch(e => { console.error(e.stack); process.exitCode = 1; app.quit(); });
+  }
+  if (process.argv.includes('--lab-crash-smoke')) {
+    const { crashSmoke } = await import('./lab/crash-smoke.mjs');
+    crashSmoke({ request, ready: () => backendReady, backendPid: child.pid }).catch(e => { console.error(e.stack); process.exitCode = 1; app.quit(); });
+  }
+});
+app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
+app.on('window-all-closed', () => app.quit());
+process.once('SIGTERM', () => app.quit());
+process.once('SIGINT', () => app.quit());
+app.on('before-quit', event => {
+  if (allowQuit) return;
+  event.preventDefault();
+  if (stopping) return;
+  if (win && !win.isDestroyed()) win.hide();
+  stop().then(() => { allowQuit = true; app.quit(); }).catch(e => {
+    console.error('Desktop shutdown:', e.message);
+    // Never silently pretend cleanup succeeded. The scoped systemd UI unit has
+    // an ExecStopPost fallback; the per-task deadline/lease still bound failures.
+    process.exitCode = 1; allowQuit = true; app.quit();
+  });
+});

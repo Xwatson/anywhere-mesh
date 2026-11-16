@@ -5,11 +5,12 @@ import { readFileSync, existsSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { Journal } from '../execution/journal.mjs';
 import { control } from '../execution/control.mjs';
-import { exact, fail } from '../execution/protocol.mjs';
+import { exact, fail, integer } from '../execution/protocol.mjs';
 import { WorkspaceExecutor } from './executor.mjs';
 import { LIFECYCLE } from './catalog.mjs';
 
-export function createWorkspaceMcp(executor) {
+export function createWorkspaceMcp(executor, { waitMs = 10000 } = {}) {
+  integer(waitMs, 0, 10000);
   const server = new Server({ name: 'anywhere-workspace', version: '0.1.0' }, {
     capabilities: { tools: { listChanged: true } },
     instructions: 'Operate only on the bound workspace. Paths are relative. A running or cancelling task is not complete; poll its status. Never repeat an unknown operation. Permissions may change while connected.',
@@ -27,7 +28,7 @@ export function createWorkspaceMcp(executor) {
       }
       const ticket = request.params._meta?.['anywhere/callTicket'];
       if (typeof ticket !== 'string') fail('CALL_TICKET_REQUIRED');
-      return await executor.invoke(name, args, ticket, { signal: extra.signal });
+      return await executor.invoke(name, args, ticket, { waitMs, signal: extra.signal });
     } catch (error) {
       return { isError: true, content: [{ type: 'text', text: error.code ?? error.message }],
         structuredContent: { error: error.code ?? error.message,
@@ -52,7 +53,7 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
   const cfg = JSON.parse(readFileSync(process.argv[2], 'utf8'));
   const journal = new Journal(cfg.journalPath);
   const executor = new WorkspaceExecutor({ journal, binding: cfg.binding, control: (method, params) => control(cfg.brokerSocket, method, params) });
-  const server = createWorkspaceMcp(executor);
+  const server = createWorkspaceMcp(executor, { waitMs: cfg.waitMs ?? 10000 });
   await server.connect(new StdioServerTransport());
   for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, async () => { await server.close(); journal.close(); process.exit(0); });
 }

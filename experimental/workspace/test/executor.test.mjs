@@ -49,6 +49,18 @@ test('task queries and ticket use cannot cross a trusted turn binding',async t=>
   await assert.rejects(other.status(ticket.operationId),/TASK_NOT_BOUND/);
   await assert.rejects(other.invoke('workspace_read_file',{path:'x'},ticket.ticket),/CALL_TICKET_SCOPE_DENIED/);
 });
+test('restart recovery queries only and cannot prepare or dispatch new work',async t=>{
+  const {executor,facade,broker}=setup(t);
+  assert.equal(await executor.recover('never-submitted'),null);
+  const ticket=await executor.issue('before-crash','workspace_read_file',{path:'x'});
+  const key=executor.key('before-crash'),record=facade.get('calls',key);record.operationId=null;facade.put('calls',key,record);
+  const original=executor.control;
+  executor.control=async(method,params)=>{assert.ok(!['prepare','dispatch'].includes(method));return original(method,params);};
+  assert.deepEqual(await executor.recover('before-crash'),{operationId:ticket.operationId,requestHash:ticket.requestHash});
+  assert.equal(broker.journal.all('ops').length,1);
+  assert.equal(broker.get(ticket.operationId).starts,0);
+  assert.equal((await executor.status(ticket.operationId)).structuredContent.task.state,'prepared');
+});
 test('MCP result delivery never acknowledges consumption; only trusted persisted receipts do',async t=>{
   const {executor,broker}=setup(t),ticket=await executor.issue('call','workspace_read_file',{path:'x'});
   const op=broker.get(ticket.operationId);broker.merge({...op,state:'succeeded',taskId:id(),result:{tool:{version:1,ok:true,response:{content:[{type:'text',text:'hello'}]}}},lastSeq:0,starts:1});
