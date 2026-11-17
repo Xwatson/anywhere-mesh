@@ -19,6 +19,8 @@ async function done(id,expected='succeeded'){
   return s&&!s.activeTurn&&p.events.at(-1)?.seq===s.lastSeq&&p.events.at(-1)?.event.type==='turn_end'&&p.events.some(e=>e.event.type==='tool_call'&&e.event.id===expectedTurns.get(id))&&p;
  });
  if(expected==='succeeded')assert.equal(p.events.at(-1).event.ok,true,JSON.stringify(p.events.at(-1)));
+ if(expected==='cancelled')assert.equal(p.events.at(-1).event.error,'已取消');
+ if(expected==='reviewed')assert.equal(p.events.at(-1).event.error,'已核对，结果未知');
  return p;
 }
 try{
