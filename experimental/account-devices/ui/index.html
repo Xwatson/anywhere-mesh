@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>Anywhere · 设备与会话</title><link rel="stylesheet" href="./style.css"><script type="module" src="./app.js"></script></head>
+<body>
+<main id="signin" class="signin"><form id="login"><h1>登录 Anywhere</h1><p id="entry"></p>
+<label>账号<input id="username" autocomplete="username" required maxlength="32"></label>
+<label>密码<input id="password" type="password" autocomplete="current-password" required maxlength="200"></label>
+<button class="primary" type="submit">登录</button><p id="login-error" role="alert"></p></form></main>
+<main id="app" hidden><aside><h1>Anywhere</h1><p id="account"></p>
+<nav><button id="sessions-nav">项目会话</button><button id="admin-nav" hidden>设备管理</button></nav>
+<section><h2>我的设备</h2><ul id="devices"></ul></section><section><h2>我的会话</h2><ul id="sessions"></ul></section>
+<button id="logout" class="bottom">退出登录</button></aside>
+<div class="main"><p id="error" role="alert" hidden></p><section id="chat">
+<form id="create"><label>本机项目<select id="project" aria-label="本机项目"></select></label>
+<label>会话名称<input id="title" required maxlength="80" placeholder="新会话名称"></label><button class="primary">新建会话</button></form>
+<div id="grant"><label>本机项目权限<select id="mode"><option value="revoked">撤销</option><option value="read">只读</option><option value="edit">编辑</option><option value="execute">执行</option></select></label><button id="apply">应用权限</button></div>
+<section id="conversation" hidden><header><div><h2 id="session-title"></h2><p id="target"></p></div><span id="presence"></span></header>
+<p id="notice" role="status"></p><div id="events"></div>
+<form id="compose"><label>发给模拟宿主<textarea id="draft" maxlength="8192" placeholder="/read notes.txt"></textarea></label><div class="actions">
+<button type="button" id="stop" hidden>停止任务</button><button class="primary" id="send">发送</button></div></form></section>
+<p id="empty">从左侧打开会话，或在本机项目上新建会话。</p></section>
+<section id="management" hidden><header><h2>设备管理</h2></header><div id="fleet"></div></section></div></main>
+</body></html>

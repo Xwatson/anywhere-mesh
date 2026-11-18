@@ -16,7 +16,12 @@ export class SessionHost extends EventEmitter {
   }
   workspace(id) { uuid(id); const w = this.workspaces.get(id); if (!w) throw Error('WORKSPACE_NOT_ALLOWED'); return w; }
   broker(w, method, params = {}) { return control(w.brokerDir + '/control.sock', method, params); }
-  session(id) { const s = this.store.session(id); this.workspace(s.workspaceId); return s; }
+  session(id) {
+    const s = this.store.session(id), w = this.workspace(s.workspaceId);
+    if (this.config.accountId && this.config.requireDeviceBinding &&
+        (s.accountId !== this.config.accountId || s.deviceId !== w.grant.deviceId)) throw Error('SESSION_TARGET_MISMATCH');
+    return s;
+  }
   sessions() { return this.store.all('sessions').map(s => ({ ...s, activeTurn: s.activeTurnId ? this.publicTurn(this.store.get('turns', s.activeTurnId)) : null })).sort((a,b) => b.updatedAt-a.updatedAt); }
   publicTurn(t) { if (!t) return null; return { id: t.id, sessionId: t.sessionId, workspaceId: t.workspaceId, operationId: t.operationId ?? null,
     state: t.state, done: Boolean(t.done), consumed: Boolean(t.consumed), cancelRequested: Boolean(t.cancelRequested), outcome: t.outcome ?? null }; }
@@ -26,7 +31,11 @@ export class SessionHost extends EventEmitter {
         phase:info.phase,confirmed:info.confirmed,permission:{mode:info.grant.mode,version:info.grant.grantVersion},blockers:info.blockers.length };
     }));
   }
-  create(body) { fields(body,['requestId','workspaceId','title']);this.workspace(body.workspaceId);return this.store.create(body); }
+  create(body) {
+    fields(body,['requestId','workspaceId','title']);
+    const w = this.workspace(body.workspaceId);
+    return this.store.create(body, this.config.requireDeviceBinding ? w.grant : undefined);
+  }
   async send(sessionId, body) {
     fields(body,['requestId','text']); uuid(body.requestId); text(body.text);
     const s = this.session(sessionId), payload = { kind:'send',sessionId,text:body.text }, prior = this.store.request(body.requestId,payload);
@@ -37,6 +46,8 @@ export class SessionHost extends EventEmitter {
     let binding;
     if (!parsed.help) {
       const remote = await this.broker(w,'workspace');
+      if (this.config.requireDeviceBinding && (remote.grant.accountId !== s.accountId ||
+          remote.grant.deviceId !== s.deviceId || remote.grant.workspaceId !== s.workspaceId)) throw Error('SESSION_TARGET_MISMATCH');
       const concurrentReceipt = this.store.request(body.requestId,payload);
       if (concurrentReceipt) return concurrentReceipt;
       if (!remote.confirmed || remote.blockers.length || this.store.all('turns').some(t=>t.workspaceId===w.id&&!t.consumed&&!t.done)) throw Error('WORKSPACE_NOT_READY');

@@ -6,4 +6,4 @@ The desktop/session architecture, deployment, recovery rules, limitations and re
 
 The mock accepts `/read path`, `/list [path]`, `/search pattern`, `/append path text`, `/build`, `/long` and `/run command`. Natural language returns usage help rather than executing inferred commands. Edits require a same-session file read revision; execution requires local execute permission. This deterministic adapter validates transport and tools, not AI coding quality or real CLI compatibility.
 
-The host uses the existing `StoredEvent`/tool-card format, but is an isolated experimental service with fixed laboratory identities. Integrating it with production account/project APIs is pending. Do not install it as a real account backend or declare the F CLI integration complete.
+The D2 entry point uses fixed laboratory identities. [D3](../account-devices/README.md) reuses this runtime per authenticated account and stores the execution device in each session. Production account/project integration and F's real CLI validation are pending.

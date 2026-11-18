@@ -20,14 +20,15 @@ export class SessionStore extends Journal {
     return r?.result;
   }
   receipt(id, payload, result) { this.put('requests', id, { digest: hash(payload), result }); }
-  create({ requestId, workspaceId, title }) {
+  create({ requestId, workspaceId, title }, target) {
     uuid(requestId); uuid(workspaceId); text(title, 80);
-    const payload = { kind: 'create', workspaceId, title }, prior = this.request(requestId, payload);
+    const identity = target ? { accountId: target.accountId, deviceId: target.deviceId } : {};
+    const payload = { kind: 'create', workspaceId, title, ...identity }, prior = this.request(requestId, payload);
     if (prior) return prior;
     this.ensureCapacity(512 * 1024);
     if (this.all('sessions').length >= 50) throw Error('SESSION_LIMIT');
     return this.tx(() => {
-      const s = { id: randomUUID(), workspaceId, title, createdAt: Date.now(), updatedAt: Date.now(), historyEpoch: randomUUID(), lastSeq: 0, activeTurnId: null };
+      const s = { id: randomUUID(), workspaceId, ...identity, title, createdAt: Date.now(), updatedAt: Date.now(), historyEpoch: randomUUID(), lastSeq: 0, activeTurnId: null };
       this.put('sessions', s.id, s); this.receipt(requestId, payload, s); return s;
     });
   }

@@ -7,14 +7,16 @@ const { pathToFileURL } = require('node:url');
 const { createInterface } = require('node:readline');
 const { trustedSender } = require('./contract.cjs');
 const sessionsProfile = process.argv.includes('--lab-sessions');
-const appDir = sessionsProfile ? resolve(__dirname, '../desktop-sessions') : __dirname;
+const deviceSlot = process.argv.find(arg => /^--lab-device=[ab]$/.test(arg))?.at(-1);
+const appDir = deviceSlot ? resolve(__dirname,'../account-devices') : sessionsProfile ? resolve(__dirname, '../desktop-sessions') : __dirname;
 const contract = require(resolve(appDir, 'contract.cjs'));
 const validate = contract.internalValidate ?? contract.validate;
 const validatePublic = contract.publicValidate ?? contract.validate;
 let testPickerPath;
 
 if (process.platform !== 'linux' || !existsSync('/etc/anywhere-crossborder-lab')) throw Error('LAB_LINUX_REQUIRED');
-const profile = sessionsProfile ? '/srv/anywhere-lab/desktop-d2/shell-profile' : '/srv/anywhere-lab/desktop-d/shell-profile';
+const profile = deviceSlot ? '/srv/anywhere-lab/d3/shell-'+deviceSlot :
+  sessionsProfile ? '/srv/anywhere-lab/desktop-d2/shell-profile' : '/srv/anywhere-lab/desktop-d/shell-profile';
 mkdirSync(profile, { recursive: true, mode: 0o700 });
 app.setPath('userData', profile);
 app.setName('Anywhere Desktop · 实验版');
@@ -48,7 +50,7 @@ async function stop() {
   })(); return stopping;
 }
 if (single) app.whenReady().then(async () => {
-  const assets = realpathSync(resolve(appDir, 'dist'));
+  const assets = realpathSync(resolve(appDir, deviceSlot ? 'ui' : 'dist'));
   protocol.handle('anywhere-desktop', async req => {
     try {
       const u = new URL(req.url);
@@ -62,7 +64,7 @@ if (single) app.whenReady().then(async () => {
   ses.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
   ses.setPermissionCheckHandler(() => false);
   ses.on('will-download', event => event.preventDefault());
-  child = spawn('/usr/local/bin/node', [resolve(appDir, 'controller.mjs')], {
+  child = spawn('/usr/local/bin/node', [resolve(appDir, 'controller.mjs'), ...(deviceSlot ? [deviceSlot] : [])], {
     stdio: ['pipe', 'pipe', 'pipe'], env: { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: '/home/lab', LANG: 'C.UTF-8', NODE_NO_WARNINGS: '1' },
   });
   child.stderr.on('data', chunk => process.stderr.write(chunk));
@@ -107,6 +109,10 @@ if (single) app.whenReady().then(async () => {
   win.once('ready-to-show', () => win.show());
   win.on('closed', () => { win = null; });
   await win.loadURL('anywhere-desktop://app/index.html');
+  if (deviceSlot === 'b' && process.argv.includes('--lab-device-smoke')) {
+    const { smoke } = await import('../account-devices/lab/gui.mjs');
+    smoke({app,win,BrowserWindow,session}).catch(e=>{console.error(e.message);app.quit();});
+  }
   if (sessionsProfile && process.argv.includes('--lab-sessions-smoke')) {
     const { smoke } = await import('../desktop-sessions/lab/ui-smoke.mjs');
     smoke({ app, win, request, ready: () => backendReady, pick: path => { testPickerPath = path; } }).catch(e => { console.error(e.stack); app.quit(); });
