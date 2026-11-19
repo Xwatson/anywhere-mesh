@@ -1,6 +1,5 @@
 """Deploy the test host and an EasyTier endpoint into a dedicated systemd network namespace."""
 import hashlib
-import ipaddress
 import json
 import os
 from pathlib import Path
@@ -9,9 +8,10 @@ import subprocess
 import sys
 import tarfile
 from tempfile import TemporaryDirectory
+from wan_endpoint import endpoint
 
 stage=Path(sys.argv[1]).resolve()
-public=str(ipaddress.IPv4Address(sys.argv[2]))
+public,domain=endpoint(sys.argv[2])
 root=Path('/opt/anywhere-wan')
 etc=Path('/etc/anywhere-wan')
 units=Path('/etc/systemd/system')
@@ -105,7 +105,8 @@ CapabilityBoundingSet=
 MemoryMax=640M
 TasksMax=128
 {common}''')
-for suffix,listen,target in [('wire',public+':31483','127.0.0.1:31483'),('admin','127.0.0.1:18443','10.203.73.2:18443')]:
+wire_host='127.0.0.1' if domain else public
+for suffix,listen,target in [('wire',wire_host+':31483','127.0.0.1:31483'),('admin','127.0.0.1:18443','10.203.73.2:18443')]:
     name='anywhere-wan-'+suffix
     config(units/(name+'.socket'),f'[Unit]\nDescription=Anywhere WAN {suffix} listener\n[Socket]\nListenStream={listen}\nNoDelay=true\n')
     config(units/(name+'.service'),f'''[Unit]

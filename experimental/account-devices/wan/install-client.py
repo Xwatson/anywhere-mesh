@@ -1,8 +1,9 @@
 """Configure a second, independent A/B experiment in the existing Ubuntu build guest."""
-import ipaddress, json, os, pwd, shutil, subprocess, sys
+import json, os, pwd, shutil, subprocess, sys
 from pathlib import Path
+from wan_endpoint import endpoint
 
-stage=Path(sys.argv[1]).resolve(); public=str(ipaddress.IPv4Address(sys.argv[2]))
+stage=Path(sys.argv[1]).resolve(); public,domain=endpoint(sys.argv[2])
 base=Path('/srv/anywhere-lab/wan')
 etc=Path('/etc/anywhere-wan-cn'); units=Path('/etc/systemd/system')
 app=Path('/usr/lib/anywhere-d3-runtime/experimental')
@@ -26,7 +27,31 @@ directory(base/'test','lab','lab',0o700)
 copy(stage/'accounts.json',base/'test/accounts.json',0o600);shutil.chown(base/'test/accounts.json','lab','lab')
 # Net and client units depend only on this disposable container. The original D3 network keeps its own leases.
 image='sha256:504c7dee6f93249b73e401a50fbe0b153768bbcf031357a8a13edb71f3060d5b'
-container='anywhere-wan-cn'
+container='anywhere-wan-domain-cn' if domain else 'anywhere-wan-cn'
+mounts=[]
+net_wants=net_pre=''
+if domain:
+    for module in ['wan_endpoint.py','resolve-peer.py']:
+        copy(source/'account-devices/wan'/module,etc/module)
+    resolver=f'/usr/bin/python3 {etc}/resolve-peer.py {public}'
+    run('/usr/bin/python3',etc/'resolve-peer.py',public)
+    mounts=['--env','WAN_PORT=443','-v',str(etc/'peer.hosts')+':/etc/hosts:ro']
+    net_pre='ExecStartPre='+resolver+'\n'
+    net_wants='Wants=anywhere-wan-peer-dns.timer\n'
+    put(units/'anywhere-wan-peer-dns.service',f'''[Unit]
+Description=Refresh the WAN relay addresses on the VM
+[Service]
+Type=oneshot
+ExecStart={resolver}
+''')
+    put(units/'anywhere-wan-peer-dns.timer','''[Unit]
+Description=Follow DNS changes for the WAN relay while the test network is running
+PartOf=anywhere-wan-cn.service
+[Timer]
+OnActiveSec=60s
+OnUnitActiveSec=60s
+AccuracySec=5s
+''')
 prior=subprocess.run(['docker','inspect','-f','{{index .Config.Labels "anywhere.wan-endpoint"}}',container],
                      capture_output=True,text=True)
 if prior.returncode:
@@ -35,13 +60,13 @@ if prior.returncode:
         '--device','/dev/net/tun','--security-opt','no-new-privileges','--pids-limit','96','--memory','192m',
         '--cpus','0.75','--tmpfs','/tmp:size=16m,mode=1777','--log-opt','max-size=3m','--log-opt','max-file=2',
         '--sysctl','net.ipv6.conf.all.disable_ipv6=1','-v',str(etc/'network.toml')+':/etc/wan.toml:ro',
-        '-v',str(etc/'client-net.sh')+':/client-net.sh:ro','--entrypoint','/bin/sh',image,'/client-net.sh')
+        '-v',str(etc/'client-net.sh')+':/client-net.sh:ro',*mounts,'--entrypoint','/bin/sh',image,'/client-net.sh')
 elif prior.stdout.strip()!=public:
     raise SystemExit('WAN container name already in use')
 put(etc/'start-net.sh','''#!/bin/sh
 set -eu
-/usr/bin/docker start anywhere-wan-cn >/dev/null
-pid=$(/usr/bin/docker inspect -f '{{.State.Pid}}' anywhere-wan-cn)
+/usr/bin/docker start @CONTAINER@ >/dev/null
+pid=$(/usr/bin/docker inspect -f '{{.State.Pid}}' @CONTAINER@)
 test "$pid" -gt 1
 ln -sfn "/proc/$pid/ns/net" /run/anywhere-wan-cn/netns
 for i in $(seq 1 80); do
@@ -49,28 +74,30 @@ for i in $(seq 1 80); do
   sleep 0.25
 done
 exit 1
-''',0o755)
+'''.replace('@CONTAINER@',container),0o755)
 put(units/'anywhere-wan-cn.service',f'''[Unit]
 Description=Anywhere isolated WAN test network
 Requires=docker.service
-After=docker.service
+{net_wants}After=docker.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
 RuntimeDirectory=anywhere-wan-cn
-ExecStart={etc}/start-net.sh
+{net_pre}ExecStart={etc}/start-net.sh
 ExecStop=/usr/bin/docker stop -t 3 {container}
 ''')
 for mod in ['desktop','account-devices']:
     directory(shell/mod)
 for f in ['main.cjs','contract.cjs','package.json']:copy(source/'desktop'/f,shell/'desktop'/f)
-copy(source/'account-devices/controller.mjs',shell/'account-devices/controller.mjs')
+for filename in ['main.mjs','client.mjs','controller.mjs']:
+    copy(source/'account-devices'/filename,shell/'account-devices'/filename)
 directory(shell/'account-devices/lab')
 copy(source/'account-devices/lab/gui.mjs',shell/'account-devices/lab/gui.mjs')
 for f in ['ui','preload.cjs','contract.cjs']:
     dest=shell/'account-devices'/f
     if not dest.exists():dest.symlink_to(app/'account-devices'/f)
-if not (shell/'execution').exists():(shell/'execution').symlink_to(app/'execution')
+for module in ['execution','desktop-commander']:
+    if not (shell/module).exists():(shell/module).symlink_to(app/module)
 for slot in ('a','b'):
     user='anywhere-wan-'+slot
     try:pwd.getpwnam(user)
@@ -94,7 +121,7 @@ User={user}
 Group={user}
 SupplementaryGroups=anywhere-exec-agent
 NetworkNamespacePath=/run/anywhere-wan-cn/netns
-ExecStart=/usr/bin/flock --nonblock --no-fork {base}/{slot}/process.lock /usr/local/bin/node {app}/account-devices/main.mjs client {etc}/{slot}.json
+ExecStart=/usr/bin/flock --nonblock --no-fork {base}/{slot}/process.lock /usr/local/bin/node {shell}/account-devices/main.mjs client {etc}/{slot}.json
 WorkingDirectory={base}
 KillMode=control-group
 NoNewPrivileges=yes

@@ -1,11 +1,12 @@
 """Create new, owner-only test identities. The server receives only server.toml and account bootstrap input."""
-import base64, ipaddress, json, os, secrets, sys, uuid
+import base64, json, os, secrets, sys, uuid
 from pathlib import Path
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+from wan_endpoint import endpoint, peer_uri, wire_listener
 
 os.umask(0o077)
-dest=Path(sys.argv[1]);public=str(ipaddress.IPv4Address(sys.argv[2]))
+dest=Path(sys.argv[1]);public,domain=endpoint(sys.argv[2])
 dest.mkdir(mode=0o700,exist_ok=False)
 secret=secrets.token_urlsafe(32)
 keys={}
@@ -17,12 +18,12 @@ for role in ('server','client'):
 for role,addr in [('server','2'),('client','1')]:
     lines=['hostname = "wan-'+role+'"','instance_name = "wan-'+role+'"','instance_id = "'+str(uuid.uuid4())+'"',
            'dhcp = false','ipv4 = "10.203.73.'+addr+'/24"',
-           'listeners = '+('["wss://127.0.0.1:31483/"]' if role=='server' else '[]'),
+           'listeners = '+(json.dumps([wire_listener(domain)]) if role=='server' else '[]'),
            'stun_servers = []','stun_servers_v6 = []','[network_identity]','network_name = "anywhere-wan-test"',
            'network_secret = "'+secret+'"','[secure_mode]','enabled = true',
            'local_private_key = "'+keys[role][0]+'"','local_public_key = "'+keys[role][1]+'"']
     if role=='client':
-        lines+=['[[peer]]','uri = "wss://'+public+':31483/"','peer_public_key = "'+keys['server'][1]+'"']
+        lines+=['[[peer]]','uri = '+json.dumps(peer_uri(public)),'peer_public_key = "'+keys['server'][1]+'"']
     lines+=['[flags]','dev_name = "awwan0"','default_protocol = "wss"','enable_encryption = true',
             'enable_ipv6 = false','disable_p2p = true','need_p2p = false','disable_udp_hole_punching = true',
             'disable_tcp_hole_punching = true','disable_sym_hole_punching = true','disable_upnp = true',

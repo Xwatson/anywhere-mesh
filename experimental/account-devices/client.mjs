@@ -15,15 +15,18 @@ register(); CAPABILITIES.push('workspace.grants.v1','history.archive.v1','review
 
 export function request(url, tls, method, path, data, token) {
   const raw=data===undefined ? undefined : JSON.stringify(data);
+  // An unconnected socket may never reach its inactivity timeout. Bound the whole request.
+  const deadline=AbortSignal.timeout(10000);
   return new Promise((resolve,reject)=>{
-    const req=https.request(new URL(path,url),{...tls,method,timeout:8000,agent:false,headers:{
+    const req=https.request(new URL(path,url),{...tls,method,timeout:8000,signal:deadline,headers:{
       ...(token ? {Authorization:'Bearer '+token} : {}), ...(raw ? {'Content-Type':'application/json'} : {})
     }},res=>{
       const chunks=[];let size=0;
       res.on('error',reject);res.on('data',part=>{size+=part.length;if(size>1024*1024)req.destroy(Error('RESPONSE_LIMIT'));else chunks.push(part);});
       res.on('end',()=>{try {const b=JSON.parse(Buffer.concat(chunks)); if(res.statusCode!==200)throw Error(b.error??'REMOTE_ERROR');resolve(b);} catch(e){reject(e);}});
     });
-    req.on('error',reject);req.on('timeout',()=>req.destroy(Error('NETWORK_TIMEOUT')));req.end(raw);
+    req.on('error',error=>reject(deadline.aborted?Error('NETWORK_TIMEOUT'):error));
+    req.on('timeout',()=>req.destroy(Error('NETWORK_TIMEOUT')));req.end(raw);
   });
 }
 
