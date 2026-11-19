@@ -17,6 +17,7 @@ register();
 CAPABILITIES.push('workspace.grants.v1', 'history.archive.v1', 'review.v1');
 
 export async function startServer(config) {
+  const CodexTurns = config.codexSocket ? (await import('../session-host/codex-turns.mjs')).CodexTurns : null;
   const accounts = new Map(), projects = new Map(), opening = new Map(), online = new Map();
   const socketServer = new WebSocketServer({ noServer:true, perMessageDeflate:false, maxPayload:65536 });
   function account(id) {
@@ -24,6 +25,7 @@ export async function startServer(config) {
       const stateDir = join(config.stateDir,'u'+id);
       const host = new SessionHost({stateDir, accountId:String(id), requireDeviceBinding:true,
         workspaces:[], mcpPath:config.mcpPath});
+      if (CodexTurns) host.codex = new CodexTurns(host,config.codexSocket,config.codexCwd);
       accounts.set(id,host);
     }
     return accounts.get(id);
@@ -137,7 +139,7 @@ export async function startServer(config) {
     }
     const host=account(user.id);
     if (req.method==='GET' && path==='/api/state') {
-      json(res,200,{user,deviceId,devices:deviceRows(user.id),projects:workspaceRows(user.id,deviceId),sessions:host.sessions()}); return;
+      json(res,200,{user,deviceId,chatEngine:host.codex?'codex':'mock',devices:deviceRows(user.id),projects:workspaceRows(user.id,deviceId),sessions:host.sessions()}); return;
     }
     if (req.method==='POST' && path==='/api/sessions') {
       const input=await body(req); fields(input,['workspaceId','title','requestId']);

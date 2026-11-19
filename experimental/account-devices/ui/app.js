@@ -61,6 +61,7 @@ function render() {
   const device=state.devices.find(d=>d.id===state.deviceId);
   el('signin').hidden=true;el('app').hidden=false;
   el('account').textContent=state.user.username+(device?' · '+device.name:' · 网页端');
+  el('logout').disabled=busy;
   el('admin-nav').hidden=!state.user.isAdmin;
   if(tab==='admin'&&!state.user.isAdmin)tab='sessions';
   el('management').hidden=tab!=='admin';el('chat').hidden=tab==='admin';
@@ -88,6 +89,8 @@ function render() {
   const d=s && state.devices.find(d=>d.id===s.deviceId),w=s && state.projects.find(p=>p.id===s.workspaceId);
   el('empty').hidden=Boolean(s);el('conversation').hidden=!s;
   if(s && d) {
+    el('recipient').textContent=state.chatEngine==='codex'?'发给 Codex':'发给模拟宿主';
+    el('draft').placeholder=state.chatEngine==='codex'?'例如：请读取 notes.txt 的第一行':'/read notes.txt';
     el('session-title').textContent=s.title;
     el('target').textContent='执行设备 · '+nameOf(d)+'  /  '+(w?.label??'未知项目');
     el('presence').textContent=status(d);el('presence').className=online&&d.online?'online':'offline';el('presence').title=seen(d);
@@ -103,11 +106,12 @@ function render() {
   if(tab==='admin')renderFleet();
 }
 function renderHistory() {
-  const items=history.filter(r=>r.event.type==='user_message'||r.event.type==='tool_call'||r.event.type==='assistant_text');
+  const items=history.filter(r=>['user_message','tool_call','assistant_text'].includes(r.event.type)||(r.event.type==='turn_end'&&!r.event.ok));
   const lastTool=new Map(items.filter(r=>r.event.type==='tool_call').map(r=>[r.event.id,r.seq]));
   el('events').replaceChildren(...items.filter(r=>r.event.type!=='tool_call'||lastTool.get(r.event.id)===r.seq).map(({event:e})=>{
-    const n=node('article');n.append(node('strong',e.type==='user_message'?'你':e.type==='tool_call'?e.name:'模拟宿主'));
-    n.append(node('pre',e.type==='tool_call'?(e.output??e.status):(e.text??'')));return n;
+    const n=node('article');n.dataset.type=e.type;
+    n.append(node('strong',e.type==='user_message'?'你':e.type==='tool_call'?e.name:e.type==='turn_end'?'回合状态':e.engine==='codex'?'Codex':'助手'));
+    n.append(node('pre',e.type==='tool_call'?(e.output??e.status):(e.text??e.error??'')));return n;
   }));
 }
 async function refresh() {

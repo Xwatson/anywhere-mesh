@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { hostname } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import tls from 'node:tls';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -23,7 +23,7 @@ async function requireFreePort(port) {
 }
 await requireFreePort(31844);
 await requireFreePort(31897);
-const peer = spawn(fileURLToPath(new URL('./PeerHost.exe', import.meta.url)), [], {
+const peer = spawn(fileURLToPath(new URL('./PeerHost.exe', import.meta.url)), [join(dirname(process.execPath),'easytier-core.exe')], {
   cwd: root, stdio: ['pipe','ignore','ignore'], windowsHide: true
 });
 peer.stdin.on('error',()=>{});

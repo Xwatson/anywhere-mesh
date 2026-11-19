@@ -17,7 +17,7 @@
 <div id="grant"><label>本机项目权限<select id="mode"><option value="revoked">撤销</option><option value="read">只读</option><option value="edit">编辑</option><option value="execute">执行</option></select></label><button id="apply">应用权限</button></div>
 <section id="conversation" hidden><header><div><h2 id="session-title"></h2><p id="target"></p></div><span id="presence"></span></header>
 <p id="notice" role="status"></p><div id="events"></div>
-<form id="compose"><label>发给模拟宿主<textarea id="draft" maxlength="8192" placeholder="/read notes.txt"></textarea></label><div class="actions">
+<form id="compose"><label><span id="recipient">消息</span><textarea id="draft" maxlength="8192" placeholder="输入消息"></textarea></label><div class="actions">
 <button type="button" id="stop" hidden>停止任务</button><button class="primary" id="send">发送</button></div></form></section>
 <p id="empty">从左侧打开会话，或在本机项目上新建会话。</p></section>
 <section id="management" hidden><header><h2>设备管理</h2></header><div id="fleet"></div></section></div></main>

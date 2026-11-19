@@ -23,6 +23,12 @@
 3. 在已配置 Nginx 和 Certbot 账号的源站运行 `python3 publish-domain.py awc.xbxbe.com /opt/web-desktop-certbot/bin/certbot`。HTTP-01 验证目录为 `/var/www/anywhere-wan-acme`。系统每天两次检查本域名证书，续签成功后平滑重载 Nginx。EasyTier 上游和业务上游分别绑定源站回环端口 31483、18443。
 4. 将 `client.toml`、`accounts.json`、远端的公有 `ca.crt` 和 `server.crt` 放入飞牛 VM 私有暂存目录。同步本分支的 `experimental/` 后运行 `sudo python3 experimental/account-devices/wan/install-client.py STAGE awc.xbxbe.com`。VM 首次启动和运行中每分钟解析该域名，向专用容器提供 IPv4 地址。只有网络进程可经物理出口连接解析出的地址和 TCP 443。设备 A、B 在隧道内访问业务端口 18443。
 
+## 实验会话连接已登录的 Codex
+
+在完成上述部署的美国机上，`desktop` 用户运行的 Codex CLI 0.170.0 已登录。构建机用 `bash experimental/account-devices/wan/build.sh STAGE` 生成服务端与 MCP，将同目录的 `codex-service.py`、`anywhere-wan-codex.socket`、`anywhere-wan-codex@.service`、`deploy-codex.py` 一起复制到美国机的构建产物目录。在该机以部署管理员执行 `python3 STAGE/deploy-codex.py STAGE`。升级会检查实验服务的活动回合，重启该服务并检查 HTTPS 健康状态。
+
+登录客户端，打开有本机授权的会话，便可从「发给 Codex」发送自然语言消息。美国端按会话持久化线程编号，读取工具经已有 Workspace MCP 和设备连接执行。生成中点击「停止任务」可中断当前回合。设备诊断命令（如 `/read notes.txt`）继续使用模拟宿主。
+
 ## 复测和生命周期
 
 NAS 实验根目录下执行以下命令。测试程序使用飞牛 VM 中的两个客户端，重启远端的测试会话宿主后自动验证恢复。SSH 私钥保留在 NAS。

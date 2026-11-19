@@ -1,0 +1,13 @@
+[Unit]
+Description=Private Codex transport for the Anywhere lab host
+
+[Socket]
+ListenStream=/run/anywhere-wan-codex.sock
+Accept=yes
+SocketUser=anywhere-wan
+SocketMode=0600
+MaxConnections=8
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

@@ -2,13 +2,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { link, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 test('installed Windows reader pins the project and pages only bounded, single-link UTF-8 files', {skip:process.platform!=='win32'}, async t=>{
   const base=join(process.env.LOCALAPPDATA,'AnywhereCodingLab');
-  const release=(await readFile(join(base,'Start-Anywhere.cmd'),'utf8')).match(/app-[A-F0-9]{16}/)[0];
-  const native=join(base,'runtime',release,'experimental','account-devices','windows');
+  const nodeDir=dirname(process.execPath);
+  const app=basename(nodeDir)==='tools' && basename(dirname(nodeDir))==='resources' ? join(dirname(nodeDir),'app') :
+    join(base,'runtime',(await readFile(join(base,'Start-Anywhere.cmd'),'utf8')).match(/app-[A-F0-9]{16}/)[0]);
+  const native=join(app,'experimental','account-devices','windows');
   const {windowsReader}=await import(pathToFileURL(join(native,'read.mjs')));
   const adapter=windowsReader(join(native,'WorkspaceSnapshot.exe'));
   const temp=await mkdtemp(join(tmpdir(),'anywhere-read-test-'));

@@ -13,6 +13,8 @@ type RequestId = string | number;
 export interface CodexAppServerOptions {
   /** Stop the process after this long without calls; 0 keeps it until stop(). */
   idleMs?: number;
+  /** Cold workers may need time to refresh the model catalog during initialization. */
+  initializeTimeoutMs?: number;
   env?: NodeJS.ProcessEnv;
   /** Config overrides for this process only, as for `codex -c key=value`. */
   config?: string[];
@@ -170,7 +172,7 @@ export class CodexAppServer {
       const timer = setTimeout(() => {
         this.waiters.delete(id);
         reject(new Error(`codex app-server 请求超时: ${method}`));
-      }, TIMEOUT_MS);
+      }, method === 'initialize' ? this.opts.initializeTimeoutMs ?? TIMEOUT_MS : TIMEOUT_MS);
       this.waiters.set(id, {
         resolve: (v) => (clearTimeout(timer), resolve(v as T)),
         reject: (e) => (clearTimeout(timer), reject(e)),

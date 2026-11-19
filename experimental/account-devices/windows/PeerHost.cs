@@ -29,7 +29,7 @@ internal static class PeerHost {
     [DllImport("kernel32.dll", SetLastError = true)]
     static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
 
-    static int Main() {
+    static int Main(string[] args) {
         try {
             var limits = new ExtendedLimits();
             limits.Basic.Flags = 0x2000; // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
@@ -39,7 +39,9 @@ internal static class PeerHost {
             if (job == IntPtr.Zero || !SetInformationJobObject(job,9,ref limits,Marshal.SizeOf(limits)) ||
                 !AssignProcessToJobObject(job,Process.GetCurrentProcess().Handle)) return 1;
             string root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AnywhereCodingLab");
-            var start = new ProcessStartInfo(Path.Combine(root,@"runtime\easytier-core.exe")) {
+            string executable = args.Length == 0 ? Path.Combine(root,@"runtime\easytier-core.exe") : args[0];
+            if (args.Length > 1 || !Path.IsPathRooted(executable) || Path.GetFileName(executable) != "easytier-core.exe") return 1;
+            var start = new ProcessStartInfo(executable) {
                 Arguments = "--disable-env-parsing --config-file \"" + Path.Combine(root,"windows.toml") +
                     "\" --rpc-portal 127.0.0.1:31897 --console-log-level error",
                 WorkingDirectory = root, UseShellExecute = false, CreateNoWindow = true,

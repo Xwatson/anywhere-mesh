@@ -42,7 +42,9 @@ export class SessionHost extends EventEmitter {
     if (prior) return prior;
     if (s.activeTurnId) throw Error('SESSION_BUSY');
     const w = this.workspace(s.workspaceId);
-    const parsed = parseMock(body.text, path => this.store.get('revisions',hash({sessionId,workspaceId:w.id,path}))?.revision);
+    const diagnostic = /^\s*\/(?:read|list|search|append|build|long|run|help)(?:\s|$)/.test(body.text);
+    const parsed = this.codex && !diagnostic ? { engine:'codex', text:body.text, calls:[] } :
+      parseMock(body.text, path => this.store.get('revisions',hash({sessionId,workspaceId:w.id,path}))?.revision);
     let binding;
     if (!parsed.help) {
       const remote = await this.broker(w,'workspace');
@@ -54,7 +56,7 @@ export class SessionHost extends EventEmitter {
       const modes = parsed.tool==='workspace_run'?['execute']:parsed.tool==='workspace_write_file'?['edit','execute']:['read','edit','execute'];
       if (!modes.includes(remote.grant.mode)) throw Error('LOCAL_PERMISSION_REQUIRED');
       const supported=remote.sandbox?.supportedTools;
-      if (supported!==undefined && !(Array.isArray(supported)&&supported.includes(parsed.tool))) throw Error('TOOL_UNAVAILABLE_ON_DEVICE');
+      if (parsed.tool && supported!==undefined && !(Array.isArray(supported)&&supported.includes(parsed.tool))) throw Error('TOOL_UNAVAILABLE_ON_DEVICE');
       binding = Object.fromEntries(['accountId','deviceId','workspaceId','grantVersion'].map(k=>[k,remote.grant[k]]));
     }
     this.store.ensureCapacity(1024*1024);
@@ -69,21 +71,21 @@ export class SessionHost extends EventEmitter {
         turn.done=true;turn.consumed=true;turn.state='succeeded';
         this.store.append(s.id,{type:'assistant_text',id:randomUUID(),text:parsed.help});this.store.append(s.id,{type:'turn_end',ok:true});
       }else{
-        this.store.append(s.id,{type:'tool_call',id,name:parsed.tool,input:parsed.args,status:'running'});
+        if (parsed.tool) this.store.append(s.id,{type:'tool_call',id,name:parsed.tool,input:parsed.args,status:'running'});
         const current=this.session(s.id);current.activeTurnId=id;this.store.put('sessions',s.id,current);
       }
       this.store.put('turns',id,turn);const reply={sessionId:s.id,workspaceId:w.id,historyEpoch:s.historyEpoch,turnId:id,acceptedSeq:this.session(s.id).lastSeq};this.store.receipt(body.requestId,payload,reply);return reply;
     });
     this.emit('events',s.id);
     const turn=this.store.get('turns',result.turnId);
-    if(!turn.done)this.track(this.dispatch(turn));return result;
+    if(!turn.done)this.track(turn.engine==='codex' ? this.codex.run(turn) : this.dispatch(turn));return result;
   }
   track(p) { this.work.add(p);p.catch(e=>console.error('host background:',e.message)).finally(()=>this.work.delete(p));return p; }
   async host(t) {
     if(this.hosts.has(t.id))return this.hosts.get(t.id);
     const w=this.workspace(t.workspaceId),path=`${this.config.stateDir}/call-${t.id}.json`;
     await writeFile(path,JSON.stringify({binding:t.binding,journalPath:this.store.path,brokerSocket:w.brokerDir+'/control.sock',waitMs:0}),{mode:0o600});
-    const client=new Client({name:'anywhere-session-mock',version:'0.2.0'}),transport=new StdioClientTransport({command:process.execPath,args:[this.config.mcpPath,path],stderr:'pipe',env:{PATH:'/usr/local/bin:/usr/bin:/bin',LANG:'C.UTF-8'}});
+    const client=new Client({name:'anywhere-session-'+(t.engine??'mock'),version:'0.2.0'}),transport=new StdioClientTransport({command:process.execPath,args:[this.config.mcpPath,path],stderr:'pipe',env:{PATH:'/usr/local/bin:/usr/bin:/bin',LANG:'C.UTF-8'}});
     const connecting=client.connect(transport);transport.stderr?.resume();try{await connecting;}catch(e){await client.close().catch(()=>{});throw e;}
     const h={client,path,executor:new WorkspaceExecutor({journal:this.store,binding:t.binding,control:(m,p)=>this.broker(w,m,p)})};this.hosts.set(t.id,h);return h;
   }
@@ -103,6 +105,10 @@ export class SessionHost extends EventEmitter {
     if(this.closing||this.busy.has(id))return;this.busy.add(id);
     try{
       let t=this.store.get('turns',id);if(t.consumed)return;
+      if (t.engine==='codex') {
+        if (this.codex && !this.codex.active.has(id)) await this.codex.reconcile(t);
+        return;
+      }
       const h=await this.host(t);
       if(!t.operationId){
         const found=await h.executor.recover(t.id);
@@ -160,8 +166,11 @@ export class SessionHost extends EventEmitter {
     const t=this.store.get('turns',body.turnId);if(!t||t.sessionId!==sessionId)throw Error('TURN_NOT_BOUND');
     const result={requested:true,turnId:t.id};
     this.store.tx(()=>{if(!t.done)t.cancelRequested=true;this.store.put('turns',t.id,t);this.store.receipt(body.requestId,payload,result);});
-    if(!t.done)await this.broker(this.workspace(t.workspaceId),'stopTurn',{sessionId,turnId:t.id,turnEpoch:1});
+    if(!t.done) {
+      if (t.engine==='codex') await this.codex?.interrupt(t.id);
+      else await this.broker(this.workspace(t.workspaceId),'stopTurn',{sessionId,turnId:t.id,turnEpoch:1});
+    }
     return result;
   }
-  async close(){this.closing=true;clearInterval(this.timer);await Promise.allSettled([...this.work]);for(const id of [...this.hosts.keys()])await this.closeHost(id);this.store.close();}
+  async close(){this.closing=true;clearInterval(this.timer);await this.codex?.close();await Promise.allSettled([...this.work]);for(const id of [...this.hosts.keys()])await this.closeHost(id);this.store.close();}
 }

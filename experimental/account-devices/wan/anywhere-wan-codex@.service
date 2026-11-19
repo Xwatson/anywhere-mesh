@@ -1,0 +1,25 @@
+[Unit]
+Description=Anywhere lab Codex conversation
+
+[Service]
+User=desktop
+Group=desktop
+Environment=HOME=/home/desktop
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/python3 /opt/anywhere-wan/bin/codex-service.py
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+WorkingDirectory=/var/lib/anywhere-wan-codex
+StateDirectory=anywhere-wan-codex
+StateDirectoryMode=0700
+ProtectSystem=strict
+ProtectHome=tmpfs
+BindPaths=/home/desktop/.codex
+PrivateTmp=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+UMask=0077
+KillMode=control-group
+RuntimeMaxSec=300
+TimeoutStopSec=10

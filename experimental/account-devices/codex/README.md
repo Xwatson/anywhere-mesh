@@ -28,4 +28,4 @@ python3 experimental/account-devices/codex/verify.py \
 
 Windows 控制器用普通实验账号登录、授予只读权限，在项目内新建一行随机文本。发送给模型的是文件名和读取要求。工具回调从 Codex 获取线程、回合及调用编号。宿主核对会话与当前授权，给实际 MCP 调用签发票据，持久化终态结果后回执。Codex 使用 `desktop` 原有的登录资料，调用票据保存在 `anywhere-wan` 的会话数据库。Windows 通过已有会话历史验证工具输出、模型答案和本地原文，随后撤销权限、验证服务端拒绝、退出并清理临时文件。报告保留文件及答案摘要、设备启动次数、结果确认状态和回合编号。
 
-这条命令只联调固定测试文件的单次读取。网页正常发送消息仍使用实验模拟宿主。若中断，使用报告中的操作编号查询原操作；再次运行验收会生成新的文件，作为另一次独立测试。[Codex app-server 动态工具协议](https://learn.chatgpt.com/docs/app-server)
+这条命令复测管理员发起的单文件读取。日常使用可从实验桌面或网页向已绑定设备的会话发送自然语言消息，美国端按会话创建或恢复 Codex 线程。Windows 安装版的原生窗口复测覆盖随机文件读取和同一会话的后续提问。中途断开时可用操作编号查询已经签发的设备操作。[安装版复测](../windows/README.md) · [Codex app-server 动态工具协议](https://learn.chatgpt.com/docs/app-server)
