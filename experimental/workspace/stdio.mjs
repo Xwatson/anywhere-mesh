@@ -37,7 +37,7 @@ export function createWorkspaceMcp(executor, { waitMs = 10000 } = {}) {
   let lastList;
   const timer = setInterval(async () => {
     try {
-      const info = await executor.capabilities(), current = JSON.stringify([info.permission.version, info.bindingCurrent, info.connection]);
+      const info = await executor.capabilities(), current = JSON.stringify([info.permission.version, info.bindingCurrent, info.connection, info.tools.map(t=>t.name)]);
       if (lastList !== undefined && current !== lastList) await server.sendToolListChanged();
       lastList = current;
     } catch { /* Transport/state outage is returned by the next explicit request. */ }

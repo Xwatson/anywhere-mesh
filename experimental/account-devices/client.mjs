@@ -35,7 +35,7 @@ function rootInfo(path) {
   if(realpathSync(path)!==path || !st.isDirectory()) throw Error('WORKSPACE_ROOT_CHANGED');
   return st.dev.toString()+':'+st.ino.toString();
 }
-function installation(cfg) {
+function installation(cfg, identifyRoot) {
   mkdirSync(cfg.stateDir,{recursive:true,mode:0o700});
   const file=join(cfg.stateDir,'installation.json');
   let identity;
@@ -43,20 +43,21 @@ function installation(cfg) {
   catch(e) {
     if(e.code!=='ENOENT') throw e;
     identity={secret:randomBytes(32).toString('hex'),projects:cfg.projects.map(p=>({
-      path:p.path, inode:rootInfo(p.path), localId:randomUUID()
+      path:p.path, inode:identifyRoot(p.path), localId:randomUUID()
     }))};
     writeFileSync(file,JSON.stringify(identity),{flag:'wx',mode:0o600});
   }
   const projects=cfg.projects.map(p=>{
     const known=identity.projects.find(k=>k.path===p.path);
-    if(!known || known.inode!==rootInfo(p.path)) throw Error('WORKSPACE_ROOT_CHANGED');
+    if(!known || known.inode!==identifyRoot(p.path)) throw Error('WORKSPACE_ROOT_CHANGED');
     return {...p,...known};
   });
   return {secret:identity.secret,projects};
 }
 export class DeviceClient {
-  constructor(cfg) {
-    this.cfg=cfg;this.profile=installation(cfg);this.tls={ca:readFileSync(cfg.ca),rejectUnauthorized:true,minVersion:'TLSv1.3'};
+  constructor(cfg, {identifyRoot=rootInfo, launcher=makeLauncher, modes, sandbox}={}) {
+    this.cfg=cfg;this.identifyRoot=identifyRoot;this.launcher=launcher;this.modes=modes;this.sandbox=sandbox;
+    this.profile=installation(cfg,identifyRoot);this.tls={ca:readFileSync(cfg.ca),rejectUnauthorized:true,minVersion:'TLSv1.3'};
     this.locals=new Map();this.queue=Promise.resolve();
   }
   api(method,path,data) { return request(this.cfg.url,this.tls,method,path,data,this.signed?.token); }
@@ -67,6 +68,7 @@ export class DeviceClient {
   }
   local(id) { const p=this.locals.get(id);if (!p) throw Error('ONLY_ON_BOUND_DEVICE');return p; }
   setMode(p,mode) {
+    if(this.modes && !this.modes.includes(mode)) throw Error('UNSUPPORTED_DEVICE_PERMISSION');
     if(p.agent.grant.mode!==mode) p.agent.control('setMode',{requestId:randomUUID(),expectedVersion:p.agent.grant.grantVersion,mode});
     return {mode:p.agent.grant.mode};
   }
@@ -82,9 +84,9 @@ export class DeviceClient {
         const stateDir=join(this.cfg.stateDir,mapped.id);
         const store=new Journal(join(stateDir,'journal.sqlite'));
         const grant=grantFor({deviceId:signed.deviceId,accountId:String(signed.user.id),workspaceId:mapped.id},'revoked',1);
-        const launch=makeLauncher({workspaceRoot:root.path,stateDir,guardedFiles:true});
-        const agent=new LocalAgent(store,grant,{stateDir,maxChildren:1,workspace:{label:root.label,reliability:true},
-          launcher:(op,g)=>{if(rootInfo(root.path)!==root.inode) throw Error('WORKSPACE_ROOT_CHANGED');return launch(op,g);}});
+        const launch=this.launcher({workspaceRoot:root.path,rootIdentity:root.inode,stateDir,guardedFiles:true});
+        const agent=new LocalAgent(store,grant,{stateDir,maxChildren:1,workspace:{label:root.label,reliability:true,sandbox:this.sandbox},
+          launcher:(op,g)=>{if(this.identifyRoot(root.path)!==root.inode) throw Error('WORKSPACE_ROOT_CHANGED');return launch(op,g);}});
         const local={agent,store,id:mapped.id};
         this.locals.set(mapped.id,local);await this.setMode(local,'revoked');
         agent.on('changed',()=>local.rpc?.notify('changed',{}));
@@ -161,7 +163,10 @@ export class DeviceClient {
         const s=await this.api('GET','/api/state');
         for(const project of s.projects) {
           const local=this.locals.get(project.id);
-          if(local)project.localMode=local.agent.grant.mode;
+          if(local) {
+            project.localMode=local.agent.grant.mode;
+            if(this.modes) project.localModes=this.modes;
+          }
         }
         return {...s,localName:this.cfg.name};
       }

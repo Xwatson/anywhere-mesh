@@ -53,6 +53,8 @@ export class SessionHost extends EventEmitter {
       if (!remote.confirmed || remote.blockers.length || this.store.all('turns').some(t=>t.workspaceId===w.id&&!t.consumed&&!t.done)) throw Error('WORKSPACE_NOT_READY');
       const modes = parsed.tool==='workspace_run'?['execute']:parsed.tool==='workspace_write_file'?['edit','execute']:['read','edit','execute'];
       if (!modes.includes(remote.grant.mode)) throw Error('LOCAL_PERMISSION_REQUIRED');
+      const supported=remote.sandbox?.supportedTools;
+      if (supported!==undefined && !(Array.isArray(supported)&&supported.includes(parsed.tool))) throw Error('TOOL_UNAVAILABLE_ON_DEVICE');
       binding = Object.fromEntries(['accountId','deviceId','workspaceId','grantVersion'].map(k=>[k,remote.grant[k]]));
     }
     this.store.ensureCapacity(1024*1024);

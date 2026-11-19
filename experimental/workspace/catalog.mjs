@@ -42,13 +42,14 @@ export function normalize(name, args) {
   if (Buffer.byteLength(JSON.stringify(request)) > 20000) fail('REQUEST_TOO_LARGE');
   return request;
 }
-export function allowed(tool, grant) {
+export function allowed(tool, grant, supportedTools) {
   if (grant.revoked) return false;
+  if (supportedTools !== undefined && !(Array.isArray(supportedTools) && supportedTools.includes(tool.name))) return false;
   if (tool.permission === 'write') return grant.capabilities.includes('workspace.write');
   if (tool.permission === 'execute') return grant.capabilities.includes('workspace.exec');
   return grant.capabilities.includes(tool.name === 'workspace_search' ? 'dc.search' : 'dc.tool');
 }
-export function listTools(grant, executable = true) {
-  return [...CATALOG.filter(t => executable && allowed(t, grant)).map(({ translate, permission, ...t }) => ({ ...t,
+export function listTools(grant, executable = true, supportedTools) {
+  return [...CATALOG.filter(t => executable && allowed(t, grant, supportedTools)).map(({ translate, permission, ...t }) => ({ ...t,
     annotations: { readOnlyHint: permission === 'read', destructiveHint: permission !== 'read', openWorldHint: false } })), ...LIFECYCLE];
 }

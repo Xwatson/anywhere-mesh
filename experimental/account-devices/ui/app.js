@@ -4,6 +4,9 @@ function node(tag,value,cls) {
   const n=document.createElement(tag);if(value!==undefined) n.textContent=value;if(cls)n.className=cls;return n;
 }
 const errors={DEVICE_OFFLINE:'绑定设备已离线。设备上线后可继续此会话。',LOGIN_REQUIRED:'请重新登录。',INVALID_CREDENTIALS:'账号或密码错误。',DEVICE_DISABLED:'此设备已由管理员停用。',LOGIN_THROTTLED:'登录尝试过多，请稍后重试。',LOCAL_PERMISSION_REQUIRED:'请在执行设备上授予此项目所需的权限。',WORKSPACE_NOT_READY:'项目正在同步或有未完成任务。',READ_FILE_BEFORE_EDIT:'请先在当前会话读取这个文件。'};
+errors.TOOL_UNAVAILABLE_ON_DEVICE='这台设备尚未支持此工具。';
+errors.UNSUPPORTED_DEVICE_PERMISSION='这台设备当前支持只读授权。';
+errors.WINDOWS_TUNNEL_NOT_READY='Windows 客户端尚未连上服务端，请稍后再登录。';
 const msg=e=>Object.entries(errors).find(([k])=>String(e.message).includes(k))?.[1]??String(e.message);
 async function action(method,p={}) {
   if(native) return native.request(method,p);
@@ -76,6 +79,7 @@ function render() {
   if(mine.some(p=>p.id===previous))el('project').value=previous;
   el('create').hidden=!native||!mine.length;el('grant').hidden=el('create').hidden;
   const local=mine.find(p=>p.id===el('project').value);
+  for(const option of el('mode').options) option.disabled=Boolean(local?.localModes && !local.localModes.includes(option.value));
   const appliedMode=local?.localMode??local?.mode;
   if(local)el('mode').value=proposedMode?.id===local.id?proposedMode.mode:appliedMode;
   el('apply').disabled=!local||busy||el('mode').value===appliedMode;

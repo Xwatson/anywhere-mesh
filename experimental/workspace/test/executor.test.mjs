@@ -22,6 +22,14 @@ function setup(t){
   t.after(()=>{broker.close();brokerJournal.close();facade.close();rmSync(path,{recursive:true});});
   return{broker,facade,executor,control};
 }
+test('a device can narrow the catalog and tickets to its implemented tools',async t=>{
+  const {broker,executor}=setup(t);
+  broker.workspaceStatus={sandbox:{supportedTools:['workspace_read_file']}};
+  const tools=(await executor.capabilities()).tools.map(tool=>tool.name);
+  assert.ok(tools.includes('workspace_read_file'));assert.ok(tools.includes('workspace_task_status'));
+  assert.ok(!tools.includes('workspace_list_directory'));
+  await assert.rejects(executor.issue('unsupported','workspace_list_directory',{path:'.'}),/CAPABILITY_DENIED/);
+});
 test('host ticket is stable, binds arguments and recovers a prepare response lost before local commit',async t=>{
   const {executor,facade}=setup(t),args={path:'hello.txt',content:'once',mode:'append',expectedRevision:null};
   const [first,concurrent]=await Promise.all([executor.issue('call','workspace_write_file',args),executor.issue('call','workspace_write_file',args)]);

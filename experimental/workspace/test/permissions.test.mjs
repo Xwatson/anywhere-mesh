@@ -44,6 +44,21 @@ test('accepted work is cancelled by local revocation before its deferred launch'
   await new Promise(r=>setTimeout(r,20));assert.equal(j.get('ops',req.operationId).starts,0);
   assert.equal(agent.start(req).state,'cancelled');await agent.close();
 });
+test('revocation discards an in-flight read even if the reader completes with file content',async t=>{
+  const j=store(t);
+  let finish, started;
+  const ready=new Promise(resolve=>{started=resolve;});
+  const agent=new LocalAgent(j,identity,{...options,launcher:()=>({read:()=>new Promise(resolve=>{
+    finish=resolve;started();
+  })})});
+  change(agent,'read');const req=envelope(agent);agent.start(req);
+  await ready;change(agent,'revoked');
+  finish({version:1,ok:true,response:{content:[{type:'text',text:'private bytes'}]}});
+  await agent.close();
+  const op=j.get('ops',req.operationId);
+  assert.equal(op.state,'cancelled');assert.equal(op.result.tool,undefined);
+  assert.equal(agent.start(req).starts,1);
+});
 test('delayed old-version invocation is durably rejected, and old history remains queryable',async t=>{
   const j=store(t),agent=new LocalAgent(j,identity,options);agent.attach(1);change(agent,'edit');const req=envelope(agent);
   change(agent,'read');assert.equal(agent.start(req).state,'rejected');

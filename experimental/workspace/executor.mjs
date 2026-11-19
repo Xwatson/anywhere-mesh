@@ -14,7 +14,7 @@ export class WorkspaceExecutor {
     const bindingCurrent = info.grant.grantVersion === this.binding.grantVersion;
     return { workspaceId: info.grant.workspaceId, label: info.label, connection: info.phase,
       permission: { mode: info.grant.mode, version: info.grant.grantVersion, confirmed: info.confirmed }, bindingCurrent,
-      tools: listTools(info.grant, info.confirmed && bindingCurrent), activeOperations: info.activeOperations,
+      tools: listTools(info.grant, info.confirmed && bindingCurrent, info.sandbox?.supportedTools), activeOperations: info.activeOperations,
       blockers: info.blockers, sandbox: info.sandbox, history: info.history,
       limits: { maxRuntimeMs: 120000, maxReadLines: 200, maxSearchResults: 50, maxResultBytes: 22000, retainedOutputBytes: 65536, concurrentTasks: 1 } };
   }
@@ -33,7 +33,7 @@ export class WorkspaceExecutor {
     if (!record) {
       const info = await this.control('workspace'); assertIdentity(info.grant, this.binding);
       if (info.grant.grantVersion !== this.binding.grantVersion) fail('GRANT_CHANGED');
-      if (!allowed(CATALOG.find(t => t.name === toolName), info.grant)) fail('CAPABILITY_DENIED');
+      if (!allowed(CATALOG.find(t => t.name === toolName), info.grant, info.sandbox?.supportedTools)) fail('CAPABILITY_DENIED');
       if (!info.confirmed) fail('DEVICE_RECOVERING');
       expiresAt ??= Date.now() + 120000; integer(expiresAt, 1, Number.MAX_SAFE_INTEGER);
       if (expiresAt <= Date.now() || expiresAt > Date.now() + 120000) fail('INVALID_DEADLINE');

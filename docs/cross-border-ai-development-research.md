@@ -983,11 +983,19 @@ VM 定期在隔离网络外解析指定域名，更新专用容器的 hosts 和�
 
 复测通过 8 组公网联调和 57 项单元回归。6 次真实工具操作从发送到客户端观察到结束耗时 2.64–4.24 秒，覆盖双向跨设备读取、只写入一次、隔离执行、离线处理与远端重启。切换域名前创建的「公网演示 · 设备 A」沿用原设备、工作区和会话编号。两次读取同一文件分别耗时 2.77 和 26.71 秒，第二次在关闭源站运维 SSH 之后完成。工具回合仍会出现数十秒长尾。浏览器用系统信任库完成管理员登录、查看设备和退出，源站证书续签演练通过。原始测量和域名验收记录位于实验根目录 `artifacts/wan-domain/20261118-RkYwUp/`。这些结果对应本次线路和时段。[Cloudflare 代理端口](https://developers.cloudflare.com/fundamentals/reference/network-ports/) 与 [WebSocket 支持](https://developers.cloudflare.com/network/websockets/)
 
+### 12.17 Windows 执行设备只读验收（2026-11-19，本地时间）
+
+飞牛 Windows 10 Enterprise LTSC 2021 x64 虚拟机（192.168.8.210）以普通用户权限运行 Electron 实验客户端。用同一账号登录后，服务端登记设备「Windows · DESKTOP-L0OT7AS」。客户端主动通过 `wss://awc.xbxbe.com/easytier` 连接，使用 EasyTier 无 TUN 模式将本机回环端口转发到美国端的业务 HTTPS/WSS。SSH 负责安装与测试控制。实际文件读取走美国端模拟 CLI、Workspace MCP 和 Windows 本地授权。
+
+两轮验收均在 Windows 桌面创建或重新打开「Windows VM 只读验收」。Windows 先读取本机生成的随机文本，本机再更新同一个文件。已登录的 Linux 设备 A 向原会话发送相同读取指令，返回内容的 SHA-256 与 Windows 上的新值一致。两次独立启动沿用同一个设备、工作区与会话编号。设备 A 尝试更改 Windows 项目权限时收到拒绝。Windows 退出后，A 看到目标离线，再发送会被拒绝。
+
+Windows 当前支持预置项目中的 `workspace_read_file`。本地文件句柄验证与 Desktop Commander 0.3.3 的文本分页均在 Windows 执行。已验证中文路径、只读与撤销、目录联接、多硬链接和读取大小限制。Windows 后端或网络监督进程异常终止后，EasyTier 退出并释放端口，测试期间默认路由保持一致。Linux 回归通过 59 项。两轮跨设备报告与图形截图归档在实验根目录 `artifacts/windows-read/`。[Windows 安装、启动与复测](../experimental/account-devices/windows/README.md)
+
 ## 13. 待验证风险与决策
 
 | 项目 | 当前判断 | 下一步 |
 | --- | --- | --- |
-| 首发系统 | Ubuntu 24.04 LTS x86_64 环境和 Electron 最小界面已验证，Windows/macOS 后续单独调试 | 补正式安装包、系统授权和真实工作流 |
+| 首发系统 | Ubuntu 24.04 LTS x86_64 已完成主要实验，Windows 10 x64 已独立验证原生桌面与跨设备只读 | 补 Windows 编辑、搜索与隔离构建，单独调试 macOS，最后验收真实 CLI 与正式安装包 |
 | 现有服务保护 | 已落实独立源码、身份、数据和 VM；生产 PID、HTTP 与前端哈希核查通过 | 后续开发继续只在实验副本进行，浏览器/Electron 会话独立 |
 | 飞牛虚拟机管理 | 用户已通过原生 UI 创建、修改和启动 VM；后台配置一致 | 沿用应用管理，不手工迁移 domain 或运行中的磁盘 |
 | 实验存储位置 | 虚拟磁盘 `/vol1/vm/pool/` 已获用户批准；其余实验材料位于 `/vol1/1000/anywhere-crossborder-lab/` | 新增快照、备份继续核对实际位置，不落 NAS 系统分区 |

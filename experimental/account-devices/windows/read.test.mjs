@@ -1,0 +1,38 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { link, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+test('installed Windows reader pins the project and pages only bounded, single-link UTF-8 files', {skip:process.platform!=='win32'}, async t=>{
+  const base=join(process.env.LOCALAPPDATA,'AnywhereCodingLab');
+  const release=(await readFile(join(base,'Start-Anywhere.cmd'),'utf8')).match(/app-[A-F0-9]{16}/)[0];
+  const native=join(base,'runtime',release,'experimental','account-devices','windows');
+  const {windowsReader}=await import(pathToFileURL(join(native,'read.mjs')));
+  const adapter=windowsReader(join(native,'WorkspaceSnapshot.exe'));
+  const temp=await mkdtemp(join(tmpdir(),'anywhere-read-test-'));
+  t.after(()=>rm(temp,{recursive:true,force:true,maxRetries:3}));
+  const root=join(await realpath(temp),'project'), other=join(temp,'other'), stateDir=join(temp,'state');
+  await Promise.all([mkdir(join(root,'子目录'),{recursive:true}),mkdir(other),mkdir(stateDir)]);
+  const path='子目录/说明.txt';
+  await writeFile(join(root,path),'第一行\r\n第二行\r\n第三行\r\n');
+  await writeFile(join(other,'other.txt'),'separate fixture');
+  const identity=adapter.identifyRoot(root);
+  const build=(rootIdentity=identity)=>adapter.launcher({workspaceRoot:root,rootIdentity,stateDir});
+  const launch=build();
+  const req=(path)=>({request:{kind:'dc.tool',cwdRelative:'.',args:{tool:'read_file',arguments:{path,offset:1,length:1}}}});
+  const read=(path,worker=launch)=>worker(req(path),{mode:'read'}).read(new AbortController().signal);
+  assert.match((await read(path)).response.content[0].text,/\n第二行$/);
+  assert.throws(()=>launch(req(path),{mode:'revoked'}),/TOOL_UNAVAILABLE_ON_DEVICE/);
+  for(const name of ['../other/other.txt','C:/Windows/a','notes.txt:stream','NUL','file.']) await assert.rejects(read(name),/PATH_DENIED/);
+  await symlink(other,join(root,'junction'),'junction');
+  await link(join(other,'other.txt'),join(root,'linked.txt'));
+  await assert.rejects(read('junction/other.txt'),/PATH_DENIED/);
+  await assert.rejects(read('linked.txt'),/REGULAR_SINGLE_LINK_FILE_REQUIRED/);
+  await writeFile(join(root,'binary.txt'),Buffer.from([65,0,66]));
+  await assert.rejects(read('binary.txt'),/TEXT_FILE_REQUIRED/);
+  await writeFile(join(root,'large.txt'),Buffer.alloc(1024*1024+1,65));
+  await assert.rejects(read('large.txt'),/FILE_SNAPSHOT_TOO_LARGE/);
+  await assert.rejects(read(path,build(adapter.identifyRoot(other))),/WORKSPACE_ROOT_CHANGED/);
+});

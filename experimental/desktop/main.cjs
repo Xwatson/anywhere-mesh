@@ -8,15 +8,19 @@ const { createInterface } = require('node:readline');
 const { trustedSender } = require('./contract.cjs');
 const sessionsProfile = process.argv.includes('--lab-sessions');
 const deviceSlot = process.argv.find(arg => /^--lab-device=[ab]$/.test(arg))?.at(-1);
+const windowsDevice = process.platform === 'win32' && process.argv.includes('--lab-windows');
+const windowsRoot = windowsDevice ? resolve(process.env.LOCALAPPDATA, 'AnywhereCodingLab') : null;
 const wanProfile = deviceSlot && process.argv.includes('--lab-wan');
-const appDir = deviceSlot ? resolve(__dirname,'../account-devices') : sessionsProfile ? resolve(__dirname, '../desktop-sessions') : __dirname;
+const appDir = deviceSlot || windowsDevice ? resolve(__dirname,'../account-devices') : sessionsProfile ? resolve(__dirname, '../desktop-sessions') : __dirname;
 const contract = require(resolve(appDir, 'contract.cjs'));
 const validate = contract.internalValidate ?? contract.validate;
 const validatePublic = contract.publicValidate ?? contract.validate;
 let testPickerPath;
 
-if (process.platform !== 'linux' || !existsSync('/etc/anywhere-crossborder-lab')) throw Error('LAB_LINUX_REQUIRED');
-const profile = deviceSlot ? '/srv/anywhere-lab/'+(wanProfile ? 'wan' : 'd3')+'/shell-'+deviceSlot :
+if (windowsDevice) {
+  if (sessionsProfile || deviceSlot || !existsSync(resolve(windowsRoot,'windows.toml'))) throw Error('WINDOWS_LAB_PROFILE_REQUIRED');
+} else if (process.platform !== 'linux' || !existsSync('/etc/anywhere-crossborder-lab')) throw Error('LAB_LINUX_REQUIRED');
+const profile = windowsDevice ? resolve(windowsRoot,'profile') : deviceSlot ? '/srv/anywhere-lab/'+(wanProfile ? 'wan' : 'd3')+'/shell-'+deviceSlot :
   sessionsProfile ? '/srv/anywhere-lab/desktop-d2/shell-profile' : '/srv/anywhere-lab/desktop-d/shell-profile';
 mkdirSync(profile, { recursive: true, mode: 0o700 });
 app.setPath('userData', profile);
@@ -51,7 +55,7 @@ async function stop() {
   })(); return stopping;
 }
 if (single) app.whenReady().then(async () => {
-  const assets = realpathSync(resolve(appDir, deviceSlot ? 'ui' : 'dist'));
+  const assets = realpathSync(resolve(appDir, deviceSlot || windowsDevice ? 'ui' : 'dist'));
   protocol.handle('anywhere-desktop', async req => {
     try {
       const u = new URL(req.url);
@@ -65,8 +69,11 @@ if (single) app.whenReady().then(async () => {
   ses.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
   ses.setPermissionCheckHandler(() => false);
   ses.on('will-download', event => event.preventDefault());
-  child = spawn('/usr/local/bin/node', [resolve(appDir, 'controller.mjs'), ...(deviceSlot ? [deviceSlot] : []), ...(wanProfile ? ['wan'] : [])], {
-    stdio: ['pipe', 'pipe', 'pipe'], env: { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: '/home/lab', LANG: 'C.UTF-8', NODE_NO_WARNINGS: '1' },
+  const backend = windowsDevice ? resolve(windowsRoot,'runtime/node.exe') : '/usr/local/bin/node';
+  const env = windowsDevice ? Object.fromEntries(['SystemRoot','WINDIR','LOCALAPPDATA','USERPROFILE','TEMP','TMP'].map(k=>[k,process.env[k]])) :
+    { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: '/home/lab', LANG: 'C.UTF-8' };
+  child = spawn(backend, [resolve(appDir, windowsDevice ? 'windows/controller.mjs' : 'controller.mjs'), ...(deviceSlot ? [deviceSlot] : []), ...(wanProfile ? ['wan'] : [])], {
+    stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, env: { ...env, NODE_NO_WARNINGS: '1' },
   });
   child.stderr.on('data', chunk => process.stderr.write(chunk));
   const lines = createInterface({ input: child.stdout });
@@ -88,7 +95,7 @@ if (single) app.whenReady().then(async () => {
   child.on('error', e => console.error('Desktop backend:', e.message));
   const area = screen.getPrimaryDisplay().workAreaSize;
   win = new BrowserWindow({ width: Math.min(area.width, 1280), height: Math.min(area.height, 900), minWidth: 900, minHeight: 680,
-    show: false, backgroundColor: '#09090b', title: 'Anywhere Desktop · Linux 实验版', autoHideMenuBar: true,
+    show: false, backgroundColor: '#09090b', title: 'Anywhere Desktop · '+(windowsDevice?'Windows':'Linux')+' 实验版', autoHideMenuBar: true,
     webPreferences: { preload: resolve(appDir, 'preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false,
       webSecurity: true, allowRunningInsecureContent: false, webviewTag: false, devTools: false, spellcheck: false },
   });
@@ -110,6 +117,10 @@ if (single) app.whenReady().then(async () => {
   win.once('ready-to-show', () => win.show());
   win.on('closed', () => { win = null; });
   await win.loadURL('anywhere-desktop://app/index.html');
+  if (windowsDevice && process.argv.includes('--lab-windows-smoke')) {
+    const { smoke } = await import('../account-devices/windows/smoke.mjs');
+    smoke({win,root:windowsRoot}).catch(e=>{console.error(e.message);process.exitCode=1;}).finally(()=>app.quit());
+  }
   if (deviceSlot === 'b' && process.argv.includes('--lab-device-smoke')) {
     const { smoke } = await import('../account-devices/lab/gui.mjs');
     smoke({app,win,BrowserWindow,session,wan:wanProfile}).catch(e=>{console.error(e.message);process.exitCode=1;app.quit();});

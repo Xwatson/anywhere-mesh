@@ -127,6 +127,10 @@ export class LocalAgent extends EventEmitter {
     }
     op.state = 'running'; op.starts++; op.reason = 'launch_intent';
     this.journal.put('ops', operationId, op); this.fault('agent_after_intent');
+    if (spec?.read) {
+      void this.performRead(op, spec.read);
+      return;
+    }
     const child = spawn(spec?.command ?? process.execPath, spec?.args ?? [fileURLToPath(new URL('./mock-worker.mjs', import.meta.url))], {
       cwd: this.stateDir, detached: true, stdio: spec ? ['pipe', 'pipe', 'pipe', 'pipe'] : ['pipe', 'pipe', 'pipe'],
       env: spec?.env ?? { PATH: '/usr/bin:/bin', LANG: 'C.UTF-8' },
@@ -158,6 +162,28 @@ export class LocalAgent extends EventEmitter {
     child.once('close', (code, signal) => this.finish(operationId, code, signal));
     entry.timer = setTimeout(() => this.cancel({ ...envelopeOf(op), cancelId: `deadline:${operationId}` }),
       Math.max(1, Math.min(125000, op.request.expiresAt - Date.now())));
+  }
+  async performRead(op, read) {
+    const abort = new AbortController();
+    this.children.set(op.operationId, { abort });
+    const timer = setTimeout(() => abort.abort(), Math.max(1, op.request.expiresAt - Date.now()));
+    let tool;
+    try {
+      tool = await read(abort.signal);
+      if (Buffer.byteLength(JSON.stringify(tool)) > 22000) fail('RESULT_TOO_LARGE');
+    } catch (error) {
+      const reason = /^[A-Z][A-Z0-9_]{1,60}$/.test(error.code) ? error.code : 'READ_FAILED';
+      tool = { version: 1, ok: false, error: reason, response: { isError: true, content: [{ type: 'text', text: reason }] } };
+    } finally { clearTimeout(timer); }
+    // A revoke or stop received during a read must discard the captured bytes.
+    op = this.journal.get('ops', op.operationId);
+    if (abort.signal.aborted || op.state === 'cancelling' || Date.now() >= op.request.expiresAt) {
+      op.state = 'cancelled'; op.reason = 'read_cancelled'; op.result = { exitCode: null, signal: null };
+    } else {
+      op.state = tool.ok ? 'succeeded' : 'failed'; op.reason = tool.error ?? null;
+      op.result = { exitCode: tool.ok ? 0 : 1, signal: null, tool };
+    }
+    this.journal.put('ops', op.operationId, op); this.children.delete(op.operationId); this.emit('changed');
   }
   output(operationId, stream, data) {
     if (!data) return;
@@ -207,6 +233,7 @@ export class LocalAgent extends EventEmitter {
     confirm();
   }
   signal(entry) {
+    if (entry.abort) { entry.abort.abort(); return; }
     if (!entry.child.pid) return;
     signalGroup(entry.child.pid, 'SIGTERM');
     if (!entry.killTimer) entry.killTimer = setTimeout(() => signalGroup(entry.child.pid, 'SIGKILL'), 1000);
@@ -285,7 +312,7 @@ export class LocalAgent extends EventEmitter {
     return { grant: this.grant, label: this.workspace.label,
       pendingCancellations: ops.filter((o) => o.state === 'cancelling').map((o) => o.operationId),
       unknownOperations: ops.filter((o) => o.state === 'unknown').map((o) => o.operationId),
-      sandbox: { network: false, readOnly: !this.grant.capabilities.includes('workspace.write'),
+      sandbox: this.workspace.sandbox ?? { network: false, readOnly: !this.grant.capabilities.includes('workspace.write'),
         guardedFileWrites: Boolean(this.workspace.reliability), fileWriteProtection: this.workspace.reliability ? 'optimistic-version-check-with-preimage' : null }, history: this.journal.storage() };
   }
   cleanConsumedBackups() {
