@@ -4,14 +4,21 @@ import { randomUUID } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { hostname } from 'node:os';
+import { createInterface } from 'node:readline';
 import { control } from '../../execution/control.mjs';
 if(hostname()!=='anywhere-crossborder-lab')throw Error('LAB_GUEST_REQUIRED');
-const base='/srv/anywhere-lab/d3', users=JSON.parse(readFileSync(base+'/test/accounts.json'));
-const [admin,coder,other]=users,ca=readFileSync('/etc/anywhere-d3/ca.crt');
+const wan=process.argv[3]==='--wan';
+const base=wan?'/srv/anywhere-lab/wan':'/srv/anywhere-lab/d3';
+const users=JSON.parse(readFileSync(base+'/test/accounts.json'));
+const [admin,coder,other]=users.map(({username,password})=>({username,password}));
+const ca=readFileSync(wan?'/etc/anywhere-wan-cn/ca.crt':'/etc/anywhere-d3/ca.crt');
+const endpoint=wan?'https://10.203.73.2:18443':'https://10.126.10.2:8443';
+const prefix=wan?'anywhere-wan':'anywhere-d3';
+const timings=[];
 const rpc=slot=>(m,p={})=>control(base+'/local/'+slot+'/control.sock',m,p);
 const A=rpc('a'),B=rpc('b'),checkpoints=[];
 const record=name=>{checkpoints.push(name);console.log(name);};
-const wait=async(f,ms=28000)=>{
+const wait=async(f,ms=wan?60000:28000)=>{
   let issue;const end=Date.now()+ms;
   while(Date.now()<end){try{const result=await f();if(result)return result;}catch(e){issue=e;}
     await new Promise(r=>setTimeout(r,200));}
@@ -19,7 +26,7 @@ const wait=async(f,ms=28000)=>{
 };
 function web(method,path,body,cookie) {
   return new Promise((resolve,reject)=>{
-    const req=https.request('https://10.126.10.2:8443'+path,{method,ca,timeout:6000,headers:{
+    const req=https.request(endpoint+path,{method,ca,timeout:6000,headers:{
       ...(cookie?{Cookie:cookie}:{}),...(body?{'Content-Type':'application/json'}:{})}},res=>{
       let raw='';res.on('data',s=>{raw+=s;});res.on('end',()=>resolve({code:res.statusCode,
         value:res.headers['content-type']?.startsWith('application/json')?JSON.parse(raw):raw,
@@ -29,8 +36,9 @@ function web(method,path,body,cookie) {
   });
 }
 const service=(...args)=>execFileSync('sudo',['-n','systemctl',...args],{timeout:30000});
-const file=slot=>execFileSync('sudo',['-n','-u','anywhere-d3-'+slot,'cat',base+'/project-'+slot+'/notes.txt'],{encoding:'utf8'});
+const file=slot=>execFileSync('sudo',['-n','-u',prefix+'-'+slot,'cat',base+'/project-'+slot+'/notes.txt'],{encoding:'utf8'});
 const turn=async(client,s,text)=>{
+  const started=performance.now();
   const id=randomUUID(),r=await client('send',{requestId:id,sessionId:s.id,text});
   const p=await wait(async()=>{
     const page=await client('history',{sessionId:s.id,afterSeq:r.acceptedSeq-1});
@@ -40,13 +48,14 @@ const turn=async(client,s,text)=>{
     if(!info.activeTurn)return row.event;
   });
   assert.equal(p.status,'completed',p.output);
+  timings.push({command:text.split(' ')[0],observedMs:Math.round(performance.now()-started)});
   return {output:p.output,requestId:id,result:r};
 };
 const ready=(client,id,mode)=>wait(async()=>{
   const s=await client('state'),p=s.projects.find(p=>p.id===id);
   return p?.ready&&p.mode===mode;
 });
-const label='D3-'+Date.now(),reportPath=process.argv[2];
+const label=(wan?'WAN-':'D3-')+Date.now(),reportPath=process.argv[2];
 let paused=false;
 try {
   await wait(()=>A('state'));await wait(()=>B('state'));
@@ -75,6 +84,13 @@ try {
   assert.equal(duplicate.turnId,write.result.turnId);
   assert.equal(file('a').split(marker).length-1,1);assert.ok(!file('b').includes(marker));
   record('B 操作 A 的会话真实读写 A，A 操作 B 的会话读取 B，跨端重试只写一次');
+  if(wan) {
+    await A('permission',{workspaceId:pa.id,mode:'execute'});await ready(B,pa.id,'execute');
+    const result=await turn(B,s1,'/run node --version');
+    assert.match(result.output,/v\d+\.\d+\.\d+/);
+    await A('permission',{workspaceId:pa.id,mode:'edit'});await ready(B,pa.id,'edit');
+    record('A 本地授予执行权限后，从 B 经公网会话在 A 的隔离环境中运行 Node 命令');
+  }
   await assert.rejects(B('create',{workspaceId:pa.id,title:'错误目标',requestId:randomUUID()}),/ONLY_ON_BOUND_DEVICE/);
   await assert.rejects(B('permission',{workspaceId:pa.id,mode:'execute'}),/ONLY_ON_BOUND_DEVICE/);
   await assert.rejects(B('admin'),/FORBIDDEN/);
@@ -98,7 +114,7 @@ try {
   assert.equal((await web('GET','/api/admin/devices',null,stranger.cookie)).code,403);
   await web('POST','/api/auth/logout',{},stranger.cookie);
   record('管理界面按账号列出设备和绑定会话，其他账号与普通用户权限隔离');
-  service('kill','--kill-whom=main','--signal=STOP','anywhere-d3-client-a');paused=true;
+  service('kill','--kill-whom=main','--signal=STOP',prefix+'-client-a');paused=true;
   const offline=await wait(async()=>{
     const s=await B('state'),d=s.devices.find(d=>d.id===a.deviceId);
     return !d.online&&s.devices.find(d=>d.id===b.deviceId).online&&d;
@@ -106,10 +122,20 @@ try {
   assert.ok(offline.lastSeen>0);assert.ok((await B('history',{sessionId:s1.id,afterSeq:0})).events.length>0);
   await assert.rejects(B('send',{sessionId:s1.id,requestId:randomUUID(),text:'/read notes.txt'}),/DEVICE_OFFLINE/);
   assert.match((await turn(B,s2,'/read notes.txt')).output,/ONLY_DEVICE_B/);
-  service('kill','--kill-whom=main','--signal=CONT','anywhere-d3-client-a');paused=false;
+  service('kill','--kill-whom=main','--signal=CONT',prefix+'-client-a');paused=false;
   await ready(B,pa.id,'edit');
   record('A 失去心跳后显示离线和最近在线时间，历史可读，B 自己的会话继续执行');
-  service('restart','anywhere-d3-host.service');
+  if(wan) {
+    const consoleInput=createInterface({input:process.stdin});
+    try {
+      const ack=new Promise((resolve,reject)=>{
+        const timeout=setTimeout(()=>reject(Error('Remote restart timed out')),60000);
+        consoleInput.once('line',line=>{clearTimeout(timeout);line==='restarted'?resolve():reject(Error('Remote restart failed'));});
+      });
+      console.log('RESTART_WAN_TEST_HOST');
+      await ack;
+    } finally {consoleInput.close();}
+  } else service('restart','anywhere-d3-host.service');
   await ready(B,pa.id,'edit');await ready(B,pb.id,'edit');
   assert.equal((await B('state')).sessions.find(s=>s.id===s1.id).deviceId,a.deviceId);
   assert.match((await turn(B,s1,'/read notes.txt')).output,/ONLY_DEVICE_A/);
@@ -131,9 +157,10 @@ try {
   record('同一安装切换账号后设备身份和历史隔离，登录原账号识别原设备');
   await web('POST','/api/auth/logout',{},browser.cookie);
   const report={passed:true,checkedAt:new Date().toISOString(),checks:checkpoints,simulatedDevices:2,
-    transport:'EasyTier CN to US, HTTPS/WSS',mockCli:true,sessionA:s1.id,sessionB:s2.id,deviceA:a.deviceId,deviceB:b.deviceId};
+    transport:wan?'VM to external host via EasyTier WSS':'EasyTier CN to US, HTTPS/WSS',endpoint,timings,
+    mockCli:true,sessionA:s1.id,sessionB:s2.id,deviceA:a.deviceId,deviceB:b.deviceId};
   if(reportPath)writeFileSync(reportPath,JSON.stringify(report,null,2)+'\n',{mode:0o600});
 } finally {
-  if(paused)service('kill','--kill-whom=main','--signal=CONT','anywhere-d3-client-a');
+  if(paused)service('kill','--kill-whom=main','--signal=CONT',prefix+'-client-a');
   await Promise.allSettled([A('logout'),B('logout')]);
 }

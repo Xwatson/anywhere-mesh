@@ -1,5 +1,7 @@
 # Linux 账号登录、设备与会话（D3）
 
+飞牛 VM 连接独立公网服务端的部署、管理页入口和复测命令见[公网联调说明](wan/README.md)。
+
 在飞牛的 `anywhere-lab` 中使用。国内 A、B 是独立 Linux 用户运行的两个安装实例，各有私有安装凭据、桌面 profile、项目根和 Agent 日志。美国端运行实验账号库、设备管理页和模拟 CLI 宿主。两个项目均含 `notes.txt`，内容分别带有 `ONLY_DEVICE_A` 和 `ONLY_DEVICE_B`。
 
 ## 使用
