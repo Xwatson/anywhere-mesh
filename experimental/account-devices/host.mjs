@@ -94,7 +94,7 @@ export async function startServer(config) {
     }
     try { return JSON.parse(Buffer.concat(parts)); } catch { throw Error('INVALID_FIELDS'); }
   }
-  const assets = new Map([['/',['index.html','text/html']],['/app.js',['app.js','text/javascript']],['/style.css',['style.css','text/css']]]);
+  const assets = new Map([['/',['index.html','text/html']],['/app.js',['app.js','text/javascript']],['/thread.js',['thread.js','text/javascript']],['/style.css',['style.css','text/css']]]);
   async function handle(req,res) {
     const url=new URL(req.url,'https://local.invalid'), path=url.pathname;
     res.setHeader('X-Content-Type-Options','nosniff');

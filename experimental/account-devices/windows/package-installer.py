@@ -17,6 +17,7 @@ dest.mkdir(parents=True, exist_ok=True)
 payload = dest / "payload"
 payload.mkdir()
 release = hashlib.sha256()
+version = "0.3.0"
 
 def pinned(name, expected):
     archive = args.archives / name
@@ -46,7 +47,8 @@ with zipfile.ZipFile(args.app) as z:
             z.extract(entry, app)
 release.update(args.app.read_bytes())
 (app / "package.json").write_text(json.dumps({"name":"anywhere-coding-lab","productName":"Anywhere Coding Lab",
-    "version":"0.2.0","main":"experimental/desktop/main.cjs"}))
+    "version":version,"main":"experimental/desktop/main.cjs"}))
+release.update((app / "package.json").read_bytes())
 native = app / "experimental/account-devices/windows"
 for name in ("WorkspaceSnapshot.exe", "PeerHost.exe"):
     binary = (args.native / name).read_bytes()
@@ -63,4 +65,4 @@ with Image.open(src / "web/public/icons/icon-512.png") as im:
     im.convert("RGBA").save(resources / "Anywhere.ico", sizes=[(16,16),(32,32),(48,48),(128,128),(256,256)], bitmap_format="bmp")
 release.update((resources / "Anywhere.ico").read_bytes())
 shutil.copyfile(Path(__file__).with_name("setup.nsi"),dest / "setup.nsi")
-(dest / "release.nsh").write_text('!define RELEASE "' + release.hexdigest()[:16] + '"\n')
+(dest / "release.nsh").write_text(f'!define RELEASE "{release.hexdigest()[:16]}"\n!define VERSION "{version}"\n')

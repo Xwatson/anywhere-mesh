@@ -93,7 +93,8 @@ for filename in ['main.mjs','client.mjs','controller.mjs']:
     copy(source/'account-devices'/filename,shell/'account-devices'/filename)
 directory(shell/'account-devices/lab')
 copy(source/'account-devices/lab/gui.mjs',shell/'account-devices/lab/gui.mjs')
-for f in ['ui','preload.cjs','contract.cjs']:
+run(sys.executable, str(source/'account-devices/wan/install-ui.py'), str(source/'account-devices/ui'))
+for f in ['preload.cjs','contract.cjs']:
     dest=shell/'account-devices'/f
     if not dest.exists():dest.symlink_to(app/'account-devices'/f)
 for module in ['execution','desktop-commander']:

@@ -1,24 +1,142 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
-<title>Anywhere · 设备与会话</title><link rel="stylesheet" href="./style.css"><script type="module" src="./app.js"></script></head>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta name="color-scheme" content="light dark">
+  <title>Anywhere</title>
+  <link rel="stylesheet" href="./style.css"><script type="module" src="./app.js"></script>
+</head>
 <body>
-<main id="signin" class="signin"><form id="login"><h1>登录 Anywhere</h1><p id="entry"></p>
-<label>账号<input id="username" autocomplete="username" required maxlength="32"></label>
-<label>密码<input id="password" type="password" autocomplete="current-password" required maxlength="200"></label>
-<button class="primary" type="submit">登录</button><p id="login-error" role="alert"></p></form></main>
-<main id="app" hidden><aside><h1>Anywhere</h1><p id="account"></p>
-<nav><button id="sessions-nav">项目会话</button><button id="admin-nav" hidden>设备管理</button></nav>
-<section><h2>我的设备</h2><ul id="devices"></ul></section><section><h2>我的会话</h2><ul id="sessions"></ul></section>
-<button id="logout" class="bottom">退出登录</button></aside>
-<div class="main"><p id="error" role="alert" hidden></p><section id="chat">
-<form id="create"><label>本机项目<select id="project" aria-label="本机项目"></select></label>
-<label>会话名称<input id="title" required maxlength="80" placeholder="新会话名称"></label><button class="primary">新建会话</button></form>
-<div id="grant"><label>本机项目权限<select id="mode"><option value="revoked">撤销</option><option value="read">只读</option><option value="edit">编辑</option><option value="execute">执行</option></select></label><button id="apply">应用权限</button></div>
-<section id="conversation" hidden><header><div><h2 id="session-title"></h2><p id="target"></p></div><span id="presence"></span></header>
-<p id="notice" role="status"></p><div id="events"></div>
-<form id="compose"><label><span id="recipient">消息</span><textarea id="draft" maxlength="8192" placeholder="输入消息"></textarea></label><div class="actions">
-<button type="button" id="stop" hidden>停止任务</button><button class="primary" id="send">发送</button></div></form></section>
-<p id="empty">从左侧打开会话，或在本机项目上新建会话。</p></section>
-<section id="management" hidden><header><h2>设备管理</h2></header><div id="fleet"></div></section></div></main>
+<svg class="icon-library" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg"><defs>
+  <symbol id="i-terminal" viewBox="0 0 24 24"><path d="m5 6 6 6-6 6m8 0h6"/></symbol>
+  <symbol id="i-panel" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></symbol>
+  <symbol id="i-new" viewBox="0 0 24 24"><path d="M12 4H6a3 3 0 0 0-3 3v11a3 3 0 0 0 3 3h11a3 3 0 0 0 3-3v-6m-4-8 4 4m-10 5 8.5-8.5a2.1 2.1 0 0 1 3 3L13 16l-4 1z"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4.5 4.5"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 8V6a2 2 0 0 1 2-2h4l2 3h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+  <symbol id="i-chat" viewBox="0 0 24 24"><path d="M5 4h14a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-8l-5 4v-4H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"/></symbol>
+  <symbol id="i-dev" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="13" rx="2.5"/><path d="M12 17v3m-4 0h8"/></symbol>
+  <symbol id="i-devices" viewBox="0 0 24 24"><path d="M11 17H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v2M8 17v3m-3 0h6"/><rect x="14" y="10" width="7" height="11" rx="1.8"/></symbol>
+  <symbol id="i-down" viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"/></symbol>
+  <symbol id="i-right" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
+  <symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19V5m-6 6 6-6 6 6"/></symbol>
+  <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="11" rx="2.5"/><path d="M8 10V7a4 4 0 1 1 8 0v3"/></symbol>
+  <symbol id="i-logout" viewBox="0 0 24 24"><path d="M10 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h4m-1-8h12m-4-4 4 4-4 4"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6M8 14h8m-8 3h5"/></symbol>
+  <symbol id="i-code" viewBox="0 0 24 24"><path d="m7 7-5 5 5 5m10-10 5 5-5 5m-4-14-2 18"/></symbol>
+  <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1" fill="currentColor"/><circle cx="12" cy="12" r="1" fill="currentColor"/><circle cx="19" cy="12" r="1" fill="currentColor"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="m4.5 12.5 5 5 10-11"/></symbol>
+  <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M3 7h7m4 0h7M3 17h11m4 0h3"/><circle cx="12" cy="7" r="2"/><circle cx="16" cy="17" r="2"/></symbol>
+  <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3c.7 5.5 3.5 8.3 9 9-5.5.7-8.3 3.5-9 9-.7-5.5-3.5-8.3-9-9 5.5-.7 8.3-3.5 9-9z"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5m0-9v.5"/></symbol>
+  <symbol id="i-layers" viewBox="0 0 24 24"><path d="m3 7 9-4 9 4-9 4zM3 12l9 4 9-4M3 17l9 4 9-4"/></symbol>
+</defs></svg>
+<main id="signin">
+  <div class="wordmark login-brand"><span class="brand-mark" aria-hidden="true"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-terminal"></use></svg></span><span>Anywhere</span></div>
+  <form id="login">
+    <div class="hero-mark login-mark" aria-hidden="true"><span class="brand-mark" aria-hidden="true"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-terminal"></use></svg></span></div>
+    <h1>登录 Anywhere</h1><p id="entry" class="muted"></p>
+    <label for="username">账号</label><input id="username" autocomplete="username" required maxlength="32" placeholder="输入账号">
+    <label for="password">密码</label><input id="password" type="password" autocomplete="current-password" required maxlength="200" placeholder="输入密码">
+    <p id="login-error" role="alert" class="inline-error"></p>
+    <button id="login-submit" class="primary" type="submit"><span>登录</span><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-arrow"></use></svg></button>
+  </form>
+</main>
+
+<main id="app" hidden>
+  <button id="rail-scrim" aria-label="关闭侧栏" tabindex="-1" hidden></button>
+  <aside id="rail" aria-label="工作区侧栏">
+    <div class="rail-head"><div class="wordmark"><span class="brand-mark" aria-hidden="true"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-terminal"></use></svg></span><span>Anywhere</span></div>
+      <button id="hide-rail" class="icon-button" title="收起侧栏" aria-label="收起侧栏"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-panel"></use></svg></button>
+    </div>
+    <nav class="rail-actions" aria-label="对话">
+      <button id="new-chat" class="nav-action new-action"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-new"></use></svg><span>新对话</span><kbd aria-hidden="true">Ctrl N</kbd></button>
+      <button id="find-chat" class="nav-action"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-search"></use></svg><span>搜索会话</span><kbd aria-hidden="true">Ctrl K</kbd></button>
+    </nav>
+    <div class="rail-scroll"><h2 class="rail-label">项目会话</h2><nav id="sessions" aria-label="按项目浏览会话"></nav></div>
+    <footer class="rail-foot">
+      <button id="my-devices" class="nav-action"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-devices"></use></svg><span>我的设备</span><span id="device-count" class="foot-state"></span></button>
+      <button id="account-menu" class="account-button" aria-haspopup="dialog"><span id="avatar" class="avatar" aria-hidden="true"></span><span id="account"></span><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-more"></use></svg></button>
+    </footer>
+  </aside>
+
+  <section class="workspace" aria-label="工作区">
+    <header class="topbar">
+      <button id="show-rail" class="icon-button" aria-label="打开侧栏" title="打开侧栏"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-panel"></use></svg></button>
+      <div class="crumb"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-folder"></use></svg><span id="crumb-project">工作区</span><i aria-hidden="true">/</i><span id="session-title">新对话</span></div>
+      <button id="device-status" class="presence-chip" aria-haspopup="dialog"><i id="status-dot" class="dot"></i><span id="target">本机</span><span id="presence">连接中</span><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-down"></use></svg></button>
+    </header>
+    <p id="error" class="error-banner" role="alert" hidden></p>
+    <section id="chat" class="chat home">
+      <p id="notice" role="status" hidden></p>
+      <div id="timeline" tabindex="0" aria-label="会话记录" hidden>
+        <div class="thread-width"><div id="events"></div><div id="working" class="working" role="status" hidden><i></i><span>正在处理…</span></div></div>
+      </div>
+      <section id="composer-area">
+        <div id="welcome" class="welcome">
+          <div class="hero-mark" aria-hidden="true"><span class="brand-mark" aria-hidden="true"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-terminal"></use></svg></span></div>
+          <h1 id="welcome-title">从哪里开始？</h1>
+        </div>
+        <form id="compose" aria-label="消息输入">
+          <label class="sr-only" for="draft" id="recipient">发给 Codex</label>
+          <textarea id="draft" rows="2" maxlength="8192" placeholder="描述任务，或问问项目里的代码…" spellcheck="false"></textarea>
+          <div class="composer-tools">
+            <button id="context" type="button" class="context-button" aria-haspopup="dialog" title="查看项目与权限"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-folder"></use></svg><span id="project-label">选择项目</span><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-down"></use></svg></button>
+            <span id="engine" class="engine"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-spark"></use></svg><span id="engine-name">Codex</span></span>
+            <button type="submit" id="send" class="send" aria-label="发送消息" title="发送消息 (Enter)" disabled><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-up"></use></svg></button>
+            <button type="button" id="stop" class="send" aria-label="停止生成" title="停止生成" hidden><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-stop"></use></svg></button>
+          </div>
+        </form>
+        <div id="suggestions" class="suggestions">
+          <button id="example-read"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-file"></use></svg><span>读取文件</span></button>
+          <button id="example-code"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-code"></use></svg><span>解释代码</span></button>
+        </div>
+        <p id="input-hint" class="input-hint" hidden>Enter 发送<span>·</span>Shift + Enter 换行</p>
+        <div id="web-empty" hidden><p>在桌面客户端发起对话后，可以在这里继续。</p><button id="web-devices" class="secondary">查看设备</button></div>
+      </section>
+    </section>
+    <section id="management" hidden>
+      <div class="management-head"><h1>设备管理</h1><button id="back-chat" class="secondary">返回对话</button></div>
+      <div id="fleet"></div>
+    </section>
+  </section>
+</main>
+
+<dialog id="search-dialog" aria-labelledby="search-heading">
+  <div class="dialog-head"><h2 id="search-heading">搜索会话</h2><button class="icon-button dialog-close" type="button" aria-label="关闭"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-close"></use></svg></button></div>
+  <label class="search-field"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-search"></use></svg><input id="search-input" type="search" autocomplete="off" aria-label="搜索会话、项目或设备" placeholder="搜索会话、项目或设备"></label>
+  <div id="search-results" class="dialog-list"></div>
+</dialog>
+<dialog id="devices-dialog" aria-labelledby="devices-heading">
+  <div class="dialog-head"><h2 id="devices-heading">我的设备</h2><button class="icon-button dialog-close" type="button" aria-label="关闭"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-close"></use></svg></button></div><div id="devices" class="dialog-list"></div>
+</dialog>
+<dialog id="account-dialog" aria-labelledby="account-heading">
+  <div class="dialog-head"><h2 id="account-heading">账户</h2><button class="icon-button dialog-close" type="button" aria-label="关闭"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-close"></use></svg></button></div>
+  <p id="signed-user" class="account-info"></p>
+  <button class="menu-row" id="settings-project"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-lock"></use></svg><span>本机项目权限</span><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-right"></use></svg></button>
+  <button class="menu-row" id="admin-nav" hidden><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-sliders"></use></svg><span>设备管理</span><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-right"></use></svg></button>
+  <button class="menu-row" id="logout"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-logout"></use></svg><span>退出登录</span></button>
+</dialog>
+<dialog id="project-dialog" aria-labelledby="project-heading">
+  <div class="dialog-head"><h2 id="project-heading">项目与权限</h2><button class="icon-button dialog-close" type="button" aria-label="关闭"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-close"></use></svg></button></div>
+  <div class="dialog-body">
+    <label for="project" id="project-caption">本机项目</label><select id="project"></select>
+    <p id="project-identity"></p>
+    <div id="grant"><label for="mode">项目权限</label><select id="mode"></select><p id="mode-description" class="muted"></p></div>
+    <p id="remote-mode" class="muted" hidden></p>
+    <p class="dialog-error inline-error" role="alert"></p>
+  </div>
+  <div class="dialog-actions"><button id="apply" class="primary">完成</button></div>
+</dialog>
+<dialog id="consent-dialog" aria-labelledby="consent-heading">
+  <div class="dialog-head"><span class="dialog-symbol"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-lock"></use></svg></span><button class="icon-button dialog-close" type="button" aria-label="关闭"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-close"></use></svg></button></div>
+  <div class="dialog-body"><h2 id="consent-heading">允许读取这个项目？</h2>
+    <p id="consent-copy"></p><p class="dialog-error inline-error" role="alert"></p>
+  </div>
+  <div class="dialog-actions"><button id="cancel-consent" class="secondary">取消</button><button id="allow-send" class="primary">允许只读并发送</button></div>
+</dialog>
 </body></html>

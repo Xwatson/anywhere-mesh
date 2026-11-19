@@ -27,11 +27,13 @@ export async function smoke({app,win,BrowserWindow,session,wan=false}) {
     const s=await A('create',{workspaceId:pa.id,requestId:randomUUID(),title:'A 上的开发会话 · '+new Date().toISOString().slice(11,19)});
     await wait(()=>js(win,"document.getElementById('entry').textContent.includes('设备 B')"));
     await formLogin(win,member);
-    const select=JSON.stringify('[data-session="'+s.id+'"]');
+    await wait(()=>js(win,"!document.getElementById('app').hidden && !document.getElementById('context').disabled"));
+    await js(win,"document.getElementById('find-chat').click()");
+    const select=JSON.stringify('#search-results [data-session="'+s.id+'"]');
     await wait(()=>js(win,'!!document.querySelector('+select+')'));
     await js(win,'document.querySelector('+select+').click()');
-    await wait(()=>js(win,"document.getElementById('notice').textContent.includes('当前在「设备 B') && document.getElementById('target').textContent.includes('设备 A') && document.getElementById('presence').textContent==='在线'"));
-    assert.equal(await js(win,"document.getElementById('mode').value"),'revoked');
+    await wait(()=>js(win,"document.getElementById('notice').textContent.includes('只会操作「设备 A') && document.getElementById('target').textContent.includes('设备 A') && document.getElementById('presence').textContent==='在线'"));
+    assert.equal((await B('state')).projects.find(p=>p.deviceId!==a.deviceId && p.localMode)?.localMode,'revoked');
     await js(win,"const draft=document.getElementById('draft');draft.value='/read notes.txt';draft.dispatchEvent(new Event('input'));void 0");
     await wait(()=>js(win,"!document.getElementById('send').disabled"));
     await js(win,"document.getElementById('send').click()");
@@ -49,7 +51,7 @@ export async function smoke({app,win,BrowserWindow,session,wan=false}) {
       cb(req.hostname===url.hostname && new X509Certificate(req.certificate.data).fingerprint256===pin ? 0 : -2);
     });
     browser=new BrowserWindow({show:false,width:1180,height:780,webPreferences:{session:isolated,sandbox:true,contextIsolation:true,nodeIntegration:false}});
-    await browser.loadURL(url.href);
+    await browser.loadURL(url.href+'?view=devices');
     await formLogin(browser,admin);
     await wait(()=>js(browser,"!document.getElementById('management').hidden && document.getElementById('fleet').textContent.includes('lab-coder')"));
     assert.ok(await js(browser,"document.getElementById('fleet').textContent.includes('最近在线') && document.getElementById('fleet').textContent.includes('A 上的开发会话')"));
@@ -60,8 +62,8 @@ export async function smoke({app,win,BrowserWindow,session,wan=false}) {
     await js(browser,rowCode+".querySelector('button').click()");
     await wait(()=>js(browser,rowCode+".textContent.includes('停用接入')"));
     checks.push('用独立浏览器身份登录服务端管理页，查看账号、设备、会话并停用和恢复接入');
-    await js(browser,"document.getElementById('logout').click()");
-    await js(win,"document.getElementById('logout').click()");
+    await js(browser,"document.getElementById('account-menu').click();document.getElementById('logout').click()");
+    await js(win,"document.getElementById('account-menu').click();document.getElementById('logout').click()");
     await wait(()=>js(win,"!document.getElementById('signin').hidden"));
     writeFileSync(art+'gui.json',JSON.stringify({passed:true,at:new Date().toISOString(),checks},null,2)+'\n');
   } catch(e) {

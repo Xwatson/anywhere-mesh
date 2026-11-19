@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, ipcMain, protocol, session, net, screen, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, protocol, session, net, screen, dialog, nativeTheme } = require('electron');
 const { spawn } = require('node:child_process');
 const { realpathSync, mkdirSync, existsSync, copyFileSync, constants } = require('node:fs');
 const { resolve, sep, extname } = require('node:path');
@@ -110,7 +110,8 @@ if (single) app.whenReady().then(async () => {
   child.on('error', e => console.error('Desktop backend:', e.message));
   const area = screen.getPrimaryDisplay().workAreaSize;
   win = new BrowserWindow({ width: Math.min(area.width, 1280), height: Math.min(area.height, 900), minWidth: 900, minHeight: 680,
-    show: false, backgroundColor: '#09090b', title: 'Anywhere Desktop · '+(windowsDevice?'Windows':'Linux')+' 实验版', autoHideMenuBar: true,
+    show: false, backgroundColor: windowsDevice || deviceSlot ? (nativeTheme.shouldUseDarkColors ? '#1c201d' : '#fdfdfa') : '#09090b',
+    title: 'Anywhere', autoHideMenuBar: true,
     ...(installedWindows ? {icon:resolve(process.resourcesPath,'Anywhere.ico')} : {}),
     webPreferences: { preload: resolve(appDir, 'preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false,
       webSecurity: true, allowRunningInsecureContent: false, webviewTag: false, devTools: false, spellcheck: false },

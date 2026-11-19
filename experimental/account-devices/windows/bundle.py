@@ -28,7 +28,7 @@ with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as bundle:
         "desktop": ["main.cjs", "package.json", "contract.cjs"],
         "desktop-commander": ["adapter.mjs"],
         "execution": ["agent.mjs", "grants.mjs", "journal.mjs", "protocol.mjs", "retention.mjs", "rpc.mjs"],
-        "account-devices": ["client.mjs", "contract.cjs", "preload.cjs", "ui/index.html", "ui/app.js", "ui/style.css",
+        "account-devices": ["client.mjs", "contract.cjs", "preload.cjs", "ui/index.html", "ui/app.js", "ui/thread.js", "ui/style.css",
                             "windows/controller.mjs", "windows/read.mjs", "windows/WorkspaceSnapshot.cs", "windows/PeerHost.cs", "windows/smoke.mjs"],
     }
     for module, names in files.items():

@@ -87,17 +87,17 @@ function Edit($id,$value) {
     $e.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($value)
 }
 function Mode($mode) {
+    Press 'id' 'context'
     $entry=Element 'id' 'mode'
     $entry.SetFocus()
     [Windows.Forms.SendKeys]::SendWait('{HOME}')
     if ($mode -eq 'read') { [Windows.Forms.SendKeys]::SendWait('{DOWN}') }
-    $button=Element 'id' 'apply'
-    if($button.Current.IsEnabled) {Press 'id' 'apply'}
-    [void](Wait-For "applied permission $mode" {
-        $apply=Find-Element 'id' 'apply'
-        $create=Find-Element 'name' '新建会话' 'ControlType.Button'
-        if($create -and $create.Current.IsEnabled -and $apply -and !$apply.Current.IsEnabled){$create}
-    })
+    Press 'id' 'apply'
+    [void](Wait-For "applied permission $mode" {$b=Find-Element 'id' 'context';if($b -and $b.Current.IsEnabled -and !(Find-Element 'id' 'mode')){$b}})
+}
+function Sign-Out { Press 'id' 'account-menu'; Press 'id' 'logout' }
+function Close-OpenDialog {
+    if (Find-Element 'name' '关闭' 'ControlType.Button') { Press 'name' '关闭' }
 }
 function Shot($suffix) {
     $r=$window.Current.BoundingRectangle
@@ -114,7 +114,7 @@ function Hash-Text($text) {
     finally {$sha.Dispose()}
 }
 function Send-Message($message) {Edit 'draft' $message;Press 'id' 'send'}
-$file="gui-$RunId.txt";$fixture=Join-Path (Join-Path $base 'project') $file
+$file='笔记-'+$RunId.Substring(0,8)+'.txt';$fixture=Join-Path (Join-Path $base 'project') $file
 $marker='GUI_'+[guid]::NewGuid().ToString('N')
 $created=$false;$signed=$false
 try {
@@ -128,12 +128,13 @@ try {
     $state.checks+='installed-shortcut'
     Phase 'login'
     $initial=Wait-For 'sign-in form or existing account' {
-        if(Find-Element 'id' 'logout') {'signed-in'} elseif(Find-Element 'id' 'username') {'sign-in'}
+        Close-OpenDialog
+        if(Find-Element 'id' 'account-menu') {'signed-in'} elseif(Find-Element 'id' 'username') {'sign-in'}
     }
     if($initial -eq 'signed-in') {
         $labels=$window.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
-        if(!($labels | Where-Object {$_.Current.Name -like 'lab-coder · Windows*'})) {throw 'A different account is using this desktop'}
-        Press 'id' 'logout'
+        if(!($labels | Where-Object {$_.Current.Name -eq 'lab-coder'})) {throw 'A different account is using this desktop'}
+        Sign-Out
     }
     $userField=Element 'id' 'username'
     for($attempt=1;$attempt -le 3;$attempt++) {
@@ -141,7 +142,7 @@ try {
         Edit 'password' $auth.password
         Press 'name' '登录'
         $outcome=Wait-For 'sign-in response' {
-            if (Find-Element 'id' 'logout') {'ok'}
+            if (Find-Element 'id' 'account-menu') {'ok'}
             else {$msg=Find-Element 'id' 'login-error';if($msg -and $msg.Current.Name){$msg.Current.Name}}
         } 55
         if($outcome -eq 'ok') {$signed=$true;break}
@@ -149,21 +150,40 @@ try {
     }
     $auth=$null
     $state.checks+='desktop-login'
-    Phase 'grant'
-    Mode 'read'
-    $state.sessionTitle='Windows 安装版联调 '+$RunId.Substring(0,8)
-    Edit 'title' $state.sessionTitle
-    Press 'name' '新建会话'
-    [void](Element 'name' $state.sessionTitle)
+    Phase 'home'
+    [void](Element 'name' '从哪里开始？')
     [void](Element 'id' 'draft')
-    $state.checks+='locally-granted-read'
+    if((Find-Element 'id' 'mode') -or (Find-Element 'id' 'fleet') -or (Find-Element 'id' 'logout')) {throw 'Settings unexpectedly visible on home'}
+    $state.checks+='composer-first-home'
+    [void](Wait-For 'local device online' {
+        $badge=Find-Element 'id' 'device-status'
+        if($badge -and ($badge.Current.Name -like '*在线*' -or $badge.Current.HelpText -like '*在线*')){$badge}
+    } 65)
+    Shot 'home'
+    Press 'id' 'device-status'
+    [void](Element 'name' '我的设备')
+    [void](Wait-For 'local Windows device' {$nodes=$window.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition);$nodes | Where-Object {$_.Current.Name -like ('Windows · '+$env:COMPUTERNAME+' · 本机')} | Select-Object -First 1})
+    Press 'name' '关闭'
+    $state.checks+='device-status-on-demand'
     $stream=[IO.File]::Open($fixture,[IO.FileMode]::CreateNew)
     try { $bytes=$utf8.GetBytes($marker+[Environment]::NewLine);$stream.Write($bytes,0,$bytes.Length) } finally {$stream.Dispose()}
     $created=$true
     $state.expectedSha256=Hash-Text $marker
     $state.file=$file
     Phase 'first-turn'
-    Send-Message ('请读取当前 Windows 项目中「'+$file+'」的第一行，只回复这一行原文。')
+    $promptText='请读取 '+$file+' 的首行，只回复原文。'
+    $state.sessionTitle=if($promptText.Length -gt 32){$promptText.Substring(0,31)+'…'}else{$promptText}
+    Send-Message $promptText
+    [void](Element 'name' '允许读取这个项目？')
+    Shot 'consent'
+    Press 'id' 'cancel-consent'
+    $draft=Element 'id' 'draft'
+    if($draft.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value -ne $promptText){throw 'Cancelled grant lost the draft'}
+    if(Find-Element 'name' $state.sessionTitle 'ControlType.Button'){throw 'Cancelled grant created a thread'}
+    Press 'id' 'send'
+    Press 'id' 'allow-send'
+    [void](Element 'name' $state.sessionTitle)
+    $state.checks+='cancel-keeps-draft','first-send-grants-read-and-creates-thread'
     [void](Wait-For 'model file answer' {Find-Element 'name' $marker} 205)
     [void](Element 'name' 'Codex')
     $state.checks+='exact-model-file-answer'
@@ -176,9 +196,25 @@ try {
     $state.followupSha256=Hash-Text $suffix
     $state.checks+='same-session-followup-after-file-removed'
     Shot 'followup'
+    Phase 'search'
+    Press 'id' 'new-chat'
+    [void](Element 'name' '从哪里开始？')
+    Press 'id' 'find-chat'
+    Edit 'search-input' $file
+    [void](Wait-For 'thread search result' {
+        $dialog=Find-Element 'id' 'search-dialog'
+        if ($dialog) {
+            $nodes=$dialog.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+            $nodes | Where-Object {$_.Current.Name -like ('*'+$file+'*') -and $_.Current.ControlType.ProgrammaticName -eq 'ControlType.Button'} | Select-Object -First 1
+        }
+    })
+    (Element 'id' 'search-input').SetFocus()
+    [Windows.Forms.SendKeys]::SendWait('{ENTER}')
+    [void](Element 'name' $suffix)
+    $state.checks+='search-reopens-bound-thread'
     Phase 'revoke'
     Mode 'revoked'
-    Press 'id' 'logout'
+    Sign-Out
     [void](Element 'id' 'username')
     $signed=$false
     $state.checks+='revoked-and-signed-out'
@@ -194,5 +230,8 @@ try {
     throw
 } finally {
     if ($created) {[IO.File]::Delete($fixture)}
-    if ($signed) { try {Press 'id' 'logout'} catch {} }
+    if ($signed) { try {
+        Close-OpenDialog
+        Sign-Out
+    } catch {} }
 }

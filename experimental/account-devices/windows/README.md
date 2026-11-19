@@ -4,10 +4,10 @@
 
 ## 在 Windows 上使用
 
-1. 双击桌面或开始菜单的 **Anywhere Coding Lab**，用实验账号 `lab-coder` 登录。服务端按账号登记当前设备。虚拟机「下载」目录中有同版安装程序 `Anywhere-Coding-Lab-0.2.0-win-x64-Setup.exe`。
-2. 项目目录为 `%LOCALAPPDATA%\AnywhereCodingLab\project`。选择「只读」并点击「应用权限」。在「Windows 本地项目」新建会话，在「发给 Codex」中输入「请读取 notes.txt 的第一行」。可以在同一会话继续追问。
-3. 在另一台客户端用同一账号打开该会话，标题会显示 Windows 执行设备及在线状态。Windows 退出后，其他设备能查看该会话的历史。重新登录 Windows 并授权后可继续。
-4. 普通用户可关闭桌面结束此安装的连接。管理员从网页查看该设备、最近在线时间和绑定会话。[打开服务端管理页](https://awc.xbxbe.com/)
+1. 双击桌面或开始菜单的 **Anywhere Coding Lab**，用实验账号 `lab-coder` 登录。虚拟机「下载」目录中有同版安装程序 `Anywhere-Coding-Lab-0.3.0-win-x64-Setup.exe`。
+2. 在首页直接输入「请读取 notes.txt 的第一行」，按 Enter 发送。首次使用该项目时点击「允许只读并发送」，客户端会绑定本机、用首条消息命名会话。取消授权会保留草稿。Shift+Enter 可以换行。
+3. 左侧按项目列出会话，Ctrl+K 可按会话名、项目或设备搜索。标题栏显示执行设备和在线状态。工具操作可展开查看原始返回。在其他电脑打开同一会话时，页面会提示它绑定的设备。
+4. 本机项目目录为 `%LOCALAPPDATA%\AnywhereCodingLab\project`。点击输入框下方的项目或权限按钮可查看、调整本机授权。左下角账户菜单提供退出登录，管理员还可查看所有设备和绑定会话。[打开服务端管理页](https://awc.xbxbe.com/?view=devices)
 
 ## 传输与文件工具
 
@@ -36,7 +36,7 @@ python3 experimental/account-devices/windows/package-installer.py \
 ```sh
 python3 source/experimental/account-devices/windows/verify-installed.py \
   xwatson@192.168.8.210 /home/xwatson/.ssh/id_rsa \
-  secrets/wan-198.84.90.137/accounts.json artifacts/windows-installer
+  secrets/wan-198.84.90.137/accounts.json artifacts/windows-installer/0.3.0
 ```
 
 ## 早期便携版与跨设备协议复测

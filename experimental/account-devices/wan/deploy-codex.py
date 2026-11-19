@@ -16,7 +16,7 @@ unitdir = Path("/etc/systemd/system")
 prefix = Path("/opt/anywhere-wan")
 service = "anywhere-wan-host.service"
 control = lambda *args: subprocess.run(["systemctl", *args], check=True)
-files = ("server.mjs", "mcp.mjs", "ui/app.js", "ui/index.html", "ui/style.css")
+files = ("server.mjs", "mcp.mjs", "ui/app.js", "ui/index.html", "ui/thread.js", "ui/style.css")
 sha = hashlib.sha256()
 for name in files:
     sha.update((stage / name).read_bytes())

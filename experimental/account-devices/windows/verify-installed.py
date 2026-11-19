@@ -35,7 +35,7 @@ report=collect(name+".json")
 if not report:
     sys.exit("No Windows report: "+result.stderr.decode(errors="replace")[-600:])
 state=json.loads(report.read_text(encoding="utf-8-sig"))
-for suffix in ("file","followup","diagnostic"):
+for suffix in ("home","consent","file","followup","diagnostic"):
     collect(name+"-"+suffix+".png")
 print(json.dumps({k:state.get(k) for k in ("phase","passed","checks","error","line")},ensure_ascii=False),flush=True)
 sys.exit(0 if result.returncode==0 and state.get("passed") else 1)

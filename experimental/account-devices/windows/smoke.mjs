@@ -57,21 +57,24 @@ export async function smoke({win,root}) {
     assert.equal(project.localMode,'revoked');
     assert.deepEqual(project.localModes,['revoked','read']);
     await assert.rejects(api('permission',{workspaceId:project.id,mode:'execute'}),/UNSUPPORTED_DEVICE_PERMISSION/);
-    await wait('local grant controls',()=>js('!'+view('grant','hidden')+' && '+view('project','value')+'==='+JSON.stringify(project.id)));
-    const applyMode = mode => js("(()=>{const m=document.querySelector('#mode');m.value="+JSON.stringify(mode)+";m.dispatchEvent(new Event('change'));document.querySelector('#apply').click();})()");
+    const applyMode = async mode => {
+      await wait('project button',()=>js("!document.querySelector('#app').hidden && !document.querySelector('#context').disabled"));
+      await js("document.querySelector('#context').click()");
+      await wait('project settings',()=>js("document.querySelector('#project-dialog').open && document.querySelector('#project').value==="+JSON.stringify(project.id)));
+      await js("(()=>{const m=document.querySelector('#mode');m.value="+JSON.stringify(mode)+";m.dispatchEvent(new Event('change'));document.querySelector('#apply').click();})()");
+      await wait('project settings saved',()=>js("!document.querySelector('#project-dialog').open && !document.querySelector('#context').disabled"));
+    };
     await applyMode('read');
     await wait('remote read grant',async()=>(await api('state')).projects.some(p=>p.id===project.id&&p.ready&&p.mode==='read'));
     data.checks.push('desktop-login','read-only-local-grant');
     let s=initial.sessions.find(s=>s.title===title && s.workspaceId===project.id && s.deviceId===initial.deviceId);
-    if(!s) {
-      await js(view('title','value')+'='+JSON.stringify(title)+";document.querySelector('#create').requestSubmit();void 0");
-      s=await wait('create bound session',async()=>(await api('state')).sessions.find(s=>s.title===title&&s.workspaceId===project.id&&s.deviceId===initial.deviceId));
-    }
+    if(!s) s=await api('create',{requestId:randomUUID(),workspaceId:project.id,title});
     data.sessionId=s.id;
-    const selector='[data-session="'+s.id+'"]';
+    await js("document.querySelector('#find-chat').click()");
+    const selector='#search-results [data-session="'+s.id+'"]';
     await wait('session row',()=>js('!!document.querySelector('+JSON.stringify(selector)+')'));
     await js('document.querySelector('+JSON.stringify(selector)+').click();void 0');
-    await wait('online target',()=>js(view('target','textContent')+".includes('Windows') && "+view('presence','textContent')+"==='在线'"));
+    await wait('online target',()=>js(view('device-status','title')+".includes('Windows') && "+view('presence','textContent')+"==='在线'"));
     await js(view('draft','value')+'='+JSON.stringify(command)+";document.querySelector('#draft').dispatchEvent(new Event('input'));void 0");
     await wait('send ready',()=>js('!'+view('send','disabled')));
     await js("document.querySelector('#send').click();void 0");
@@ -91,7 +94,7 @@ export async function smoke({win,root}) {
     await applyMode('revoked');
     await wait('remote grant revoked',async()=>(await api('state')).projects.find(p=>p.id===project.id)?.mode==='revoked');
     await assert.rejects(api('send',{sessionId:s.id,requestId:randomUUID(),text:command}),/LOCAL_PERMISSION_REQUIRED/);
-    await js("document.querySelector('#logout').click();void 0");
+    await js("document.querySelector('#account-menu').click();document.querySelector('#logout').click();void 0");
     await wait('signed out',()=>js('!'+view('signin','hidden')+' && '+view('app','hidden')));
     data.checks.push('revocation','desktop-signout'); data.phase='passed'; data.at=new Date().toISOString();save();
   } catch (e) {

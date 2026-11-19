@@ -12,13 +12,13 @@
 
 ## 打开管理页和桌面
 
-在浏览器打开管理页即可登录。浏览器使用系统信任库，域名源站持有 Let's Encrypt 证书；桌面在 EasyTier 隧道内单独验证实验 CA。SSH 用于部署和维护，公网访问管理页以及桌面调用 MCP 都走 443。[打开管理页](https://awc.xbxbe.com/)
+浏览器首页用于继续已绑定设备的会话。管理账号可从左下角账户菜单打开设备管理，也可使用直达链接。浏览器使用系统信任库，桌面在 EasyTier 隧道内单独验证实验 CA。公网网页和桌面业务都走 443。[打开管理页](https://awc.xbxbe.com/?view=devices)
 
 管理账号为 `lab-admin`，设备 A/B 共用的普通测试账号为 `lab-coder`。密码保存在 NAS 实验根目录的 `secrets/wan-198.84.90.137/accounts.json`。在飞牛 VM 运行 `sudo systemctl start anywhere-wan-ui-a` 或 `anywhere-wan-ui-b` 可打开对应的桌面；登录后客户端会出现于管理页，在设备上授予项目权限后即可操作。退出登录会撤销该安装的项目权限。
 
 ## 构建和部署
 
-1. 在具备 D3 运行时、锁定依赖和已编译 `server/dist` 的飞牛实验 VM 中运行 `bash experimental/account-devices/wan/build.sh STAGE/app`。对 `STAGE` 中的 `app/server.mjs`、`app/mcp.mjs` 和三个 Web 资源生成相对路径的 `app.sha256`。
+1. 在具备 D3 运行时、锁定依赖和已编译 `server/dist` 的飞牛实验 VM 中运行 `bash experimental/account-devices/wan/build.sh STAGE/app`。对 `STAGE` 中的 `app/server.mjs`、`app/mcp.mjs` 和 `app/ui/` 下的全部网页资源生成相对路径的 `app.sha256`。
 2. 全新部署时在管理机运行 `python3 experimental/account-devices/wan/prepare.py NEW_PRIVATE_DIR awc.xbxbe.com` 生成身份。向远端独立暂存目录传送 `app/`、`app.sha256`、`server.toml`、锁定的 `node.tar.xz`（24.21.0 Linux x64）、`easytier-core`、`easytier-cli`（2.6.4 Linux x86_64）和此目录的安装脚本与模板。以 root 运行 `python3 install-server.py STAGE awc.xbxbe.com`，首次从 SSH 标准输入提供 `accounts.json`。
 3. 在已配置 Nginx 和 Certbot 账号的源站运行 `python3 publish-domain.py awc.xbxbe.com /opt/web-desktop-certbot/bin/certbot`。HTTP-01 验证目录为 `/var/www/anywhere-wan-acme`。系统每天两次检查本域名证书，续签成功后平滑重载 Nginx。EasyTier 上游和业务上游分别绑定源站回环端口 31483、18443。
 4. 将 `client.toml`、`accounts.json`、远端的公有 `ca.crt` 和 `server.crt` 放入飞牛 VM 私有暂存目录。同步本分支的 `experimental/` 后运行 `sudo python3 experimental/account-devices/wan/install-client.py STAGE awc.xbxbe.com`。VM 首次启动和运行中每分钟解析该域名，向专用容器提供 IPv4 地址。只有网络进程可经物理出口连接解析出的地址和 TCP 443。设备 A、B 在隧道内访问业务端口 18443。
