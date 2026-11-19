@@ -8,7 +8,9 @@ const count = (minimum, maximum, value) => ({ type: 'integer', minimum, maximum,
 const schema = (properties, required) => ({ type: 'object', properties, required, additionalProperties: false });
 const file = (tool, args) => ({ kind: 'dc.tool', cwdRelative: '.', args: { tool, arguments: args } });
 const definitions = [
-  ['workspace_read_file', 'Read a bounded page of a text file.', 'read', { path, offset: count(-10000, 1000000, 0), length: count(1, 200, 100) }, ['path'],
+  ['workspace_read_file', 'Read lines of text. To read the first line, use offset 0 and length 1.', 'read',
+    { path, offset: { ...count(-10000, 1000000, 0), description: 'Zero-based line offset; negative values count from the end.' },
+      length: { ...count(1, 200, 100), description: 'Number of text lines to read, from 1 to 200. Defaults to 100 lines.' } }, ['path'],
     a => file('read_file', { path: a.path, offset: a.offset ?? 0, length: a.length ?? 100 })],
   ['workspace_read_files', 'Read up to five text files; per-file failures are reported.', 'read', { paths: { type: 'array', items: path, minItems: 1, maxItems: 5 } }, ['paths'],
     a => file('read_multiple_files', a)],

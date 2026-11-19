@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { createInterface } from 'node:readline';
+import type { Readable, Writable } from 'node:stream';
 import { config } from '../config.js';
 
 const require = createRequire(import.meta.url);
@@ -15,6 +16,9 @@ export interface CodexAppServerOptions {
   env?: NodeJS.ProcessEnv;
   /** Config overrides for this process only, as for `codex -c key=value`. */
   config?: string[];
+  /** Attach to an already launched app-server, e.g. under a separate OS login. */
+  transport?: { input: Readable; output: Writable };
+  experimentalApi?: boolean;
   /**
    * Handles requests Codex sends to us (approvals, questions). The resolved value is
    * the JSON-RPC result; a rejection is returned as a JSON-RPC error.
@@ -30,6 +34,8 @@ export interface CodexAppServerOptions {
  */
 export class CodexAppServer {
   private proc: ChildProcessWithoutNullStreams | null = null;
+  private output: Writable | null = null;
+  private disconnect?: () => void;
   private ready: Promise<void> | null = null;
   private nextId = 0;
   private waiters = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
@@ -57,7 +63,7 @@ export class CodexAppServer {
   }
 
   get running(): boolean {
-    return this.proc !== null;
+    return this.output !== null;
   }
 
   async call<T>(method: string, params: unknown): Promise<T> {
@@ -75,26 +81,44 @@ export class CodexAppServer {
 
   private start(): Promise<void> {
     if (this.ready) return this.ready;
-    const [cmd, args] = this.command();
-    const proc = spawn(cmd, args, { stdio: ['pipe', 'pipe', 'pipe'], env: this.opts.env ?? process.env });
-    this.proc = proc;
-    proc.stderr.on('data', () => {}); // app-server logs to stderr; not needed here
-    proc.stdin.on('error', () => {}); // writes after exit; the exit handler reports it
-    createInterface({ input: proc.stdout }).on('line', (line) => this.onLine(line));
+    let transport = this.opts.transport;
+    if (!transport) {
+      const [cmd, args] = this.command();
+      this.proc = spawn(cmd, args, { stdio: ['pipe', 'pipe', 'pipe'], env: this.opts.env ?? process.env });
+      this.proc.stderr.resume();
+      this.proc.stdin.on('error', () => {}); // A buffered write can fail after the child exits.
+      transport = { input: this.proc.stdout, output: this.proc.stdin };
+    }
+    const proc = this.proc;
+    const { input, output } = transport;
+    this.output = output;
+    const lines = createInterface({ input });
+    lines.on('line', (line) => this.onLine(line));
     const fail = (err: Error) => {
-      if (this.proc !== proc) return;
-      this.proc = null;
-      this.ready = null;
-      for (const w of this.waiters.values()) w.reject(err);
-      this.waiters.clear();
+      if (this.disconnect !== detach) return;
+      this.reset(err);
+      proc?.kill();
       this.opts.onExit?.(err);
     };
-    proc.on('error', fail);
-    proc.on('exit', (code) => fail(new Error(`codex app-server 已退出 (${code})`)));
+    const ended = () => fail(new Error('codex app-server 已断开'));
+    const detach = () => {
+      lines.off('close', ended);
+      lines.close();
+      input.off('error', fail);
+      output.off('error', fail);
+      proc?.off('error', fail);
+      proc?.off('exit', ended);
+    };
+    this.disconnect = detach;
+    lines.once('close', ended);
+    input.on('error', fail);
+    output.on('error', fail);
+    proc?.once('error', fail);
+    proc?.once('exit', ended);
 
     this.ready = this.request('initialize', {
       clientInfo: { name: 'anywhere-coding', title: 'Anywhere Coding', version: '0.1.0' },
-      capabilities: null,
+      capabilities: this.opts.experimentalApi ? { experimentalApi: true } : null,
     }).then(() => {
       this.write({ jsonrpc: '2.0', method: 'initialized' });
     });
@@ -127,16 +151,20 @@ export class CodexAppServer {
   }
 
   private async answer(id: RequestId, method: string, params: Params) {
+    const connection = this.disconnect;
     try {
       if (!this.opts.onRequest) throw new Error(`unsupported request: ${method}`);
       const result = await this.opts.onRequest(method, params, id);
-      this.write({ jsonrpc: '2.0', id, result });
+      if (this.disconnect === connection) this.write({ jsonrpc: '2.0', id, result });
     } catch (e) {
-      this.write({ jsonrpc: '2.0', id, error: { code: -32601, message: (e as Error).message } });
+      if (this.disconnect === connection) {
+        this.write({ jsonrpc: '2.0', id, error: { code: -32601, message: (e as Error).message } });
+      }
     }
   }
 
   private request<T>(method: string, params: unknown): Promise<T> {
+    if (!this.output) return Promise.reject(new Error('codex app-server 已断开'));
     const id = ++this.nextId;
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -152,7 +180,7 @@ export class CodexAppServer {
   }
 
   private write(msg: unknown) {
-    this.proc?.stdin.write(JSON.stringify(msg) + '\n');
+    this.output?.write(JSON.stringify(msg) + '\n');
   }
 
   private touch() {
@@ -162,11 +190,20 @@ export class CodexAppServer {
     this.idleTimer = setTimeout(() => (this.holds > 0 ? this.touch() : this.stop()), idleMs);
   }
 
-  stop() {
+  private reset(err: Error) {
     if (this.idleTimer) clearTimeout(this.idleTimer);
-    const p = this.proc;
+    this.disconnect?.();
+    this.disconnect = undefined;
+    this.output = null;
     this.proc = null;
     this.ready = null;
+    for (const waiter of this.waiters.values()) waiter.reject(err);
+    this.waiters.clear();
+  }
+
+  stop() {
+    const p = this.proc;
+    this.reset(new Error('codex app-server 已停止'));
     p?.kill();
   }
 }
