@@ -18,6 +18,8 @@
 
 桌面和网页均可从左下角账号名 → **更改密码** 更新自己的密码。当前登录保留，其他设备与浏览器需要重新登录。自动化验收单独从 NAS 私有凭据文件读取密码，修改用于验收的账号后需要同步更新该文件中的对应条目。
 
+Windows 0.3.2 新安装从同一域名的登录接口进入，随后用设备令牌请求 `POST /api/device/network`。服务端经专用网络命名空间内的 EasyTier RPC 签发限于当前登录的凭据，分配 `10.203.73.4–254` 中的一个空闲地址。Windows 连接后，设备和项目的业务套接字走 EasyTier。网页登录无法领取入网凭据。服务端重启或连接中断后，已登录的客户端可用原登录恢复连接。[EasyTier 安全模式](https://easytier.cn/guide/network/secure-mode.html)
+
 ## 构建和部署
 
 1. 在具备 D3 运行时、锁定依赖和已编译 `server/dist` 的飞牛实验 VM 中运行 `bash experimental/account-devices/wan/build.sh STAGE/app`。对 `STAGE` 中的 `app/server.mjs`、`app/mcp.mjs` 和 `app/ui/` 下的全部网页资源生成相对路径的 `app.sha256`。

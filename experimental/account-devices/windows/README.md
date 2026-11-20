@@ -4,7 +4,7 @@
 
 ## 在 Windows 上使用
 
-1. 双击桌面或开始菜单的 **Anywhere Coding Lab**，用实验账号 `lab-coder` 登录。虚拟机「下载」目录中有同版安装程序 `Anywhere-Coding-Lab-0.3.1-win-x64-Setup.exe`。
+1. 双击桌面或开始菜单的 **Anywhere Coding Lab**，首次打开即显示账号登录页。登录成功后客户端自动配置本机连接。虚拟机「下载」目录中有同版安装程序 `Anywhere-Coding-Lab-0.3.2-win-x64-Setup.exe`。
 2. 在首页直接输入「请读取 notes.txt 的第一行」，按 Enter 发送。首次使用该项目时点击「允许只读并发送」，客户端会绑定本机、用首条消息命名会话。取消授权会保留草稿。Shift+Enter 可以换行。
 3. 左侧按项目列出会话，Ctrl+K 可按会话名、项目或设备搜索。标题栏显示执行设备和在线状态。工具操作可展开查看原始返回。在其他电脑打开同一会话时，页面会提示它绑定的设备。
 4. 本机项目目录为 `%LOCALAPPDATA%\AnywhereCodingLab\project`。点击输入框下方的项目或权限按钮可查看、调整本机授权。左下角账户菜单提供退出登录，管理员还可查看所有设备和绑定会话。[打开服务端管理页](https://awc.xbxbe.com/?view=devices)
@@ -12,11 +12,11 @@
 
 ## 传输与文件工具
 
-Windows 运行 EasyTier 2.6.4，以独立身份 `10.203.73.3` 连接 `wss://awc.xbxbe.com/easytier`。无 TUN 模式在用户态将 `127.0.0.1:31844` 转发到服务端虚拟地址 `10.203.73.2:18443`。Node 客户端用实验 CA 验证内层 TLS。SSH 用于部署和驱动测试。桌面拥有网络进程的生命周期，后端退出会关闭控制管道，Windows Job Object 负责监督进程异常终止时的回收。[EasyTier 无 TUN 模式](https://easytier.cn/en/guide/network/no-root.html) 和 [端口转发](https://easytier.cn/en/guide/network/port-forward.html)
+新安装先通过 `https://awc.xbxbe.com` 登录。服务端只向持有有效设备登录令牌的客户端签发独立的 EasyTier 2.6.4 凭据，分配虚拟地址，并返回服务端公钥。客户端固定该公钥，自动建立到 `wss://awc.xbxbe.com/easytier` 的用户态连接。业务 HTTPS、WSS 和 Workspace MCP 经本机回环端口转发到 `10.203.73.2:18443`，另行验证实验 CA。入网凭据只交给本次网络子进程。退出登录、停用设备或登录到期后，服务端回收该凭据和地址。SSH 用于部署和驱动测试。桌面拥有网络进程的生命周期，后端退出会关闭控制管道，Windows Job Object 负责监督进程异常终止时的回收。[EasyTier 无 TUN 模式](https://easytier.cn/en/guide/network/no-root.html) 和 [端口转发](https://easytier.cn/en/guide/network/port-forward.html)
 
 客户端复用 Linux 桌面的 Electron 界面、账号协议、设备身份、项目授权和操作日志。美国端 Codex 通过该会话的 Workspace MCP 调用 `workspace_read_file`。Windows 读取器逐段打开本地路径，从已校验的文件句柄读取至多 1 MiB 的 UTF-8 文本。目录联接、重解析点和多硬链接文件会被拒绝。Desktop Commander 0.3.3 的 `TextFileHandler.read` 对私有快照执行分页。服务端按设备实际支持的工具生成 MCP 清单。[Desktop Commander 源码](https://github.com/wonderwhy-er/DesktopCommanderMCP/tree/bce370e9395f5bc74eda34913e5ae1dee48df8f8)
 
-本轮 Windows 支持预置项目中的单文件读取。通用目录选择、搜索、编辑和隔离构建仍待适配。安装包按 Windows 用户安装，尚未做 Authenticode 签名或自动更新。新机器首次运行需导入分配给该机的 EasyTier 实验配置。已有实验机器沿用本机的网络配置、设备身份和项目。
+本轮 Windows 支持预置项目中的单文件读取。通用目录选择、搜索、编辑和隔离构建仍待适配。安装包按 Windows 用户安装，尚未做 Authenticode 签名或自动更新。已配置的实验机器升级后沿用原有 `windows.toml`、设备身份与项目。新机器上，设备身份保存在 `state` 目录，本机连接参数与服务端公钥由客户端维护。
 
 ## 重建 Windows x64 安装包
 
@@ -32,12 +32,12 @@ python3 experimental/account-devices/windows/package-installer.py \
 
 安装程序包含固定版本的 Electron、Node、EasyTier、Workspace MCP 读取器和部署 CA 公共证书。程序安装在 `%LOCALAPPDATA%\Programs\Anywhere Coding Lab`，卸载入口在 Windows「应用和功能」中。项目与设备配置由当前用户保存在 `%LOCALAPPDATA%\AnywhereCodingLab`。
 
-真实聊天验收从 Windows 桌面快捷方式启动，通过系统 UI Automation 操作登录、授权和聊天表单，并在本机核对两个随机答案。使用已登录图形桌面的 Windows 用户，从飞牛实验目录运行：
+全新安装验收使用桌面快捷方式指向的已安装程序、独立空配置目录和测试账号 `lab-other` 启动，通过系统 UI Automation 操作登录、授权和聊天表单，并在本机核对两个随机答案。使用已登录图形桌面的 Windows 用户，从飞牛实验目录运行：
 
 ```sh
-python3 source/experimental/account-devices/windows/verify-installed.py \
+python3 source/experimental/account-devices/windows/verify-installed.py --fresh \
   xwatson@192.168.8.210 /home/xwatson/.ssh/id_rsa \
-  secrets/wan-198.84.90.137/accounts.json artifacts/windows-installer/0.3.1
+  secrets/wan-198.84.90.137/accounts.json artifacts/windows-installer/0.3.2
 ```
 
 ## 早期便携版与跨设备协议复测

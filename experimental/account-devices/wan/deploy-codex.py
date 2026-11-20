@@ -8,6 +8,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import tomllib
 
 if os.geteuid() != 0:
     raise SystemExit("Run as the deployment administrator")
@@ -47,6 +48,11 @@ for name in ("anywhere-wan-codex.socket", "anywhere-wan-codex@.service"):
 install(stage / "codex-service.py", prefix / "bin/codex-service.py")
 cfg = json.loads(Path("/etc/anywhere-wan/host.json").read_text())
 cfg.update(codexSocket="/run/anywhere-wan-codex.sock", codexCwd="/var/lib/anywhere-wan-codex")
+# Only public server identity is needed by the app. EasyTier retains the network keys.
+wire = tomllib.loads(Path("/etc/anywhere-wan/network.toml").read_text())
+if wire["secure_mode"]["enabled"] and wire["listeners"] == ["ws://127.0.0.1:31483/"]:
+    cfg["windowsNetwork"] = {"name": wire["network_identity"]["network_name"],
+                             "serverKey": wire["secure_mode"]["local_public_key"]}
 config = release / "host.json"
 config.write_text(json.dumps(cfg) + "\n")
 config.chmod(0o644)

@@ -11,12 +11,14 @@ import { SessionHost } from '../session-host/runtime.mjs';
 import { fields, uuid } from '../session-host/store.mjs';
 import { register } from '../desktop-commander/adapter.mjs';
 import { CAPABILITIES } from '../execution/protocol.mjs';
+import { NetworkLeases } from './network-leases.mjs';
 import * as directory from './directory.mjs';
 
 register();
 CAPABILITIES.push('workspace.grants.v1', 'history.archive.v1', 'review.v1');
 
 export async function startServer(config) {
+  const network = config.windowsNetwork ? new NetworkLeases(config.windowsNetwork) : null;
   const CodexTurns = config.codexSocket ? (await import('../session-host/codex-turns.mjs')).CodexTurns : null;
   const accounts = new Map(), projects = new Map(), opening = new Map(), online = new Map();
   const socketServer = new WebSocketServer({ noServer:true, perMessageDeflate:false, maxPayload:65536 });
@@ -118,6 +120,12 @@ export async function startServer(config) {
         projects:directory.workspaces(signed.user.id).filter(p=>p.deviceId===signed.deviceId)} : {})}); return;
     }
     const token=credential(req), {user,deviceId}=directory.authenticate(token);
+    if (req.method==='POST' && path==='/api/device/network') {
+      if (!deviceId || !req.headers.authorization?.startsWith('Bearer ')) throw Error('FORBIDDEN');
+      fields(await body(req),[]);
+      if (!network) throw Error('NETWORK_ENROLLMENT_UNAVAILABLE');
+      json(res,200,await network.issue(token)); return;
+    }
     if (req.method==='POST' && path==='/api/auth/password') {
       const userId=directory.changePassword(token,await body(req));
       for (const [id,peer] of online) {
@@ -126,7 +134,7 @@ export async function startServer(config) {
       json(res,200,{ok:true}); return;
     }
     if (req.method==='POST' && path==='/api/auth/logout') {
-      fields(await body(req),[]); directory.logout(token); if(deviceId) detach(deviceId);
+      fields(await body(req),[]); directory.logout(token); if(online.get(deviceId)?.token===token) detach(deviceId);
       res.setHeader('Set-Cookie',cookieName+'=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict; Secure');
       json(res,200,{ok:true}); return;
     }
@@ -173,7 +181,7 @@ export async function startServer(config) {
     handle(req,res).catch(e=>{
       const message=e.code ?? e.message;
       const status={LOGIN_REQUIRED:401,INVALID_CREDENTIALS:401,FORBIDDEN:403,DEVICE_DISABLED:403,CREATE_ON_THIS_DEVICE:403,
-        NOT_FOUND:404,SESSION_NOT_FOUND:404,LOGIN_THROTTLED:429,PASSWORD_THROTTLED:429,INVALID_FIELDS:400,BODY_LIMIT:413,
+        NETWORK_ENROLLMENT_UNAVAILABLE:503,NETWORK_ADDRESS_LIMIT:503,NOT_FOUND:404,SESSION_NOT_FOUND:404,LOGIN_THROTTLED:429,PASSWORD_THROTTLED:429,INVALID_FIELDS:400,BODY_LIMIT:413,
         INCORRECT_CURRENT_PASSWORD:400,INVALID_NEW_PASSWORD:400,PASSWORD_UNCHANGED:400}[message] ?? 409;
       json(res,status,{error:/^[A-Z0-9_]+$/.test(message)?message:'REQUEST_FAILED'});
     });
@@ -223,8 +231,10 @@ export async function startServer(config) {
   },2000);
   server.headersTimeout=8000; server.requestTimeout=15000;
   await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(config.port,config.host,resolve);});
+  const reap = network && setInterval(() => network.sweep().catch(() => {}),5000);
   return {port:server.address().port, async close(){
-    clearInterval(heartbeat);
+    clearInterval(heartbeat); clearInterval(reap);
+    await network?.sweeping?.catch(() => {});
     for(const id of online.keys()) detach(id);
     server.closeAllConnections();
     await new Promise(resolve=>server.close(resolve));

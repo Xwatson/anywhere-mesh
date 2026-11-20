@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import tomllib
 from tempfile import TemporaryDirectory
 from wan_endpoint import endpoint
 
@@ -68,7 +69,13 @@ if not (etc/'server.crt').exists():
         '-days','90','-sha256','-extfile',pki/'server.ext','-out',etc/'server.crt')
 copy(pki/'server.key',etc/'server.key',0o640);shutil.chown(etc/'server.key','root',appuser)
 (etc/'ca.crt').chmod(0o644);(etc/'server.crt').chmod(0o644)
-config(etc/'host.json',json.dumps({'host':'10.203.73.2','port':18443,'stateDir':state,'cert':str(etc/'server.crt'),'key':str(etc/'server.key')})+'\n')
+host_config={'host':'10.203.73.2','port':18443,'stateDir':state,'cert':str(etc/'server.crt'),'key':str(etc/'server.key')}
+if domain:
+    wire=tomllib.loads((etc/'network.toml').read_text())
+    if wire['secure_mode']['enabled']:
+        host_config['windowsNetwork']={'name':wire['network_identity']['network_name'],
+                                       'serverKey':wire['secure_mode']['local_public_key']}
+config(etc/'host.json',json.dumps(host_config)+'\n')
 Path(state).mkdir(mode=0o700,exist_ok=True);shutil.chown(state,appuser,appuser)
 common='NoNewPrivileges=yes\nProtectSystem=strict\nProtectHome=yes\nPrivateTmp=yes\nUMask=0077\nRestart=on-failure\nRestartSec=2\n'
 config(units/'anywhere-wan-net.service',f'''[Unit]

@@ -19,7 +19,7 @@ export function request(url, tls, method, path, data, token) {
   const deadline=AbortSignal.timeout(10000);
   return new Promise((resolve,reject)=>{
     const req=https.request(new URL(path,url),{...tls,method,timeout:8000,signal:deadline,headers:{
-      ...(token ? {Authorization:'Bearer '+token} : {}), ...(raw ? {'Content-Type':'application/json'} : {})
+      'User-Agent':'AnywhereCodingLab/1', ...(token ? {Authorization:'Bearer '+token} : {}), ...(raw ? {'Content-Type':'application/json'} : {})
     }},res=>{
       const chunks=[];let size=0;
       res.on('error',reject);res.on('data',part=>{size+=part.length;if(size>1024*1024)req.destroy(Error('RESPONSE_LIMIT'));else chunks.push(part);});
@@ -72,9 +72,10 @@ export class DeviceClient {
     if(p.agent.grant.mode!==mode) p.agent.control('setMode',{requestId:randomUUID(),expectedVersion:p.agent.grant.grantVersion,mode});
     return {mode:p.agent.grant.mode};
   }
+  authenticate(input) { return this.api('POST','/api/auth/login',input); }
   async login(p) {
     if(this.signed) throw Error('SIGN_OUT_FIRST');
-    const signed=await this.api('POST','/api/auth/login',{...p,installation:this.profile.secret,name:this.cfg.name,
+    const signed=await this.authenticate({...p,installation:this.profile.secret,name:this.cfg.name,
       projects:this.profile.projects.map(({localId,label})=>({localId,label}))});
     this.signed=signed;
     try {

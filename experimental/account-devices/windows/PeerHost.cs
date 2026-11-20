@@ -38,12 +38,14 @@ internal static class PeerHost {
             var job = CreateJobObject(IntPtr.Zero, null);
             if (job == IntPtr.Zero || !SetInformationJobObject(job,9,ref limits,Marshal.SizeOf(limits)) ||
                 !AssignProcessToJobObject(job,Process.GetCurrentProcess().Handle)) return 1;
-            string root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AnywhereCodingLab");
+            string root = Path.Combine(Environment.GetEnvironmentVariable("LOCALAPPDATA"), "AnywhereCodingLab");
             string executable = args.Length == 0 ? Path.Combine(root,@"runtime\easytier-core.exe") : args[0];
-            if (args.Length > 1 || !Path.IsPathRooted(executable) || Path.GetFileName(executable) != "easytier-core.exe") return 1;
+            bool managed = args.Length == 2 && args[1] == "session";
+            if ((args.Length > 1 && !managed) || !Path.IsPathRooted(executable) || Path.GetFileName(executable) != "easytier-core.exe") return 1;
             var start = new ProcessStartInfo(executable) {
-                Arguments = "--disable-env-parsing --config-file \"" + Path.Combine(root,"windows.toml") +
-                    "\" --rpc-portal 127.0.0.1:31897 --console-log-level error",
+                Arguments = (managed ? "" : "--disable-env-parsing ") + "--config-file \"" +
+                    Path.Combine(root, managed ? "network-session.toml" : "windows.toml") +
+                    "\" --rpc-portal 127.0.0.1:" + (managed ? "0" : "31897") + " --console-log-level error",
                 WorkingDirectory = root, UseShellExecute = false, CreateNoWindow = true,
                 RedirectStandardInput = true
             };

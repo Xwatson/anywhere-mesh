@@ -29,7 +29,7 @@ with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as bundle:
         "desktop-commander": ["adapter.mjs"],
         "execution": ["agent.mjs", "grants.mjs", "journal.mjs", "protocol.mjs", "retention.mjs", "rpc.mjs"],
         "account-devices": ["client.mjs", "contract.cjs", "preload.cjs", "ui/index.html", "ui/app.js", "ui/thread.js", "ui/style.css",
-                            "windows/controller.mjs", "windows/read.mjs", "windows/WorkspaceSnapshot.cs", "windows/PeerHost.cs", "windows/smoke.mjs"],
+                            "windows/controller.mjs", "windows/network.mjs", "windows/read.mjs", "windows/WorkspaceSnapshot.cs", "windows/PeerHost.cs", "windows/smoke.mjs"],
     }
     for module, names in files.items():
         for name in names:

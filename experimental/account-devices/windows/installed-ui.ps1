@@ -9,7 +9,7 @@ if (!$Interactive) {
     $json = [Console]::In.ReadToEnd()
     $inputData = $json | ConvertFrom-Json
     $RunId = [guid]::ParseExact($inputData.runId,'D').ToString()
-    if ($inputData.username -ne 'lab-coder') { throw 'Expected ordinary lab account' }
+    if ($inputData.username -ne $(if ($inputData.fresh) {'lab-other'} else {'lab-coder'})) { throw 'Expected ordinary lab account' }
     $who = [Security.Principal.WindowsIdentity]::GetCurrent()
     $acl = New-Object System.IO.Pipes.PipeSecurity
     $acl.SetAccessRuleProtection($true,$false)
@@ -46,7 +46,7 @@ $pipe.Connect(15000)
 $reader=[IO.StreamReader]::new($pipe,[Text.Encoding]::UTF8)
 $auth=$reader.ReadToEnd() | ConvertFrom-Json
 $reader.Dispose();$pipe.Dispose()
-if ($auth.runId -ne $RunId -or $auth.username -ne 'lab-coder') { throw 'Unexpected verifier input' }
+if ($auth.runId -ne $RunId -or $auth.username -ne $(if ($auth.fresh) {'lab-other'} else {'lab-coder'})) { throw 'Unexpected verifier input' }
 Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes,System.Windows.Forms,System.Drawing
 $utf8=[Text.UTF8Encoding]::new($false)
 $state=[ordered]@{runId=$RunId;phase='launching';passed=$false;checks=@()}
@@ -114,6 +114,24 @@ function Hash-Text($text) {
     finally {$sha.Dispose()}
 }
 function Send-Message($message) {Edit 'draft' $message;Press 'id' 'send'}
+$fresh=[bool]$auth.fresh
+if ($fresh) {
+    $freshData=Join-Path $env:TEMP ("Anywhere-FirstRun-"+$RunId)
+    if (Test-Path $freshData) {throw 'Test app data already exists'}
+    [void][IO.Directory]::CreateDirectory($freshData)
+    $base=Join-Path $freshData 'AnywhereCodingLab'
+}
+function Launch-Fresh {
+    $start=[Diagnostics.ProcessStartInfo]::new($target)
+    $start.UseShellExecute=$false
+    $start.EnvironmentVariables['LOCALAPPDATA']=$freshData
+    $started=[Diagnostics.Process]::Start($start)
+    Wait-For 'isolated installed desktop' {
+        $started.Refresh()
+        if ($started.HasExited) {throw 'Isolated installed desktop exited'}
+        if ($started.MainWindowHandle -ne 0) {$started}
+    }
+}
 $file='笔记-'+$RunId.Substring(0,8)+'.txt';$fixture=Join-Path (Join-Path $base 'project') $file
 $marker='GUI_'+[guid]::NewGuid().ToString('N')
 $created=$false;$signed=$false
@@ -121,8 +139,10 @@ try {
     $shortcut=Join-Path ([Environment]::GetFolderPath('DesktopDirectory')) 'Anywhere Coding Lab.lnk'
     $target=(New-Object -ComObject WScript.Shell).CreateShortcut($shortcut).TargetPath
     if ($target -notlike "$env:LOCALAPPDATA\Programs\Anywhere Coding Lab\app-*\Anywhere Coding Lab.exe") {throw 'Expected installed shortcut'}
+    if ($fresh) { $proc=Launch-Fresh } else {
     Start-Process -FilePath $shortcut
     $proc=Wait-For 'installed desktop window' { Get-Process -Name 'Anywhere Coding Lab' -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $target -and $_.MainWindowHandle -ne 0 } | Select-Object -First 1 }
+    }
     $window=[System.Windows.Automation.AutomationElement]::FromHandle($proc.MainWindowHandle)
     $state.shortcut=$shortcut;$state.target=$target;$state.windowPid=$proc.Id
     $state.checks+='installed-shortcut'
@@ -137,18 +157,43 @@ try {
         Sign-Out
     }
     $userField=Element 'id' 'username'
+    if ($fresh) {
+        $legacy=Join-Path $base 'windows.toml'
+        $network=Join-Path $base 'network-session.toml'
+        if ($initial -ne 'sign-in' -or (Test-Path $legacy) -or (Test-Path $network)) {throw 'Profile was already configured'}
+        Shot 'signin'
+        Edit 'username' $auth.username
+        Edit 'password' ([guid]::NewGuid().ToString())
+        Press 'name' '登录'
+        [void](Element 'name' '账号或密码不正确。')
+        if (Test-Path $network) {throw 'Network configured before authentication'}
+        $state.checks+='first-launch-without-toml','invalid-password-does-not-provision'
+    }
     for($attempt=1;$attempt -le 3;$attempt++) {
         Edit 'username' $auth.username
         Edit 'password' $auth.password
         Press 'name' '登录'
         $outcome=Wait-For 'sign-in response' {
             if (Find-Element 'id' 'account-menu') {'ok'}
-            else {$msg=Find-Element 'id' 'login-error';if($msg -and $msg.Current.Name){$msg.Current.Name}}
+            else {
+                $msg=Find-Element 'id' 'login-error'
+                if ($msg) {
+                    $label=$msg.FindFirst([System.Windows.Automation.TreeScope]::Descendants,
+                        [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::Text))
+                    if ($label -and $label.Current.Name) {$label.Current.Name} elseif ($msg.Current.Name) {$msg.Current.Name}
+                }
+            }
         } 55
         if($outcome -eq 'ok') {$signed=$true;break}
-        if($attempt -eq 3) {throw 'Sign-in failed'}
+        if($attempt -eq 3) {throw ('Sign-in failed: '+$outcome)}
     }
-    $auth=$null
+    if ($fresh) {
+        $content=[IO.File]::ReadAllText($network)
+        if ((Test-Path $legacy) -or $content -match 'network_secret|local_private_key|credential\s*=') {throw 'Unexpected private material on disk'}
+        $instance=([regex]::Match($content,'instance_id = "([a-f0-9-]{36})"')).Groups[1].Value
+        if (!$instance) {throw 'Missing device identity'}
+        $state.checks+='automatic-network-config'
+    }
     $state.checks+='desktop-login'
     Phase 'home'
     [void](Element 'name' '从哪里开始？')
@@ -218,6 +263,17 @@ try {
     [void](Element 'id' 'username')
     $signed=$false
     $state.checks+='revoked-and-signed-out'
+    if ($fresh) {
+        if (!$proc.CloseMainWindow() -or !$proc.WaitForExit(15000)) {throw 'Isolated desktop did not close'}
+        $proc=Launch-Fresh
+        $window=[System.Windows.Automation.AutomationElement]::FromHandle($proc.MainWindowHandle)
+        Edit 'username' $auth.username; Edit 'password' $auth.password; Press 'name' '登录'
+        [void](Element 'id' 'account-menu');$signed=$true
+        [void](Element 'name' $state.sessionTitle)
+        if (![IO.File]::ReadAllText($network).Contains($instance)) {throw 'Device identity changed on second launch'}
+        Sign-Out; [void](Element 'id' 'username'); $signed=$false
+        $state.checks+='relaunch-same-device-and-thread'
+    }
     $state.passed=$true;Phase 'passed'
 } catch {
     $state.error=$_.Exception.Message
@@ -234,4 +290,5 @@ try {
         Close-OpenDialog
         Sign-Out
     } catch {} }
+    if ($fresh -and $proc -and !$proc.HasExited) { [void]$proc.CloseMainWindow(); [void]$proc.WaitForExit(15000) }
 }

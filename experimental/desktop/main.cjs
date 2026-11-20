@@ -39,7 +39,7 @@ function request(method, params) {
   if (pending.size >= 16) return Promise.reject(Error('TOO_MANY_REQUESTS'));
   const id = nextId++;
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => { pending.delete(id); reject(Error('DESKTOP_REQUEST_TIMEOUT')); }, 40000);
+    const timer = setTimeout(() => { pending.delete(id); reject(Error('DESKTOP_REQUEST_TIMEOUT')); }, installedWindows && method === 'login' ? 65000 : 40000);
     pending.set(id, { resolve, reject, timer });
     child.stdin.write(JSON.stringify({ id, method, params }) + '\n');
   });
@@ -50,7 +50,7 @@ async function stop() {
     if (!child || childExited) return;
     child.stdin.end();
     await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(Error('BACKEND_STOP_TIMEOUT')), 50000);
+      const timer = setTimeout(() => reject(Error('BACKEND_STOP_TIMEOUT')), 70000);
       child.once('exit', code => { clearTimeout(timer); code === 0 ? resolve() : reject(Error('BACKEND_STOP_FAILED')); });
     });
   })(); return stopping;
@@ -61,12 +61,6 @@ if (single) app.whenReady().then(async () => {
     mkdirSync(resolve(windowsRoot,'project'), {recursive:true});
     if (!existsSync(resolve(windowsRoot,'ca.crt'))) {
       copyFileSync(resolve(process.resourcesPath,'tools/ca.crt'),resolve(windowsRoot,'ca.crt'),constants.COPYFILE_EXCL);
-    }
-    if (!existsSync(resolve(windowsRoot,'windows.toml'))) {
-      const choice = await dialog.showOpenDialog({title:'首次连接：选择分配给本机的 EasyTier 实验网络配置',
-        properties:['openFile','dontAddToRecent'],filters:[{name:'EasyTier 配置',extensions:['toml']}]});
-      if (choice.canceled || !choice.filePaths.length) { app.quit(); return; }
-      copyFileSync(choice.filePaths[0],resolve(windowsRoot,'windows.toml'),constants.COPYFILE_EXCL);
     }
   }
   const assets = realpathSync(resolve(appDir, deviceSlot || windowsDevice ? 'ui' : 'dist'));

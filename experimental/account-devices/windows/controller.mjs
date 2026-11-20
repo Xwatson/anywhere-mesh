@@ -1,72 +1,82 @@
-import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { createServer } from 'node:net';
 import { hostname } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { createInterface } from 'node:readline';
-import tls from 'node:tls';
-import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { DeviceClient } from '../client.mjs';
+import { DeviceClient, request } from '../client.mjs';
+import { service, WindowsPeer } from './network.mjs';
 import { windowsReader } from './read.mjs';
 
 if (process.platform !== 'win32') throw Error('WINDOWS_REQUIRED');
-const root = join(process.env.LOCALAPPDATA, 'AnywhereCodingLab');
-const cfg = { stateDir: join(root, 'state'), name: 'Windows · ' + hostname(), url: 'https://127.0.0.1:31844',
-  ca: join(root, 'ca.crt'), projects: [{ label: 'Windows 本地项目', path: join(root, 'project') }] };
-const client = new DeviceClient(cfg, windowsReader(fileURLToPath(new URL('./WorkspaceSnapshot.exe', import.meta.url))));
-const ca = readFileSync(cfg.ca);
-async function requireFreePort(port) {
-  const s = createServer();
-  await new Promise((resolve, reject) => s.once('error', reject).listen(port, '127.0.0.1', resolve));
-  await new Promise(resolve => s.close(resolve));
-}
-await requireFreePort(31844);
-await requireFreePort(31897);
-const peer = spawn(fileURLToPath(new URL('./PeerHost.exe', import.meta.url)), [join(dirname(process.execPath),'easytier-core.exe')], {
-  cwd: root, stdio: ['pipe','ignore','ignore'], windowsHide: true
+const root = join(process.env.LOCALAPPDATA,'AnywhereCodingLab');
+const cfg = {stateDir:join(root,'state'), name:'Windows · '+hostname(), url:'https://127.0.0.1:31844',
+  ca:join(root,'ca.crt'), projects:[{label:'Windows 本地项目', path:join(root,'project')}]};
+const input = createInterface({input:process.stdin});
+const peer = new WindowsPeer(root,readFileSync(cfg.ca),() => {
+  if (peer.legacy) { process.exitCode = 1; input.close(); process.stdin.destroy(); }
 });
-peer.stdin.on('error',()=>{});
-const peerDone = new Promise(resolve => { peer.once('error', resolve); peer.once('exit', resolve); });
-const input = createInterface({input: process.stdin});
-let closing = false;
-peerDone.then(() => { if (!closing) { process.exitCode = 1; input.close(); process.stdin.destroy(); } });
-function probe() {
-  return new Promise(resolve => {
-    const socket = tls.connect({ port: 31844, host: '127.0.0.1', servername: 'localhost', ca, minVersion: 'TLSv1.3' });
-    const finish = ok => { clearTimeout(timer); socket.destroy(); resolve(ok); };
-    const timer = setTimeout(() => finish(false), 6500);
-    socket.once('error', () => finish(false));
-    socket.once('secureConnect', () => finish(socket.authorized));
-  });
+async function publicRequest(path,data,token) {
+  try { return await request(service,{rejectUnauthorized:true,minVersion:'TLSv1.2'},'POST',path,data,token); }
+  catch (error) {
+    if (/^(INVALID_CREDENTIALS|LOGIN_THROTTLED|DEVICE_DISABLED|LOGIN_REQUIRED|NETWORK_ENROLLMENT_UNAVAILABLE|NETWORK_ADDRESS_LIMIT)$/.test(error.message)) throw error;
+    throw Error('WINDOWS_BOOTSTRAP_UNAVAILABLE');
+  }
 }
-async function ready() {
-  const until = Date.now() + 23000;
-  do {
-    if (peer.exitCode !== null || peer.signalCode !== null) throw Error('WINDOWS_NETWORK_EXITED');
-    if (await probe()) return;
-    await delay(300);
-  } while (Date.now() < until);
-  throw Error('WINDOWS_TUNNEL_NOT_READY');
+class WindowsClient extends DeviceClient {
+  async openNetwork(signed) {
+    const profile = await publicRequest('/api/device/network',{},signed.token);
+    await peer.start(profile,signed.deviceId);
+    this.cfg.url = 'https://127.0.0.1:'+peer.port;
+    await peer.ready();
+  }
+  async authenticate(params) {
+    if (peer.legacy) { await peer.start(); await peer.ready(); return super.authenticate(params); }
+    const signed = await publicRequest('/api/auth/login',params);
+    try { await this.openNetwork(signed); return signed; }
+    catch (error) {
+      await peer.stop();
+      await publicRequest('/api/auth/logout',{},signed.token).catch(()=>{});
+      throw error;
+    }
+  }
+  async signout(notify=true) {
+    if (peer.legacy) return super.signout(notify);
+    const signed = this.signed;
+    try {
+      await super.signout(false);
+      if (notify && signed) {
+        try { await request(this.cfg.url,this.tls,'POST','/api/auth/logout',{},signed.token); }
+        catch { await publicRequest('/api/auth/logout',{},signed.token).catch(()=>{}); }
+      }
+    } finally { await peer.stop(); }
+  }
+  async recover(signed) {
+    if (this.signed!==signed || this.presence?.readyState===1) return;
+    try { await this.openNetwork(signed); }
+    catch (error) { if (error.message==='LOGIN_REQUIRED') await this.signout(false); }
+  }
 }
-
-const reply = v => process.stdout.write(JSON.stringify(v) + '\n');
+const client = new WindowsClient(cfg,windowsReader(fileURLToPath(new URL('./WorkspaceSnapshot.exe',import.meta.url))));
+if (peer.legacy) await peer.start().catch(()=>{});
+// Reissue the same login's lease after a network-service restart or a missing peer process.
+const repair = setInterval(() => {
+  const signed = client.signed;
+  if (peer.legacy || !signed || client.presence?.readyState===1 || client.repairPending) return;
+  client.repairPending = true;
+  client.queue = client.queue.catch(()=>{}).then(()=>client.recover(signed)).finally(()=>{client.repairPending=false;});
+},30000);
+const reply = value => process.stdout.write(JSON.stringify(value)+'\n');
 reply({event:'ready'});
 try {
   for await (const line of input) {
     let id;
     try {
-      if (line.length > 24000) throw Error('INVALID_FRAME');
+      if (line.length>24000) throw Error('INVALID_FRAME');
       const frame = JSON.parse(line); id = frame.id;
-      if (frame.method === 'login') await ready();
-      reply({id, value:await client.control(frame.method,frame.params)});
-    } catch (e) { reply({id, error:e.code ?? e.message}); }
+      reply({id,value:await client.control(frame.method,frame.params)});
+    } catch (error) { reply({id,error:error.code ?? error.message}); }
   }
 } finally {
-  closing = true;
-  try { await client.control('logout', {}); }
-  finally {
-    peer.stdin.end();
-    await peerDone;
-  }
+  clearInterval(repair);
+  try { await client.control('logout',{}); } finally { await peer.stop(); }
 }

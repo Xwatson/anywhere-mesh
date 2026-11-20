@@ -17,6 +17,10 @@ const errors = {
   LOGIN_THROTTLED: '登录尝试过多，请稍后重试。', LOCAL_PERMISSION_REQUIRED: '请在执行设备上给项目授权。',
   WORKSPACE_NOT_READY: '项目正在同步或有任务在运行，请稍后重试。', READ_FILE_BEFORE_EDIT: '请先在本次会话中读取文件。',
   TOOL_UNAVAILABLE_ON_DEVICE: '这台设备暂不支持该操作。', UNSUPPORTED_DEVICE_PERMISSION: '这台设备不支持所选权限。',
+  NETWORK_ENROLLMENT_UNAVAILABLE: '暂时无法配置本机连接，请稍后重新登录。',
+  NETWORK_ADDRESS_LIMIT: '设备连接数已满，请稍后重试。', WINDOWS_NETWORK_EXITED: '本机连接已中断，请重新登录。',
+  WINDOWS_BOOTSTRAP_UNAVAILABLE: '暂时无法连接 awc.xbxbe.com，请检查网络后重试。',
+  EADDRINUSE: '本机连接端口正在使用，请关闭其他实验客户端后重试。',
   WINDOWS_TUNNEL_NOT_READY: '设备仍在连接服务端，请稍后重试。', SESSION_LIMIT: '此账号已达到实验环境的会话上限。',
   DESKTOP_REQUEST_TIMEOUT: '连接超时，请重试。', SESSION_BUSY: '请等当前回复结束后再发送。'
 };
