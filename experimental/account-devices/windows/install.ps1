@@ -29,6 +29,8 @@ $tier = VerifiedArchive 'easytier-windows-x86_64-v2.6.4.zip' '27af91e270e554709b
 $electron = VerifiedArchive 'electron-v45.3.3-win32-x64.zip' '49dd2d3875944f08de03d34595cd30093c588b9edcabb41a0ac481028a3a5a8a'
 [void][IO.Directory]::CreateDirectory($runtime)
 ExtractMember $node 'node-v24.21.0-win-x64/node.exe' (Join-Path $runtime 'node.exe')
+& "$env:WINDIR\System32\icacls.exe" (Join-Path $runtime 'node.exe') /grant '*S-1-15-2-1:RX' | Out-Null
+if ($LASTEXITCODE) { throw 'Cannot grant sandbox access to the Node runtime' }
 ExtractMember $node 'node-v24.21.0-win-x64/LICENSE' (Join-Path $runtime 'node-LICENSE')
 foreach ($item in @('easytier-core.exe','Packet.dll')) {
     ExtractMember $tier ('easytier-windows-x86_64/' + $item) (Join-Path $runtime $item)
@@ -59,8 +61,10 @@ if (!(Test-Path -LiteralPath $app)) {
     try {
         [IO.Compression.ZipFile]::ExtractToDirectory($bundle,$temp)
         $native = Join-Path $temp 'experimental\account-devices\windows'
-        foreach ($tool in @('WorkspaceSnapshot','PeerHost')) {
-            & "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /optimize+ /codepage:65001 /platform:x64 "/out:$native\$tool.exe" "$native\$tool.cs"
+        foreach ($tool in @('WorkspaceSnapshot','PeerHost','TaskHost')) {
+            $sources = @("$native\$tool.cs")
+            if ($tool -eq 'WorkspaceSnapshot') { $sources += "$native\WorkspaceTree.cs" }
+            & "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /optimize+ /codepage:65001 /platform:x64 /reference:System.Web.Extensions.dll "/out:$native\$tool.exe" @sources
             if ($LASTEXITCODE) { throw "$tool compilation failed" }
         }
         [IO.Directory]::Move($temp,$app)

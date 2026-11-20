@@ -55,8 +55,7 @@ export async function smoke({win,root}) {
     const project=initial.projects.find(p=>p.deviceId===initial.deviceId);
     data.deviceId=initial.deviceId; data.workspaceId=project.id; data.deviceName=initial.localName;
     assert.equal(project.localMode,'revoked');
-    assert.deepEqual(project.localModes,['revoked','read']);
-    await assert.rejects(api('permission',{workspaceId:project.id,mode:'execute'}),/UNSUPPORTED_DEVICE_PERMISSION/);
+    assert.deepEqual(project.localModes,['revoked','read','edit','execute']);
     const applyMode = async mode => {
       await wait('project button',()=>js("!document.querySelector('#app').hidden && !document.querySelector('#context').disabled"));
       await js("document.querySelector('#context').click()");

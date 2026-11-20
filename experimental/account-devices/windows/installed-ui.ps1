@@ -21,7 +21,7 @@ if (!$Interactive) {
         $arg = '-NoProfile -STA -WindowStyle Hidden -ExecutionPolicy RemoteSigned -File "' + $PSCommandPath + '" -Interactive -RunId '+$RunId
         $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arg
         $principal = New-ScheduledTaskPrincipal -UserId $who.Name -LogonType Interactive -RunLevel Limited
-        $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 9) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+        $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 15) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
         Register-ScheduledTask -TaskName $task -Action $action -Principal $principal -Settings $settings | Out-Null
         $registered=$true
         $wait=$pipe.BeginWaitForConnection($null,$null)
@@ -91,9 +91,33 @@ function Mode($mode) {
     $entry=Element 'id' 'mode'
     $entry.SetFocus()
     [Windows.Forms.SendKeys]::SendWait('{HOME}')
-    if ($mode -eq 'read') { [Windows.Forms.SendKeys]::SendWait('{DOWN}') }
+    switch ($mode) {
+        'read' { [Windows.Forms.SendKeys]::SendWait('{DOWN}') }
+        'edit' { [Windows.Forms.SendKeys]::SendWait('{DOWN 2}') }
+        'execute' { [Windows.Forms.SendKeys]::SendWait('{END}'); [void](Element 'name' '授予完全访问'); Shot 'full-permission' }
+    }
     Press 'id' 'apply'
     [void](Wait-For "applied permission $mode" {$b=Find-Element 'id' 'context';if($b -and $b.Current.IsEnabled -and !(Find-Element 'id' 'mode')){$b}})
+}
+function Sign-In {
+    for($attempt=1;$attempt -le 3;$attempt++) {
+        Edit 'username' $auth.username; Edit 'password' $auth.password
+        Press 'id' 'login-submit'
+        # Ignore a stale alert from the previous click; network enrollment can take 23 seconds.
+        $started=Get-Date
+        $outcome=Wait-For 'sign-in result' {
+            if(Find-Element 'id' 'account-menu' 'ControlType.Button') {'ok'}
+            elseif(((Get-Date)-$started).TotalSeconds -gt 10) {
+                $errorBox=Find-Element 'id' 'login-error'
+                if($errorBox) {
+                    $nodes=$errorBox.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+                    $nodes | ForEach-Object {$_.Current.Name} | Where-Object {$_} | Select-Object -First 1
+                }
+            }
+        } 80
+        if($outcome -eq 'ok') {return}
+        if($attempt -eq 3 -or $outcome -notlike '*连接*') {throw ('Sign-in failed: '+$outcome)}
+    }
 }
 function Sign-Out { Press 'id' 'account-menu'; Press 'id' 'logout' }
 function Close-OpenDialog {
@@ -162,31 +186,17 @@ try {
         $network=Join-Path $base 'network-session.toml'
         if ($initial -ne 'sign-in' -or (Test-Path $legacy) -or (Test-Path $network)) {throw 'Profile was already configured'}
         Shot 'signin'
-        Edit 'username' $auth.username
-        Edit 'password' ([guid]::NewGuid().ToString())
-        Press 'name' '登录'
-        [void](Element 'name' '账号或密码不正确。')
-        if (Test-Path $network) {throw 'Network configured before authentication'}
-        $state.checks+='first-launch-without-toml','invalid-password-does-not-provision'
+        $state.checks+='first-launch-without-toml'
+        if (!$auth.projectAccess) {
+            Edit 'username' $auth.username
+            Edit 'password' ([guid]::NewGuid().ToString())
+            Press 'name' '登录'
+            [void](Element 'name' '账号或密码不正确。')
+            if (Test-Path $network) {throw 'Network configured before authentication'}
+            $state.checks+='invalid-password-does-not-provision'
+        }
     }
-    for($attempt=1;$attempt -le 3;$attempt++) {
-        Edit 'username' $auth.username
-        Edit 'password' $auth.password
-        Press 'name' '登录'
-        $outcome=Wait-For 'sign-in response' {
-            if (Find-Element 'id' 'account-menu') {'ok'}
-            else {
-                $msg=Find-Element 'id' 'login-error'
-                if ($msg) {
-                    $label=$msg.FindFirst([System.Windows.Automation.TreeScope]::Descendants,
-                        [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::Text))
-                    if ($label -and $label.Current.Name) {$label.Current.Name} elseif ($msg.Current.Name) {$msg.Current.Name}
-                }
-            }
-        } 55
-        if($outcome -eq 'ok') {$signed=$true;break}
-        if($attempt -eq 3) {throw ('Sign-in failed: '+$outcome)}
-    }
+    Sign-In; $signed=$true
     if ($fresh) {
         $content=[IO.File]::ReadAllText($network)
         if ((Test-Path $legacy) -or $content -match 'network_secret|local_private_key|credential\s*=') {throw 'Unexpected private material on disk'}
@@ -241,6 +251,25 @@ try {
     $state.followupSha256=Hash-Text $suffix
     $state.checks+='same-session-followup-after-file-removed'
     Shot 'followup'
+    if ($fresh) {
+        Phase 'full-access'
+        Mode 'execute'
+        $prefix='access-'+$RunId.Substring(0,8)
+        $source=$prefix+'-source.txt';$product=$prefix+'-result.txt'
+        $testProject=Split-Path -Parent $fixture
+        $sourcePath=Join-Path $testProject $source;$resultPath=Join-Path $testProject $product
+        if ((Test-Path $sourcePath) -or (Test-Path $resultPath)) {throw 'Existing test output'}
+        Send-Message ('请使用 workspace_write_file 新建 '+$source+'，文件内容是你上一条回复的八个字符。然后必须使用 workspace_run 执行 Windows 命令 copy /Y '+$source+' '+$product+'。两个操作都成功后只回复 DONE_'+$prefix+'。')
+        [void](Wait-For 'real Codex file write and project command' {
+            if ((Test-Path $sourcePath) -and (Test-Path $resultPath)) {
+                ([IO.File]::ReadAllText($sourcePath).Trim() -ceq $suffix) -and ([IO.File]::ReadAllText($resultPath).Trim() -ceq $suffix)
+            }
+        } 207)
+        [void](Wait-For 'completed full-access turn' {$send=Find-Element 'id' 'send';if($send){$send}} 35)
+        $state.commandFile=$product
+        $state.checks+='same-thread-grant-upgrade','retained-history-used-for-write','real-codex-project-write','real-codex-windows-command'
+        Shot 'command'
+    }
     Phase 'search'
     Press 'id' 'new-chat'
     [void](Element 'name' '从哪里开始？')
@@ -259,6 +288,12 @@ try {
     $state.checks+='search-reopens-bound-thread'
     Phase 'revoke'
     Mode 'revoked'
+    if ($fresh) {
+        Send-Message ('请读取 '+$product)
+        [void](Element 'id' 'consent-mode')
+        Press 'id' 'cancel-consent'
+        $state.checks+='revocation-requires-local-consent-again'
+    }
     Sign-Out
     [void](Element 'id' 'username')
     $signed=$false
@@ -267,8 +302,7 @@ try {
         if (!$proc.CloseMainWindow() -or !$proc.WaitForExit(15000)) {throw 'Isolated desktop did not close'}
         $proc=Launch-Fresh
         $window=[System.Windows.Automation.AutomationElement]::FromHandle($proc.MainWindowHandle)
-        Edit 'username' $auth.username; Edit 'password' $auth.password; Press 'name' '登录'
-        [void](Element 'id' 'account-menu');$signed=$true
+        Sign-In; $signed=$true
         [void](Element 'name' $state.sessionTitle)
         if (![IO.File]::ReadAllText($network).Contains($instance)) {throw 'Device identity changed on second launch'}
         Sign-Out; [void](Element 'id' 'username'); $signed=$false

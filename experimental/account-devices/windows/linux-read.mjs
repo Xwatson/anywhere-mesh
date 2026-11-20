@@ -17,7 +17,7 @@ const target=source.sessions.find(s=>s.id===sessionId);
 assert.equal(target?.workspaceId,workspaceId);assert.equal(target.deviceId,deviceId);
 assert.ok(source.devices.find(d=>d.id===deviceId)?.online);
 await assert.rejects(caller('permission',{workspaceId,mode:'read'}),/ONLY_ON_BOUND_DEVICE/);
-await assert.rejects(caller('send',{sessionId,requestId:randomUUID(),text:'/list'}),/TOOL_UNAVAILABLE_ON_DEVICE/);
+await assert.rejects(caller('send',{sessionId,requestId:randomUUID(),text:'/append '+proof.file+' denied'}),/LOCAL_PERMISSION_REQUIRED/);
 const send=()=>caller('send',{sessionId,requestId:randomUUID(),text:'/read '+proof.file});
 const receipt=await send();
 assert.equal(receipt.workspaceId,workspaceId);
@@ -48,4 +48,4 @@ do {
 assert.ok(offline,'Windows sign-out should show the device offline');
 await assert.rejects(send(),/DEVICE_OFFLINE/);
 console.log(JSON.stringify({sourceDevice:source.localName,sourceDeviceId:source.deviceId,targetDeviceId:deviceId,
-  sessionId,readTurn:receipt.turnId,freshContentVerified:true,otherDeviceGrantDenied:true,unsupportedToolDenied:true,offlineSendDenied:true}));
+  sessionId,readTurn:receipt.turnId,freshContentVerified:true,otherDeviceGrantDenied:true,readOnlyWriteDenied:true,offlineSendDenied:true}));

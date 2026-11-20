@@ -17,7 +17,7 @@ dest.mkdir(parents=True, exist_ok=True)
 payload = dest / "payload"
 payload.mkdir()
 release = hashlib.sha256()
-version = "0.3.2"
+version = "0.3.3"
 
 def pinned(name, expected):
     archive = args.archives / name
@@ -37,6 +37,13 @@ tools.mkdir()
 with pinned("node-v24.21.0-win-x64.zip", "158f7685b44de51f6c0df1d153526cbcd3e1bc739a8dfc607721cef75de9e541") as z:
     for source, target in [("node.exe", "node.exe"), ("LICENSE", "node-LICENSE")]:
         (tools / target).write_bytes(z.read("node-v24.21.0-win-x64/" + source))
+    for name in z.namelist():
+        prefix = "node-v24.21.0-win-x64/"
+        relative = name.removeprefix(prefix)
+        if not name.endswith("/") and (relative.startswith("node_modules/npm/") or relative in ("npm.cmd","npx.cmd")):
+            target = tools / relative
+            target.parent.mkdir(parents=True,exist_ok=True)
+            target.write_bytes(z.read(name))
 with pinned("easytier-windows-x86_64-v2.6.4.zip", "27af91e270e554709b048bd32327fefd2dfce5062ae1e8701af7550c6f525f84") as z:
     for name in ("easytier-core.exe", "Packet.dll"):
         (tools / name).write_bytes(z.read("easytier-windows-x86_64/" + name))
@@ -50,7 +57,7 @@ release.update(args.app.read_bytes())
     "version":version,"main":"experimental/desktop/main.cjs"}))
 release.update((app / "package.json").read_bytes())
 native = app / "experimental/account-devices/windows"
-for name in ("WorkspaceSnapshot.exe", "PeerHost.exe"):
+for name in ("WorkspaceSnapshot.exe", "PeerHost.exe", "TaskHost.exe"):
     binary = (args.native / name).read_bytes()
     if binary[:2] != b"MZ":
         raise SystemExit("Missing native helper: " + name)

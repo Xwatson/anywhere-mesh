@@ -4,23 +4,27 @@
 
 ## 在 Windows 上使用
 
-1. 双击桌面或开始菜单的 **Anywhere Coding Lab**，首次打开即显示账号登录页。登录成功后客户端自动配置本机连接。虚拟机「下载」目录中有同版安装程序 `Anywhere-Coding-Lab-0.3.2-win-x64-Setup.exe`。
-2. 在首页直接输入「请读取 notes.txt 的第一行」，按 Enter 发送。首次使用该项目时点击「允许只读并发送」，客户端会绑定本机、用首条消息命名会话。取消授权会保留草稿。Shift+Enter 可以换行。
+1. 双击桌面或开始菜单的 **Anywhere Coding Lab**，首次打开即显示账号登录页。登录成功后客户端自动配置本机连接。虚拟机「下载」目录中有同版安装程序 `Anywhere-Coding-Lab-0.3.3-win-x64-Setup.exe`。
+2. 在首页直接输入「请读取 notes.txt 的第一行」，按 Enter 发送。首次使用时选择项目权限并确认发送，默认选中「只读」。会话绑定本机，并用首条消息命名。取消授权会保留草稿。Shift+Enter 可以换行。
 3. 左侧按项目列出会话，Ctrl+K 可按会话名、项目或设备搜索。标题栏显示执行设备和在线状态。工具操作可展开查看原始返回。在其他电脑打开同一会话时，页面会提示它绑定的设备。
-4. 本机项目目录为 `%LOCALAPPDATA%\AnywhereCodingLab\project`。点击输入框下方的项目或权限按钮可查看、调整本机授权。左下角账户菜单提供退出登录，管理员还可查看所有设备和绑定会话。[打开服务端管理页](https://awc.xbxbe.com/?view=devices)
+4. 本机项目目录为 `%LOCALAPPDATA%\AnywhereCodingLab\project`。点击输入框下方的项目或权限按钮，选择 **完全访问 → 授予完全访问**，当前会话即可修改文件、运行项目命令。选「编辑」可单独授权读写，选「未授权」可撤销。左下角账户菜单提供退出登录，管理员还可查看所有设备和绑定会话。[打开服务端管理页](https://awc.xbxbe.com/?view=devices)
 5. 更改密码时，点左下角账号名 → **更改密码**，输入当前密码和两次新密码，再点 **保存密码**。当前登录保留，其他客户端需要用新密码重新登录。
 
 ## 传输与文件工具
 
 新安装先通过 `https://awc.xbxbe.com` 登录。服务端只向持有有效设备登录令牌的客户端签发独立的 EasyTier 2.6.4 凭据，分配虚拟地址，并返回服务端公钥。客户端固定该公钥，自动建立到 `wss://awc.xbxbe.com/easytier` 的用户态连接。业务 HTTPS、WSS 和 Workspace MCP 经本机回环端口转发到 `10.203.73.2:18443`，另行验证实验 CA。入网凭据只交给本次网络子进程。退出登录、停用设备或登录到期后，服务端回收该凭据和地址。SSH 用于部署和驱动测试。桌面拥有网络进程的生命周期，后端退出会关闭控制管道，Windows Job Object 负责监督进程异常终止时的回收。[EasyTier 无 TUN 模式](https://easytier.cn/en/guide/network/no-root.html) 和 [端口转发](https://easytier.cn/en/guide/network/port-forward.html)
 
-客户端复用 Linux 桌面的 Electron 界面、账号协议、设备身份、项目授权和操作日志。美国端 Codex 通过该会话的 Workspace MCP 调用 `workspace_read_file`。Windows 读取器逐段打开本地路径，从已校验的文件句柄读取至多 1 MiB 的 UTF-8 文本。目录联接、重解析点和多硬链接文件会被拒绝。Desktop Commander 0.3.3 的 `TextFileHandler.read` 对私有快照执行分页。服务端按设备实际支持的工具生成 MCP 清单。[Desktop Commander 源码](https://github.com/wonderwhy-er/DesktopCommanderMCP/tree/bce370e9395f5bc74eda34913e5ae1dee48df8f8)
+客户端复用 Linux 桌面的 Electron 界面、账号协议、设备身份、项目授权和操作日志。美国端 Codex 通过会话绑定的 Workspace MCP 调用工具。Windows 读取器逐段打开本地路径，从已校验的文件句柄读取至多 1 MiB 的 UTF-8 文本。目录联接、重解析点和多硬链接文件会被拒绝。Desktop Commander 0.3.3 的 `TextFileHandler.read` 对私有快照执行分页。服务端按设备实际支持的工具生成 MCP 清单。[Desktop Commander 源码](https://github.com/wonderwhy-er/DesktopCommanderMCP/tree/bce370e9395f5bc74eda34913e5ae1dee48df8f8)
 
-本轮 Windows 支持预置项目中的单文件读取。通用目录选择、搜索、编辑和隔离构建仍待适配。安装包按 Windows 用户安装，尚未做 Authenticode 签名或自动更新。已配置的实验机器升级后沿用原有 `windows.toml`、设备身份与项目。新机器上，设备身份保存在 `state` 目录，本机连接参数与服务端公钥由客户端维护。
+只读权限覆盖单文件或多文件读取、目录列表、文件信息与搜索。编辑权限增加创建目录、写入和精确替换。修改已有文本时须提交最近读取的版本，文件在本机发生变化时会返回版本冲突。完全访问另可执行 Windows 项目命令，安装版附带 Node 与 npm。
+
+命令由 `cmd.exe` 在临时项目副本中运行。Windows AppContainer 以独立身份、无网络能力启动，Job Object 管理子进程。进程正常退出后，客户端校验原文件版本再写回改动，包括构建产物、重命名和删除。写回按文件内容与 Windows 默认不区分大小写的路径比较。只调整时间戳或文件名大小写的操作目前不会同步。取消执行会终止任务。提交中断且结果不明时，客户端保留任务数据以便核对。命令有 120 秒时限。项目副本支持至多 30,000 项、单文件 64 MiB、总文件内容 512 MiB。包含重解析点或多硬链接文件的项目会拒绝执行命令。[Microsoft AppContainer](https://learn.microsoft.com/en-us/windows/win32/secauthz/appcontainer-isolation)
+
+当前授权作用于预置项目，其他目录的注册仍待适配。安装包按 Windows 用户安装，尚未做 Authenticode 签名或自动更新。已配置的实验机器升级后沿用原有 `windows.toml`、设备身份与项目。新机器上，设备身份保存在 `state` 目录，本机连接参数与服务端公钥由客户端维护。
 
 ## 重建 Windows x64 安装包
 
-在仓库根目录运行 `bundle.py` 生成应用压缩包。在 Windows 上用 .NET Framework 的 C# 编译器编译 `WorkspaceSnapshot.cs` 和 `PeerHost.cs`，将两个同名 EXE 放入同一目录。构建机使用 Python 3.11+、Pillow 和 NSIS 3。将以下参数替换为构建机上的实际路径，`build/payload` 应为空缺目录。
+在仓库根目录运行 `bundle.py` 生成应用压缩包。在 Windows 上用 .NET Framework 的 C# 编译器将 `WorkspaceSnapshot.cs` 和 `WorkspaceTree.cs` 一同编译为 `WorkspaceSnapshot.exe`，引用 `System.Web.Extensions.dll`。再把 `PeerHost.cs`、`TaskHost.cs` 分别编译为同名 EXE，三个程序均使用 x64 并放入同一目录。构建机使用 Python 3.11+、Pillow 和 NSIS 3。将以下参数替换为构建机上的实际路径，`build/payload` 应为空缺目录。
 
 ```sh
 python3 experimental/account-devices/windows/bundle.py ws-8.22.0.tgz desktop-commander-0.3.3.tgz windows-app.zip
@@ -30,15 +34,17 @@ python3 experimental/account-devices/windows/package-installer.py \
 (cd build && makensis setup.nsi)
 ```
 
-安装程序包含固定版本的 Electron、Node、EasyTier、Workspace MCP 读取器和部署 CA 公共证书。程序安装在 `%LOCALAPPDATA%\Programs\Anywhere Coding Lab`，卸载入口在 Windows「应用和功能」中。项目与设备配置由当前用户保存在 `%LOCALAPPDATA%\AnywhereCodingLab`。
+安装程序包含固定版本的 Electron、Node、EasyTier、Workspace MCP 工具和部署 CA 公共证书。程序安装在 `%LOCALAPPDATA%\Programs\Anywhere Coding Lab`，卸载入口在 Windows「应用和功能」中。项目与设备配置由当前用户保存在 `%LOCALAPPDATA%\AnywhereCodingLab`。
 
-全新安装验收使用桌面快捷方式指向的已安装程序、独立空配置目录和测试账号 `lab-other` 启动，通过系统 UI Automation 操作登录、授权和聊天表单，并在本机核对两个随机答案。使用已登录图形桌面的 Windows 用户，从飞牛实验目录运行：
+全新安装验收使用桌面快捷方式指向的已安装程序、独立空配置目录和测试账号 `lab-other` 启动，通过系统 UI Automation 操作登录、授权和聊天表单，从只读切换到完全访问，并在本机核对模型读取的随机内容及项目命令生成的文件。使用已登录图形桌面的 Windows 用户，从飞牛实验目录运行：
 
 ```sh
-python3 source/experimental/account-devices/windows/verify-installed.py --fresh \
+python3 source/experimental/account-devices/windows/verify-installed.py --project-access \
   xwatson@192.168.8.210 /home/xwatson/.ssh/id_rsa \
-  secrets/wan-198.84.90.137/accounts.json artifacts/windows-installer/0.3.2
+  secrets/wan-198.84.90.137/accounts.json artifacts/windows-installer/0.3.3
 ```
+
+用 `--fresh` 替换 `--project-access` 可以同时复测错误密码的首次登录流程。
 
 ## 早期便携版与跨设备协议复测
 
@@ -63,4 +69,4 @@ python3 source/experimental/account-devices/windows/verify.py \
   secrets/wan-198.84.90.137/accounts.json artifacts/windows-read
 ```
 
-Windows 首先发起真实读取，然后在项目内更新本次测试创建的文件。Linux 设备通过自己的登录连接，在同一会话再次读取。验收比较新内容的 SHA-256，并检查远端提权、未支持工具、只读写入、撤销后的读取及离线发送均被拒绝。每次复测生成独立的 JSON 报告和原生桌面截图。另可运行 `read.test.mjs` 检查 Windows 文件边界，运行 `check-peer.ps1` 验证异常退出后的进程与端口回收。
+Windows 首先发起真实读取，然后在项目内更新本次测试创建的文件。Linux 设备通过自己的登录连接，在同一会话再次读取。验收比较新内容的 SHA-256，并检查远端提权、只读写入、撤销后的读取及离线发送均被拒绝。每次复测生成独立的 JSON 报告和原生桌面截图。另可运行 `read.test.mjs` 检查 Windows 文件边界、授权、离线 npm 构建、写回冲突和取消，运行 `check-peer.ps1` 验证异常退出后的进程与端口回收。

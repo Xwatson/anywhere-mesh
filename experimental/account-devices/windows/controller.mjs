@@ -5,7 +5,7 @@ import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { DeviceClient, request } from '../client.mjs';
 import { service, WindowsPeer } from './network.mjs';
-import { windowsReader } from './read.mjs';
+import { windowsWorkspace } from './read.mjs';
 
 if (process.platform !== 'win32') throw Error('WINDOWS_REQUIRED');
 const root = join(process.env.LOCALAPPDATA,'AnywhereCodingLab');
@@ -56,7 +56,7 @@ class WindowsClient extends DeviceClient {
     catch (error) { if (error.message==='LOGIN_REQUIRED') await this.signout(false); }
   }
 }
-const client = new WindowsClient(cfg,windowsReader(fileURLToPath(new URL('./WorkspaceSnapshot.exe',import.meta.url))));
+const client = new WindowsClient(cfg,windowsWorkspace(fileURLToPath(new URL('./WorkspaceSnapshot.exe',import.meta.url))));
 if (peer.legacy) await peer.start().catch(()=>{});
 // Reissue the same login's lease after a network-service restart or a missing peer process.
 const repair = setInterval(() => {

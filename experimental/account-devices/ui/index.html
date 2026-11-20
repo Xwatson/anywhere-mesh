@@ -155,6 +155,7 @@
 <dialog id="consent-dialog" aria-labelledby="consent-heading">
   <div class="dialog-head"><span class="dialog-symbol"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-lock"></use></svg></span><button class="icon-button dialog-close" type="button" aria-label="关闭"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-close"></use></svg></button></div>
   <div class="dialog-body"><h2 id="consent-heading">允许读取这个项目？</h2>
+    <label for="consent-mode">项目权限</label><select id="consent-mode"></select>
     <p id="consent-copy"></p><p class="dialog-error inline-error" role="alert"></p>
   </div>
   <div class="dialog-actions"><button id="cancel-consent" class="secondary">取消</button><button id="allow-send" class="primary">允许只读并发送</button></div>

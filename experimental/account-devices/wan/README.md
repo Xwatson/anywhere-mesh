@@ -31,7 +31,7 @@ Windows 0.3.2 新安装从同一域名的登录接口进入，随后用设备令
 
 在完成上述部署的美国机上，`desktop` 用户运行的 Codex CLI 0.170.0 已登录。构建机用 `bash experimental/account-devices/wan/build.sh STAGE` 生成服务端与 MCP，将同目录的 `codex-service.py`、`anywhere-wan-codex.socket`、`anywhere-wan-codex@.service`、`deploy-codex.py` 一起复制到美国机的构建产物目录。在该机以部署管理员执行 `python3 STAGE/deploy-codex.py STAGE`。升级会检查实验服务的活动回合，重启该服务并检查 HTTPS 健康状态。
 
-登录客户端，打开有本机授权的会话，便可从「发给 Codex」发送自然语言消息。美国端按会话持久化线程编号，读取工具经已有 Workspace MCP 和设备连接执行。生成中点击「停止任务」可中断当前回合。设备诊断命令（如 `/read notes.txt`）继续使用模拟宿主。
+登录客户端，打开有本机授权的会话，便可从「发给 Codex」发送自然语言消息。美国端根据执行设备和项目的当前授权向 Codex 提供工具，读写与命令均经会话绑定的 Workspace MCP 执行。工具集合发生变化时，宿主会将已有对话带入具备新工具的 Codex 线程。生成中点击「停止任务」可中断当前回合。设备诊断命令（如 `/read notes.txt`）继续使用模拟宿主。
 
 ## 复测和生命周期
 

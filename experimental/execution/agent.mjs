@@ -127,8 +127,8 @@ export class LocalAgent extends EventEmitter {
     }
     op.state = 'running'; op.starts++; op.reason = 'launch_intent';
     this.journal.put('ops', operationId, op); this.fault('agent_after_intent');
-    if (spec?.read) {
-      void this.performRead(op, spec.read);
+    if (spec?.read || spec?.perform) {
+      void this.performLocal(op, spec);
       return;
     }
     const child = spawn(spec?.command ?? process.execPath, spec?.args ?? [fileURLToPath(new URL('./mock-worker.mjs', import.meta.url))], {
@@ -163,22 +163,26 @@ export class LocalAgent extends EventEmitter {
     entry.timer = setTimeout(() => this.cancel({ ...envelopeOf(op), cancelId: `deadline:${operationId}` }),
       Math.max(1, Math.min(125000, op.request.expiresAt - Date.now())));
   }
-  async performRead(op, read) {
+  async performLocal(op, spec) {
     const abort = new AbortController();
     this.children.set(op.operationId, { abort });
     const timer = setTimeout(() => abort.abort(), Math.max(1, op.request.expiresAt - Date.now()));
-    let tool;
+    let tool, uncertain = false;
     try {
-      tool = await read(abort.signal);
-      if (Buffer.byteLength(JSON.stringify(tool)) > 22000) fail('RESULT_TOO_LARGE');
+      const perform = spec.perform ?? spec.read;
+      tool = await perform(abort.signal,(stream,data) => this.output(op.operationId,stream,data));
+      if (Buffer.byteLength(JSON.stringify(tool)) > 22000) fail(spec.mutates ? 'WORKSPACE_COMMIT_UNCERTAIN' : 'RESULT_TOO_LARGE');
     } catch (error) {
-      const reason = /^[A-Z][A-Z0-9_]{1,60}$/.test(error.code) ? error.code : 'READ_FAILED';
+      const reason = /^[A-Z][A-Z0-9_]{1,60}$/.test(error.code) ? error.code : (spec.read ? 'READ_FAILED' : 'WORKSPACE_OPERATION_FAILED');
+      uncertain = reason === 'WORKSPACE_COMMIT_UNCERTAIN';
       tool = { version: 1, ok: false, error: reason, response: { isError: true, content: [{ type: 'text', text: reason }] } };
     } finally { clearTimeout(timer); }
-    // A revoke or stop received during a read must discard the captured bytes.
+    // A confirmed commit wins a late cancellation. An interrupted commit needs local review.
     op = this.journal.get('ops', op.operationId);
-    if (abort.signal.aborted || op.state === 'cancelling' || Date.now() >= op.request.expiresAt) {
-      op.state = 'cancelled'; op.reason = 'read_cancelled'; op.result = { exitCode: null, signal: null };
+    if (uncertain) {
+      op.state = 'unknown'; op.reason = 'WORKSPACE_COMMIT_UNCERTAIN'; op.result = null;
+    } else if (!tool.committed && (abort.signal.aborted || op.state === 'cancelling' || Date.now() >= op.request.expiresAt)) {
+      op.state = 'cancelled'; op.reason = spec.read ? 'read_cancelled' : 'operation_cancelled'; op.result = { exitCode: null, signal: null };
     } else {
       op.state = tool.ok ? 'succeeded' : 'failed'; op.reason = tool.error ?? null;
       op.result = { exitCode: tool.ok ? 0 : 1, signal: null, tool };
@@ -312,8 +316,9 @@ export class LocalAgent extends EventEmitter {
     return { grant: this.grant, label: this.workspace.label,
       pendingCancellations: ops.filter((o) => o.state === 'cancelling').map((o) => o.operationId),
       unknownOperations: ops.filter((o) => o.state === 'unknown').map((o) => o.operationId),
-      sandbox: this.workspace.sandbox ?? { network: false, readOnly: !this.grant.capabilities.includes('workspace.write'),
-        guardedFileWrites: Boolean(this.workspace.reliability), fileWriteProtection: this.workspace.reliability ? 'optimistic-version-check-with-preimage' : null }, history: this.journal.storage() };
+      sandbox: { network: false, guardedFileWrites: Boolean(this.workspace.reliability),
+        fileWriteProtection: this.workspace.reliability ? 'optimistic-version-check-with-preimage' : null,
+        ...this.workspace.sandbox, readOnly: Boolean(this.workspace.sandbox?.readOnly) || !this.grant.capabilities.includes('workspace.write') }, history: this.journal.storage() };
   }
   cleanConsumedBackups() {
     // State belongs to the service; never derive a filesystem path from a caller

@@ -38,6 +38,12 @@ Section "Anywhere Coding Lab"
   ClearErrors
   File /r "payload/*"
   IfErrors failed
+  ; This directory contains the pinned runtime and public certificates only.
+  nsExec::ExecToStack '"$SYSDIR\icacls.exe" "$INSTDIR\${RELDIR}\resources\tools" /grant "*S-1-15-2-1:(OI)(CI)RX"'
+  Pop $0
+  Pop $1
+  StrCmp $0 "0" +2
+  Goto failed
   FileOpen $0 "$INSTDIR\${RELDIR}\installed.release" w
   FileWrite $0 "${RELEASE}"
   FileClose $0

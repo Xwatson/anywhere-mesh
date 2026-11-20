@@ -7,7 +7,7 @@ const modes = {
   revoked: ['未授权', '项目文件访问已关闭。'],
   read: ['只读', '允许读取本项目的文件。'],
   edit: ['编辑', '允许读取和修改本项目的文件。'],
-  execute: ['执行', '允许修改文件，并在本项目中运行命令。']
+  execute: ['完全访问', '允许读取、创建和修改本项目的文件，并在隔离环境中运行项目命令。']
 };
 const errors = {
   DEVICE_OFFLINE: '执行设备已离线，草稿已保留。', LOGIN_REQUIRED: '请重新登录。',
@@ -270,7 +270,7 @@ function controls() {
   $('save-password').disabled = busy;
   $('save-password').textContent = busy ? '正在保存…' : '保存密码';
   $('password-dialog').querySelector('.dialog-close').disabled = busy;
-  $('allow-send').disabled = busy;
+  $('allow-send').disabled = $('consent-mode').disabled = busy;
   $('cancel-consent').disabled = busy;
   $('apply').disabled = busy;
 }
@@ -419,12 +419,11 @@ function showProject(id) {
 function updateMode() {
   $('mode-description').textContent = modes[$('mode').value]?.[1] || '';
   const p = projectById($('project').value);
-  $('apply').textContent = isLocal(p) && $('mode').value !== (p.localMode ?? p.mode) ? '保存权限' : '完成';
+  $('apply').textContent = isLocal(p) && $('mode').value !== (p.localMode ?? p.mode) ? ($('mode').value === 'execute' ? '授予完全访问' : '保存权限') : '完成';
 }
 async function saveProject() {
   const p = projectById($('project').value), mode = $('mode').value;
   if (isLocal(p) && mode !== (p.localMode ?? p.mode)) {
-    if (mode === 'execute' && !window.confirm('允许远端在此本机项目中执行命令并修改文件？')) return;
     await action('permission',{workspaceId:p.id,mode});
   }
   if (!selected && projectSource === 'context' && projectId !== p.id) {
@@ -473,21 +472,31 @@ function requestSend() {
   const p = project();
   if (isLocal(p) && (p.localMode ?? p.mode) === 'revoked') {
     consent = {key:keyFor(), project:p.id, user:state.user.id};
-    $('consent-copy').textContent = '允许本次登录期间读取「' + p.label + '」中的文件。你可以随时在项目权限中撤销。';
+    const allowed = (p.localModes ?? Object.keys(modes)).filter(mode => mode !== 'revoked');
+    $('consent-mode').replaceChildren(...allowed.map(mode => new Option(modes[mode][0],mode)));
+    $('consent-mode').value = 'read';
+    updateConsent();
     showDialog('consent-dialog');
   } else void perform(sendMessage);
+}
+function updateConsent() {
+  const mode = $('consent-mode').value;
+  $('consent-heading').textContent = mode === 'read' ? '允许读取这个项目？' : '授予「' + project().label + '」项目权限？';
+  $('consent-copy').textContent = '项目「' + project().label + '」 · ' + modes[mode][1];
+  $('allow-send').textContent = mode === 'read' ? '允许只读并发送' : '授予' + modes[mode][0] + '并发送';
 }
 async function allowAndSend() {
   const p = project(), approved = consent;
   if (!$('consent-dialog').open || !approved || approved.key !== keyFor() || approved.project !== p?.id || approved.user !== state.user.id || !isLocal(p)) throw Error('目标会话已改变，请重新发送。');
   const currentMode = p.localMode ?? p.mode;
-  if (currentMode === 'revoked') await action('permission',{workspaceId:p.id,mode:'read'});
+  const requested = currentMode === 'revoked' ? $('consent-mode').value : currentMode;
+  if (currentMode === 'revoked') await action('permission',{workspaceId:p.id,mode:requested});
   const end = Date.now() + 18000;
   do {
     const next = await action('state');
     if (next.user?.id !== approved.user || next.deviceId !== p.deviceId) throw Error('LOGIN_REQUIRED');
     const scope = next.projects.find(w => w.id === p.id);
-    if (scope?.ready && scope.mode !== 'revoked' && scope.localMode !== 'revoked') {
+    if (scope?.ready && scope.mode === requested && scope.localMode === requested) {
       state = next;
       $('consent-dialog').close();
       await sendMessage();
@@ -594,6 +603,7 @@ $('draft').onkeydown = e => {
     e.preventDefault(); requestSend();
   }
 };
+$('consent-mode').onchange = updateConsent;
 $('allow-send').onclick = () => perform(allowAndSend);
 $('cancel-consent').onclick = () => $('consent-dialog').close();
 $('consent-dialog').addEventListener('close', () => {

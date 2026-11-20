@@ -65,7 +65,7 @@ export class SessionHost extends EventEmitter {
       const existing = this.store.request(body.requestId,payload); if(existing)return existing;
       if (this.session(s.id).activeTurnId || this.store.all('turns').some(t=>t.workspaceId===w.id&&!t.done)) throw Error('WORKSPACE_NOT_READY');
       const id = randomUUID(), turn = { id,sessionId:s.id,workspaceId:w.id,createdAt:Date.now(),state:'preparing',done:false,consumed:false,
-        ...parsed,binding:binding?{...binding,sessionId:s.id,turnId:id,turnEpoch:1}:null };
+        ...parsed,historyBefore:s.lastSeq,binding:binding?{...binding,sessionId:s.id,turnId:id,turnEpoch:1}:null };
       this.store.append(s.id,{type:'user_message',text:body.text});
       if(parsed.help){
         turn.done=true;turn.consumed=true;turn.state='succeeded';
