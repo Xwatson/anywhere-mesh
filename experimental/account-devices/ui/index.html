@@ -24,6 +24,7 @@
   <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/></symbol>
   <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
   <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="11" rx="2.5"/><path d="M8 10V7a4 4 0 1 1 8 0v3"/></symbol>
+  <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="9" r="4.5"/><path d="m11.3 12.3 7.2 7.2 2.5-2.5m-5.5-.5L18 14"/></symbol>
   <symbol id="i-logout" viewBox="0 0 24 24"><path d="M10 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h4m-1-8h12m-4-4 4 4-4 4"/></symbol>
   <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6M8 14h8m-8 3h5"/></symbol>
   <symbol id="i-code" viewBox="0 0 24 24"><path d="m7 7-5 5 5 5m10-10 5 5-5 5m-4-14-2 18"/></symbol>
@@ -117,9 +118,28 @@
 <dialog id="account-dialog" aria-labelledby="account-heading">
   <div class="dialog-head"><h2 id="account-heading">账户</h2><button class="icon-button dialog-close" type="button" aria-label="关闭"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-close"></use></svg></button></div>
   <p id="signed-user" class="account-info"></p>
+  <p id="account-feedback" role="status"></p>
   <button class="menu-row" id="settings-project"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-lock"></use></svg><span>本机项目权限</span><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-right"></use></svg></button>
+  <button class="menu-row" id="change-password" aria-haspopup="dialog"><svg class="icon" aria-hidden="true"><use href="#i-key"></use></svg><span>更改密码</span><svg class="icon" aria-hidden="true"><use href="#i-right"></use></svg></button>
   <button class="menu-row" id="admin-nav" hidden><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-sliders"></use></svg><span>设备管理</span><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-right"></use></svg></button>
   <button class="menu-row" id="logout"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-logout"></use></svg><span>退出登录</span></button>
+</dialog>
+<dialog id="password-dialog" aria-labelledby="password-heading" aria-describedby="password-note">
+  <div class="dialog-head"><h2 id="password-heading">更改密码</h2><button class="icon-button dialog-close" type="button" aria-label="关闭"><svg class="icon" aria-hidden="true"><use href="#i-close"></use></svg></button></div>
+  <form id="password-form">
+    <div class="dialog-body">
+      <p id="password-note">这里会保持登录。其他设备或浏览器需要使用新密码重新登录。</p>
+      <input id="password-user" name="username" autocomplete="username" hidden>
+      <label for="current-password">当前密码</label>
+      <input id="current-password" name="current" type="password" autocomplete="current-password" maxlength="200" required>
+      <label for="new-password">新密码</label>
+      <input id="new-password" name="password" type="password" autocomplete="new-password" placeholder="8–200 个字符" minlength="8" maxlength="200" required>
+      <label for="confirm-password">确认新密码</label>
+      <input id="confirm-password" type="password" autocomplete="new-password" maxlength="200" required>
+      <p id="password-error" class="dialog-error inline-error" role="alert"></p>
+    </div>
+    <div class="dialog-actions"><button id="cancel-password" class="secondary" type="button">取消</button><button id="save-password" class="primary" type="submit">保存密码</button></div>
+  </form>
 </dialog>
 <dialog id="project-dialog" aria-labelledby="project-heading">
   <div class="dialog-head"><h2 id="project-heading">项目与权限</h2><button class="icon-button dialog-close" type="button" aria-label="关闭"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-close"></use></svg></button></div>

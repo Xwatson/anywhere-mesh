@@ -224,6 +224,8 @@ dialog::backdrop { background: #141f1a39; }
 #grant { display: grid; }
 #mode-description { margin-top: 6px; }
 #account-dialog { width: min(326px, calc(100vw - 28px)); }
+#password-form label { margin-top: 14px; }
+#account-feedback:not(:empty) { margin: 7px 0; padding: 8px 10px; border-radius: 7px; color: var(--accent); background: var(--accent-fill); }
 .account-info { color: var(--muted); padding-bottom: 13px; border-bottom: 1px solid var(--soft-line); margin-bottom: 7px; }
 .menu-row, .result-row, .device-row { display: flex; align-items: center; gap: 10px; padding: 10px 8px; width: 100%; border-radius: 7px; text-align: left; min-width: 0; }
 .menu-row .icon, .result-row > .icon, .device-row > .icon { width: 16px; height: 16px; color: var(--muted); }

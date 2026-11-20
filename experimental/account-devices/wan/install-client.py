@@ -89,14 +89,13 @@ ExecStop=/usr/bin/docker stop -t 3 {container}
 for mod in ['desktop','account-devices']:
     directory(shell/mod)
 for f in ['main.cjs','contract.cjs','package.json']:copy(source/'desktop'/f,shell/'desktop'/f)
-for filename in ['main.mjs','client.mjs','controller.mjs']:
+for filename in ['main.mjs','controller.mjs']:
     copy(source/'account-devices'/filename,shell/'account-devices'/filename)
 directory(shell/'account-devices/lab')
 copy(source/'account-devices/lab/gui.mjs',shell/'account-devices/lab/gui.mjs')
 run(sys.executable, str(source/'account-devices/wan/install-ui.py'), str(source/'account-devices/ui'))
-for f in ['preload.cjs','contract.cjs']:
-    dest=shell/'account-devices'/f
-    if not dest.exists():dest.symlink_to(app/'account-devices'/f)
+preload=shell/'account-devices/preload.cjs'
+if not preload.exists():preload.symlink_to(app/'account-devices/preload.cjs')
 for module in ['execution','desktop-commander']:
     if not (shell/module).exists():(shell/module).symlink_to(app/module)
 for slot in ('a','b'):

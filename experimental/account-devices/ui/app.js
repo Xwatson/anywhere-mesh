@@ -12,6 +12,8 @@ const modes = {
 const errors = {
   DEVICE_OFFLINE: '执行设备已离线，草稿已保留。', LOGIN_REQUIRED: '请重新登录。',
   INVALID_CREDENTIALS: '账号或密码不正确。', DEVICE_DISABLED: '管理员已停用这台设备。',
+  INCORRECT_CURRENT_PASSWORD: '当前密码不正确。', PASSWORD_UNCHANGED: '请输入与当前密码不同的新密码。',
+  INVALID_NEW_PASSWORD: '新密码须为 8–200 个字符，且应包含非空格字符。', PASSWORD_THROTTLED: '尝试次数过多，请在 15 分钟后重试。',
   LOGIN_THROTTLED: '登录尝试过多，请稍后重试。', LOCAL_PERMISSION_REQUIRED: '请在执行设备上给项目授权。',
   WORKSPACE_NOT_READY: '项目正在同步或有任务在运行，请稍后重试。', READ_FILE_BEFORE_EDIT: '请先在本次会话中读取文件。',
   TOOL_UNAVAILABLE_ON_DEVICE: '这台设备暂不支持该操作。', UNSUPPORTED_DEVICE_PERMISSION: '这台设备不支持所选权限。',
@@ -26,6 +28,7 @@ async function action(method, p = {}) {
   switch (method) {
     case 'login': path = '/api/auth/login'; body = p; break;
     case 'logout': path = '/api/auth/logout'; body = {}; break;
+    case 'changePassword': path = '/api/auth/password'; body = p; break;
     case 'state': path = '/api/state'; break;
     case 'admin': path = '/api/admin/devices'; break;
     case 'disable': path = '/api/admin/devices/' + p.id; body = {disabled: p.disabled}; break;
@@ -129,6 +132,8 @@ function loginView(localName) {
     groups.clear(); unfolded.clear(); fleet = [];
     for (const id of ['sessions','devices','fleet','search-results','signed-user','account','notice','session-title','project','mode','consent-copy']) $(id).replaceChildren();
     $('draft').value = '';
+    $('password-form').reset();
+    $('account-feedback').textContent = '';
     tab = 'chat';
   }
   state = null; online = false;
@@ -256,6 +261,11 @@ function controls() {
     (!localRevoked && p.mode === 'revoked') || !$('draft').value.trim();
   $('context').disabled = busy || !p;
   $('logout').disabled = busy;
+  $('change-password').disabled = busy;
+  $('cancel-password').disabled = busy;
+  $('save-password').disabled = busy;
+  $('save-password').textContent = busy ? '正在保存…' : '保存密码';
+  $('password-dialog').querySelector('.dialog-close').disabled = busy;
   $('allow-send').disabled = busy;
   $('cancel-consent').disabled = busy;
   $('apply').disabled = busy;
@@ -362,13 +372,13 @@ async function refresh(force = false) {
   polling = sync().finally(() => { polling = null; });
   return polling;
 }
-async function perform(fn) {
+async function perform(fn, {refreshState = true} = {}) {
   if (busy) return;
   busy = true; render(); notify();
   $('login-error').textContent = ''; $('login-submit').disabled = true;
   try {
     await fn();
-    await refresh(true);
+    if (refreshState) await refresh(true);
   } catch (error) {
     const field = activeDialog()?.querySelector('.dialog-error');
     if (!state) $('login-error').textContent = message(error);
@@ -485,6 +495,35 @@ async function allowAndSend() {
 }
 
 function showDevices() { if (!busy) { renderDevices(); showDialog('devices-dialog'); } }
+function showAccount(feedback = '') {
+  if ($('password-dialog').open) $('password-form').reset();
+  showDialog('account-dialog');
+  $('account-feedback').textContent = feedback;
+}
+async function savePassword() {
+  const userId = state.user.id;
+  const current = $('current-password').value, password = $('new-password').value;
+  if (password !== $('confirm-password').value) {
+    $('confirm-password').focus();
+    throw Error('两次输入的新密码不一致。');
+  }
+  if (!password.trim()) throw Error('INVALID_NEW_PASSWORD');
+  if (password === current) throw Error('PASSWORD_UNCHANGED');
+  try {
+    await action('changePassword',{current,password});
+  } catch (error) {
+    if (error.message.includes('LOGIN_REQUIRED')) loginView();
+    if (error.message.includes('INCORRECT_CURRENT_PASSWORD')) {
+      $('current-password').value = '';
+      $('current-password').focus();
+    }
+    if (error instanceof TypeError || /TIMEOUT|ECONNRESET|ERR_NETWORK|Failed to fetch/.test(error.message)) {
+      throw Error('暂时无法确认保存结果。请在另一个浏览器中用新密码登录以确认。');
+    }
+    throw error;
+  }
+  if (state?.user.id === userId) showAccount('密码已更改。');
+}
 function showAdmin() {
   if (!state?.user.isAdmin || busy) return;
   activeDialog()?.close(); drawer(false); tab = 'admin'; sidebarKey = null; render(); void refresh(true);
@@ -500,7 +539,19 @@ $('login').onsubmit = e => {
     .finally(() => { label.textContent = '登录'; });
 };
 $('logout').onclick = () => perform(async () => { await action('logout'); loginView(); });
-$('account-menu').onclick = () => { if (!busy) showDialog('account-dialog'); };
+$('account-menu').onclick = () => { if (!busy) showAccount(); };
+$('change-password').onclick = () => {
+  $('password-form').reset();
+  $('password-user').value = state.user.username;
+  showDialog('password-dialog');
+  $('current-password').focus();
+};
+$('password-form').onsubmit = e => { e.preventDefault(); void perform(savePassword, {refreshState:false}); };
+$('password-form').oninput = () => { $('password-error').textContent = ''; };
+$('cancel-password').onclick = () => showAccount();
+$('password-dialog').addEventListener('close', () => {
+  if (!$('password-dialog').open) $('password-form').reset();
+});
 $('admin-nav').onclick = showAdmin;
 $('back-chat').onclick = () => openThread(selected);
 $('my-devices').onclick = $('device-status').onclick = showDevices;

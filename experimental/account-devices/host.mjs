@@ -118,6 +118,13 @@ export async function startServer(config) {
         projects:directory.workspaces(signed.user.id).filter(p=>p.deviceId===signed.deviceId)} : {})}); return;
     }
     const token=credential(req), {user,deviceId}=directory.authenticate(token);
+    if (req.method==='POST' && path==='/api/auth/password') {
+      const userId=directory.changePassword(token,await body(req));
+      for (const [id,peer] of online) {
+        if (peer.userId===userId && peer.token!==token) detach(id,peer);
+      }
+      json(res,200,{ok:true}); return;
+    }
     if (req.method==='POST' && path==='/api/auth/logout') {
       fields(await body(req),[]); directory.logout(token); if(deviceId) detach(deviceId);
       res.setHeader('Set-Cookie',cookieName+'=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict; Secure');
@@ -166,7 +173,8 @@ export async function startServer(config) {
     handle(req,res).catch(e=>{
       const message=e.code ?? e.message;
       const status={LOGIN_REQUIRED:401,INVALID_CREDENTIALS:401,FORBIDDEN:403,DEVICE_DISABLED:403,CREATE_ON_THIS_DEVICE:403,
-        NOT_FOUND:404,SESSION_NOT_FOUND:404,LOGIN_THROTTLED:429,INVALID_FIELDS:400,BODY_LIMIT:413}[message] ?? 409;
+        NOT_FOUND:404,SESSION_NOT_FOUND:404,LOGIN_THROTTLED:429,PASSWORD_THROTTLED:429,INVALID_FIELDS:400,BODY_LIMIT:413,
+        INCORRECT_CURRENT_PASSWORD:400,INVALID_NEW_PASSWORD:400,PASSWORD_UNCHANGED:400}[message] ?? 409;
       json(res,status,{error:/^[A-Z0-9_]+$/.test(message)?message:'REQUEST_FAILED'});
     });
   });
@@ -178,7 +186,7 @@ export async function startServer(config) {
       if (req.url==='/ws/device') {
         socketServer.handleUpgrade(req,socket,head,ws=>{
           detach(deviceId);
-          const current={socket:ws,token,lastSeen:Date.now(),saved:Date.now(),tools:new Set()};
+          const current={socket:ws,token,userId:user.id,lastSeen:Date.now(),saved:Date.now(),tools:new Set()};
           online.set(deviceId,current); directory.seen(deviceId);
           ws.on('pong',()=>{
             if (online.get(deviceId)!==current) return;

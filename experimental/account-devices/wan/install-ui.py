@@ -1,4 +1,4 @@
-"""Publish a renderer to the isolated Linux WAN desktop, including upgrades from the D3 symlink."""
+"""Publish the renderer and its matching device client to the isolated Linux WAN desktop."""
 import hashlib
 import os
 from pathlib import Path
@@ -27,6 +27,12 @@ with tempfile.TemporaryDirectory(dir=releases) as temp:
     revision = releases / digest.hexdigest()[:16]
     if not revision.exists():
         output.rename(revision)
+    # Replace the old private runtime or D3 symlink without writing through the link.
+    for name in ("contract.cjs", "client.mjs"):
+        staged = work / name
+        staged.write_bytes((source.parent / name).read_bytes())
+        staged.chmod(0o644)
+        staged.replace(target / name)
     link = work / "current"
     link.symlink_to(revision)
     link.replace(target / "ui")

@@ -156,6 +156,7 @@ export class DeviceClient {
     if(method==='login') return this.login(p);
     if(method==='logout') {await this.signout();return {ok:true};}
     if(!this.signed) {if(method==='state') return {user:null,localName:this.cfg.name}; throw Error('LOGIN_REQUIRED');}
+    if(method==='changePassword') return this.api('POST','/api/auth/password',p);
     if(method==='permission') return this.setMode(this.local(p.workspaceId),p.mode);
     if(method==='state') {
       const signed=this.signed;

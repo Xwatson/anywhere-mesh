@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { db } from '../../server/dist/db.js';
-import { checkCredentials, createAuthSession, destroyAuthSession, isThrottled, recordFailure, userFromToken } from '../../server/dist/auth.js';
+import { checkCredentials, checkPassword, createAuthSession, destroyAuthSession, isThrottled, isThrottledKey,
+  passwordProblem, recordFailure, recordFailureKey, setPassword, userFromToken } from '../../server/dist/auth.js';
 import { fields, text, uuid } from '../session-host/store.mjs';
 
 const digest = value => createHash('sha256').update(value).digest('hex');
@@ -26,8 +27,6 @@ export function login(input, ip) {
   fields(input, native ? ['username','password','installation','name','projects'] : ['username','password']);
   text(input.username, 32); text(input.password, 200);
   if (isThrottled(ip, input.username)) throw Error('LOGIN_THROTTLED');
-  const user = checkCredentials(input.username, input.password);
-  if (!user) { recordFailure(ip, input.username); throw Error('INVALID_CREDENTIALS'); }
   if (native) {
     if (typeof input.installation !== 'string' || !/^[0-9a-f]{64}$/.test(input.installation)) throw Error('INVALID_INSTALLATION');
     text(input.name, 80);
@@ -37,6 +36,8 @@ export function login(input, ip) {
   }
   db.exec('BEGIN IMMEDIATE');
   try {
+    const user = checkCredentials(input.username, input.password);
+    if (!user) { recordFailure(ip, input.username); throw Error('INVALID_CREDENTIALS'); }
     let deviceId = null;
     if (native) {
       const hash = digest(input.installation);
@@ -67,6 +68,31 @@ export function authenticate(token) {
 }
 
 export function logout(token) { destroyAuthSession(token); }
+
+export function changePassword(token, input) {
+  fields(input, ['current','password']);
+  text(input.current, 200);
+  if (typeof input.password !== 'string' || !input.password.trim() || passwordProblem(input.password)) {
+    throw Error('INVALID_NEW_PASSWORD');
+  }
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const {user} = authenticate(token);
+    const key = 'change-password:' + user.id;
+    if (isThrottledKey(key)) throw Error('PASSWORD_THROTTLED');
+    if (!checkPassword(user.id, input.current)) {
+      recordFailureKey(key);
+      throw Error('INCORRECT_CURRENT_PASSWORD');
+    }
+    if (input.password === input.current) throw Error('PASSWORD_UNCHANGED');
+    setPassword(user.id, input.password, token);
+    db.exec('COMMIT');
+    return user.id;
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}
 
 function invalidateDevice(id) {
   db.prepare('DELETE FROM auth_sessions WHERE token_hash IN (SELECT token_hash FROM mcp_logins WHERE device_id=?)').run(id);

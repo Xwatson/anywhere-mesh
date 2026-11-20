@@ -16,6 +16,8 @@
 
 管理账号为 `lab-admin`，设备 A/B 共用的普通测试账号为 `lab-coder`。密码保存在 NAS 实验根目录的 `secrets/wan-198.84.90.137/accounts.json`。在飞牛 VM 运行 `sudo systemctl start anywhere-wan-ui-a` 或 `anywhere-wan-ui-b` 可打开对应的桌面；登录后客户端会出现于管理页，在设备上授予项目权限后即可操作。退出登录会撤销该安装的项目权限。
 
+桌面和网页均可从左下角账号名 → **更改密码** 更新自己的密码。当前登录保留，其他设备与浏览器需要重新登录。自动化验收单独从 NAS 私有凭据文件读取密码，修改用于验收的账号后需要同步更新该文件中的对应条目。
+
 ## 构建和部署
 
 1. 在具备 D3 运行时、锁定依赖和已编译 `server/dist` 的飞牛实验 VM 中运行 `bash experimental/account-devices/wan/build.sh STAGE/app`。对 `STAGE` 中的 `app/server.mjs`、`app/mcp.mjs` 和 `app/ui/` 下的全部网页资源生成相对路径的 `app.sha256`。
