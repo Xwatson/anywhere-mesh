@@ -10,6 +10,7 @@ const modes = {
   execute: ['完全访问', '允许读取、创建和修改本项目的文件，并在隔离环境中运行项目命令。']
 };
 const errors = {
+  LOGIN_STORAGE_UNAVAILABLE: '暂时无法读取或保存本机登录凭据。请稍后重试。',
   DEVICE_OFFLINE: '执行设备已离线，草稿已保留。', LOGIN_REQUIRED: '请重新登录。',
   INVALID_CREDENTIALS: '账号或密码不正确。', DEVICE_DISABLED: '管理员已停用这台设备。',
   INCORRECT_CURRENT_PASSWORD: '当前密码不正确。', PASSWORD_UNCHANGED: '请输入与当前密码不同的新密码。',
@@ -51,7 +52,7 @@ async function action(method, p = {}) {
 let state, selected, projectId, tab = 'chat', online = false, busy = false, generation = 0, polling;
 let localConnectUntil = 0;
 let rows = [], seq = 0, epoch, sidebarKey, searchKey, fleetKey, deviceKey;
-let fleet = [], consent, projectSource;
+let fleet = [], consent, projectSource, restoring = false;
 const groups = new Map(), unfolded = new Set();
 const mine = () => state.projects.filter(p => native && p.deviceId === state.deviceId);
 const projectById = id => state.projects.find(p => p.id === id);
@@ -126,7 +127,7 @@ function showDialog(id) {
   if (error) error.textContent = '';
   dialog.showModal();
 }
-function loginView(localName) {
+function loginView(localName, restore = false) {
   if (state || !$('app').hidden) {
     activeDialog()?.close();
     drawer(false);
@@ -141,6 +142,10 @@ function loginView(localName) {
     tab = 'chat';
   }
   state = null; online = false;
+  restoring = Boolean(restore);
+  $('restoring').hidden = !restoring; $('login').hidden = restoring;
+  $('restore-status').textContent = restore === 'waiting' ? '暂时无法恢复登录，稍后会自动重试。' : '正在检查本机登录状态…';
+  $('forget-login').hidden = restore !== 'waiting';
   $('app').hidden = true; $('signin').hidden = false;
   $('entry').textContent = localName ? '连接设备 · ' + localName : native ? '登录后继续本机项目的对话。' : '使用你的 Anywhere 账号继续。';
 }
@@ -334,7 +339,8 @@ async function sync() {
   try {
     const latest = await action('state');
     if (version !== generation) return;
-    if (!latest.user) { loginView(latest.localName); return; }
+    if (!latest.user) { loginView(latest.localName, latest.restoring && 'waiting'); return; }
+    restoring = false;
     const first = !state || state.user.id !== latest.user.id;
     if (first && state) loginView();
     state = latest; online = true;
@@ -369,6 +375,7 @@ async function sync() {
     if (error.message.includes('LOGIN_REQUIRED')) { loginView(); return; }
     online = false;
     if (state) render();
+    else if (restoring) loginView(undefined,'waiting');
   }
 }
 async function refresh(force = false) {
@@ -551,7 +558,11 @@ $('login').onsubmit = e => {
   void perform(async () => { generation++; await action('login',{username:$('username').value.trim(), password}); })
     .finally(() => { label.textContent = '登录'; });
 };
-$('logout').onclick = () => perform(async () => { await action('logout'); loginView(); });
+$('logout').onclick = $('forget-login').onclick = () => perform(async () => {
+  generation++;
+  await action('logout');
+  loginView();
+});
 $('account-menu').onclick = () => { if (!busy) showAccount(); };
 $('change-password').onclick = () => {
   $('password-form').reset();
@@ -637,6 +648,6 @@ document.addEventListener('keydown', e => {
   if (e.key.toLowerCase() === 'k') { e.preventDefault(); if (!activeDialog()) openSearch(); }
   if (e.key.toLowerCase() === 'n' && native && !activeDialog()) { e.preventDefault(); openThread(null); }
 });
-loginView(); void refresh();
-setInterval(() => { if (state && !busy && !document.hidden) void refresh(); }, 1500);
+loginView(undefined,Boolean(native)); void refresh();
+setInterval(() => { if ((state || restoring) && !busy && !document.hidden) void refresh(); }, 1500);
 document.addEventListener('visibilitychange', () => { if (!document.hidden && !busy) void refresh(); });

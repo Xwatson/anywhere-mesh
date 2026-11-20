@@ -4,11 +4,25 @@
 
 ## 在 Windows 上使用
 
-1. 双击桌面或开始菜单的 **Anywhere Coding Lab**，首次打开即显示账号登录页。登录成功后客户端自动配置本机连接。虚拟机「下载」目录中有同版安装程序 `Anywhere-Coding-Lab-0.3.3-win-x64-Setup.exe`。
+1. 双击桌面或开始菜单的 **Anywhere Coding Lab**，首次打开即显示账号登录页。登录成功后客户端自动配置本机连接。虚拟机「下载」目录中有同版安装程序 `Anywhere-Coding-Lab-0.3.4-win-x64-Setup.exe`。
 2. 在首页直接输入「请读取 notes.txt 的第一行」，按 Enter 发送。首次使用时选择项目权限并确认发送，默认选中「只读」。会话绑定本机，并用首条消息命名。取消授权会保留草稿。Shift+Enter 可以换行。
 3. 左侧按项目列出会话，Ctrl+K 可按会话名、项目或设备搜索。标题栏显示执行设备和在线状态。工具操作可展开查看原始返回。在其他电脑打开同一会话时，页面会提示它绑定的设备。
 4. 本机项目目录为 `%LOCALAPPDATA%\AnywhereCodingLab\project`。点击输入框下方的项目或权限按钮，选择 **完全访问 → 授予完全访问**，当前会话即可修改文件、运行项目命令。选「编辑」可单独授权读写，选「未授权」可撤销。左下角账户菜单提供退出登录，管理员还可查看所有设备和绑定会话。[打开服务端管理页](https://awc.xbxbe.com/?view=devices)
 5. 更改密码时，点左下角账号名 → **更改密码**，输入当前密码和两次新密码，再点 **保存密码**。当前登录保留，其他客户端需要用新密码重新登录。
+
+## 关闭、重开和注销
+
+从 0.3.3 升级后首次登录一次。0.3.4 使用当前 Windows 用户的 DPAPI 加密设备登录令牌，保存在 `%LOCALAPPDATA%\AnywhereCodingLab\state\login.dpapi`。关闭应用会结束设备连接。再次打开后，客户端向服务端确认同一账号、设备和本机项目，恢复原来的项目授权，侧栏可打开之前的会话。连接暂时不可用时会自动重试。点击账号菜单的 **退出登录** 会移除凭据，再次打开需要登录。服务端令牌有效期为登录后 30 天，令牌到期、被撤销或设备被停用时也需要重新登录。[Windows 数据保护 API](https://learn.microsoft.com/en-us/dotnet/api/system.security.cryptography.protecteddata?view=netframework-4.8.1)
+
+## 会话记录位置
+
+| 内容 | 位置 |
+| --- | --- |
+| 已发送消息、Codex 回复、工具调用与结果摘要 | 美国服务器 `/var/lib/anywhere-wan/u<账号数字ID>/history.sqlite`。表 `chat_events` 按会话 ID 和顺序号保存消息，`records` 中的 `sessions` 保存标题、设备与项目绑定、Codex 线程编号等元数据 |
+| 工作区任务、执行状态、输出与回执 | 美国服务器 `/var/lib/anywhere-wan/u<账号数字ID>/<工作区UUID>/journal.sqlite`，Windows 执行端另有 `%LOCALAPPDATA%\AnywhereCodingLab\state\<工作区UUID>\journal.sqlite` |
+| 项目文件与未发送草稿 | 当前预置项目位于 `%LOCALAPPDATA%\AnywhereCodingLab\project`。草稿在当前窗口的 `sessionStorage` 暂存，关闭窗口可能丢失 |
+
+例如 `lab-coder` 使用 `/var/lib/anywhere-wan/u2/history.sqlite`。服务端 Codex CLI 还会把自身的线程记录保存在 `/home/desktop/.codex/sessions/`。应用侧栏通过已登录账号的会话接口加载历史。
 
 ## 传输与文件工具
 
@@ -24,7 +38,7 @@
 
 ## 重建 Windows x64 安装包
 
-在仓库根目录运行 `bundle.py` 生成应用压缩包。在 Windows 上用 .NET Framework 的 C# 编译器将 `WorkspaceSnapshot.cs` 和 `WorkspaceTree.cs` 一同编译为 `WorkspaceSnapshot.exe`，引用 `System.Web.Extensions.dll`。再把 `PeerHost.cs`、`TaskHost.cs` 分别编译为同名 EXE，三个程序均使用 x64 并放入同一目录。构建机使用 Python 3.11+、Pillow 和 NSIS 3。将以下参数替换为构建机上的实际路径，`build/payload` 应为空缺目录。
+在仓库根目录运行 `bundle.py` 生成应用压缩包。在 Windows 上用 .NET Framework 的 C# 编译器将 `WorkspaceSnapshot.cs` 和 `WorkspaceTree.cs` 一同编译为 `WorkspaceSnapshot.exe`，引用 `System.Web.Extensions.dll`。将 `PeerHost.cs`、`TaskHost.cs` 和 `LoginProtection.cs` 分别编译为同名 EXE，登录保护程序引用 `System.Security.dll`。四个程序均使用 x64 并放入同一目录。构建机使用 Python 3.11+、Pillow 和 NSIS 3。将以下参数替换为构建机上的实际路径，`build/payload` 应为空缺目录。
 
 ```sh
 python3 experimental/account-devices/windows/bundle.py ws-8.22.0.tgz desktop-commander-0.3.3.tgz windows-app.zip
@@ -41,10 +55,10 @@ python3 experimental/account-devices/windows/package-installer.py \
 ```sh
 python3 source/experimental/account-devices/windows/verify-installed.py --project-access \
   xwatson@192.168.8.210 /home/xwatson/.ssh/id_rsa \
-  secrets/wan-198.84.90.137/accounts.json artifacts/windows-installer/0.3.3
+  secrets/wan-198.84.90.137/accounts.json artifacts/windows-installer/0.3.4
 ```
 
-用 `--fresh` 替换 `--project-access` 可以同时复测错误密码的首次登录流程。
+用 `--remember-login` 可以验证关闭应用后的自动登录、历史恢复、主动注销和服务端撤销。用 `--fresh` 替换 `--project-access` 可以同时复测错误密码的首次登录流程。
 
 ## 早期便携版与跨设备协议复测
 

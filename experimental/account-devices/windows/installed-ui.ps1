@@ -78,6 +78,7 @@ function Press($field,$value) {
     $e=Wait-For $value { $n=Find-Element $field $value 'ControlType.Button'; if($n -and $n.Current.IsEnabled){$n} }
     $pattern=$null
     if ($e.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern,[ref]$pattern)) {$pattern.Invoke()}
+    elseif ($e.TryGetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern,[ref]$pattern)) {$pattern.Expand()}
     else {$e.SetFocus();[Windows.Forms.SendKeys]::SendWait('{ENTER}')}
 }
 function Edit($id,$value) {
@@ -187,7 +188,7 @@ try {
         if ($initial -ne 'sign-in' -or (Test-Path $legacy) -or (Test-Path $network)) {throw 'Profile was already configured'}
         Shot 'signin'
         $state.checks+='first-launch-without-toml'
-        if (!$auth.projectAccess) {
+        if (!$auth.projectAccess -and !$auth.remember) {
             Edit 'username' $auth.username
             Edit 'password' ([guid]::NewGuid().ToString())
             Press 'name' '登录'
@@ -215,11 +216,14 @@ try {
         if($badge -and ($badge.Current.Name -like '*在线*' -or $badge.Current.HelpText -like '*在线*')){$badge}
     } 65)
     Shot 'home'
-    Press 'id' 'device-status'
-    [void](Element 'name' '我的设备')
-    [void](Wait-For 'local Windows device' {$nodes=$window.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition);$nodes | Where-Object {$_.Current.Name -like ('Windows · '+$env:COMPUTERNAME+' · 本机')} | Select-Object -First 1})
-    Press 'name' '关闭'
-    $state.checks+='device-status-on-demand'
+    [void](Wait-For 'interactive composer controls' { $btn=Find-Element 'id' 'context'; if($btn -and $btn.Current.IsEnabled){$btn} })
+    if (!$auth.remember) {
+        Press 'id' 'device-status'
+        [void](Element 'name' '我的设备')
+        [void](Wait-For 'local Windows device' {$nodes=$window.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition);$nodes | Where-Object {$_.Current.Name -like ('Windows · '+$env:COMPUTERNAME+' · 本机')} | Select-Object -First 1})
+        Press 'name' '关闭'
+        $state.checks+='device-status-on-demand'
+    }
     $stream=[IO.File]::Open($fixture,[IO.FileMode]::CreateNew)
     try { $bytes=$utf8.GetBytes($marker+[Environment]::NewLine);$stream.Write($bytes,0,$bytes.Length) } finally {$stream.Dispose()}
     $created=$true
@@ -244,6 +248,50 @@ try {
     $state.checks+='exact-model-file-answer'
     Shot 'file'
     [IO.File]::Delete($fixture);$created=$false
+    if ($auth.remember) {
+        Phase 'closing-signed-in'
+        $vault=Join-Path $base 'state\login.dpapi'
+        $sealed=[IO.File]::ReadAllBytes($vault)
+        Add-Type -AssemblyName System.Security
+        $plain=[Security.Cryptography.ProtectedData]::Unprotect($sealed,$utf8.GetBytes('Anywhere Coding Lab device login v1'),'CurrentUser')
+        $record=$utf8.GetString($plain)|ConvertFrom-Json
+        if($record.token -notmatch '^[a-zA-Z0-9_-]{43}$' -or $record.deviceId -ne $instance -or $utf8.GetString($sealed).Contains($record.token) -or $utf8.GetString($plain).Contains($auth.password)){throw 'Unexpected credential storage'}
+        $state.deviceId=$instance
+        $state.checks+='dpapi-device-token-without-password'
+        if (!$proc.CloseMainWindow() -or !$proc.WaitForExit(30000)) {throw 'Signed-in test desktop did not close'}
+        $signed=$false
+        if (!(Test-Path $vault)) {throw 'Closing discarded the login'}
+        $proc=Launch-Fresh
+        $window=[System.Windows.Automation.AutomationElement]::FromHandle($proc.MainWindowHandle)
+        Phase 'automatic-login'
+        [void](Wait-For 'automatic sign-in without entering a password' {Find-Element 'id' 'account-menu'} 175)
+        $signed=$true
+        Press 'name' $state.sessionTitle
+        [void](Wait-For 'previous reply after reopening' {Find-Element 'name' $marker} 65)
+        [void](Wait-For 'restored project permission' {Find-Element 'name' '只读'} 45)
+        if (![IO.File]::ReadAllText($network).Contains($instance)) {throw 'Restore selected a different device'}
+        if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($vault)) -ne [Convert]::ToBase64String($sealed)) {throw 'Restore replaced the existing login'}
+        $state.checks+='close-keeps-login','same-login-and-device-after-reopen','previous-chat-restored','same-project-grant'
+        Shot 'restored'
+        Sign-Out; [void](Element 'id' 'username');$signed=$false
+        if(Test-Path $vault){throw 'Explicit logout left a remembered credential'}
+        if (!$proc.CloseMainWindow() -or !$proc.WaitForExit(30000)) {throw 'Signed-out test desktop did not close'}
+        $proc=Launch-Fresh
+        $window=[System.Windows.Automation.AutomationElement]::FromHandle($proc.MainWindowHandle)
+        [void](Element 'id' 'username')
+        if(Find-Element 'id' 'account-menu'){throw 'Explicit logout was reversed on restart'}
+        $state.checks+='logout-removes-vault','reopen-after-logout-requires-sign-in'
+        # Revisit an old encrypted backup in this isolated profile. A revoked server
+        # session must be rejected even when its local ciphertext is still available.
+        if (!$proc.CloseMainWindow() -or !$proc.WaitForExit(30000)) {throw 'Test login window did not close'}
+        [IO.File]::WriteAllBytes($vault,$sealed)
+        $proc=Launch-Fresh
+        $window=[System.Windows.Automation.AutomationElement]::FromHandle($proc.MainWindowHandle)
+        [void](Wait-For 'revoked login rejected after relaunch' {if(!(Test-Path $vault)){Find-Element 'id' 'username'}} 150)
+        $state.checks+='server-revocation-enforced'
+        $state.passed=$true;Phase 'passed'
+        return
+    }
     Phase 'followup'
     Send-Message '请直接从你刚才的回答取最后八个字符，只回复这八个字符。'
     $suffix=$marker.Substring($marker.Length-8)

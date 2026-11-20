@@ -39,7 +39,7 @@ function request(method, params) {
   if (pending.size >= 16) return Promise.reject(Error('TOO_MANY_REQUESTS'));
   const id = nextId++;
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => { pending.delete(id); reject(Error('DESKTOP_REQUEST_TIMEOUT')); }, installedWindows && method === 'login' ? 65000 : 40000);
+    const timer = setTimeout(() => { pending.delete(id); reject(Error('DESKTOP_REQUEST_TIMEOUT')); }, windowsDevice && (method === 'login' || method === 'state') ? 65000 : 40000);
     pending.set(id, { resolve, reject, timer });
     child.stdin.write(JSON.stringify({ id, method, params }) + '\n');
   });

@@ -14,9 +14,12 @@ if(role==='server') {
   const {DeviceClient}=await import('./client.mjs');
   const client=new DeviceClient(config);
   const endpoint=await serveControl(config.controlSocket,{async control(m,p){
-    try {return await client.control(m,p);} catch(e){if(!e.code && /^[A-Z0-9_]+$/.test(e.message))e.code=e.message;throw e;}
+    try {
+      if(m==='suspend' && p && !Object.keys(p).length) {await client.suspend();return {ok:true};}
+      return await client.control(m,p);
+    } catch(e){if(!e.code && /^[A-Z0-9_]+$/.test(e.message))e.code=e.message;throw e;}
   }});
-  close=async()=>{endpoint.close();await client.control('logout',{});};
+  close=async()=>{endpoint.close();await client.suspend();};
 } else throw Error('INVALID_ROLE');
 console.log('Account device '+role+' ready');
 if(process.env.NOTIFY_SOCKET)execFileSync('/usr/bin/systemd-notify',['--ready']);

@@ -61,10 +61,10 @@ if (!(Test-Path -LiteralPath $app)) {
     try {
         [IO.Compression.ZipFile]::ExtractToDirectory($bundle,$temp)
         $native = Join-Path $temp 'experimental\account-devices\windows'
-        foreach ($tool in @('WorkspaceSnapshot','PeerHost','TaskHost')) {
+        foreach ($tool in @('WorkspaceSnapshot','PeerHost','TaskHost','LoginProtection')) {
             $sources = @("$native\$tool.cs")
             if ($tool -eq 'WorkspaceSnapshot') { $sources += "$native\WorkspaceTree.cs" }
-            & "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /optimize+ /codepage:65001 /platform:x64 /reference:System.Web.Extensions.dll "/out:$native\$tool.exe" @sources
+            & "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /optimize+ /codepage:65001 /platform:x64 /reference:System.Web.Extensions.dll /reference:System.Security.dll "/out:$native\$tool.exe" @sources
             if ($LASTEXITCODE) { throw "$tool compilation failed" }
         }
         [IO.Directory]::Move($temp,$app)

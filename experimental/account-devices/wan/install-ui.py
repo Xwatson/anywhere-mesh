@@ -28,7 +28,7 @@ with tempfile.TemporaryDirectory(dir=releases) as temp:
     if not revision.exists():
         output.rename(revision)
     # Replace the old private runtime or D3 symlink without writing through the link.
-    for name in ("contract.cjs", "client.mjs"):
+    for name in ("contract.cjs", "remembered-login.mjs", "client.mjs", "controller.mjs", "main.mjs"):
         staged = work / name
         staged.write_bytes((source.parent / name).read_bytes())
         staged.chmod(0o644)

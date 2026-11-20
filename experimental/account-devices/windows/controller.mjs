@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
@@ -28,6 +29,7 @@ class WindowsClient extends DeviceClient {
     await peer.start(profile,signed.deviceId);
     this.cfg.url = 'https://127.0.0.1:'+peer.port;
     await peer.ready();
+    this.networkToken=signed.token;
   }
   async authenticate(params) {
     if (peer.legacy) { await peer.start(); await peer.ready(); return super.authenticate(params); }
@@ -39,16 +41,19 @@ class WindowsClient extends DeviceClient {
       throw error;
     }
   }
+  async verifiedState(saved) {
+    if(peer.legacy) { await peer.start(); await peer.ready(); }
+    else if(!peer.child || this.networkToken!==saved.token) await this.openNetwork(saved);
+    try {return await super.verifiedState(saved);}
+    catch(error) {this.networkToken=null;throw error;}
+  }
+  async remoteLogout(signed) {
+    try { await super.remoteLogout(signed); }
+    catch { await publicRequest('/api/auth/logout',{},signed.token); }
+  }
   async signout(notify=true) {
-    if (peer.legacy) return super.signout(notify);
-    const signed = this.signed;
-    try {
-      await super.signout(false);
-      if (notify && signed) {
-        try { await request(this.cfg.url,this.tls,'POST','/api/auth/logout',{},signed.token); }
-        catch { await publicRequest('/api/auth/logout',{},signed.token).catch(()=>{}); }
-      }
-    } finally { await peer.stop(); }
+    try {await super.signout(notify);}
+    finally {this.networkToken=null;if(!peer.legacy) await peer.stop();}
   }
   async recover(signed) {
     if (this.signed!==signed || this.presence?.readyState===1) return;
@@ -56,7 +61,16 @@ class WindowsClient extends DeviceClient {
     catch (error) { if (error.message==='LOGIN_REQUIRED') await this.signout(false); }
   }
 }
-const client = new WindowsClient(cfg,windowsWorkspace(fileURLToPath(new URL('./WorkspaceSnapshot.exe',import.meta.url))));
+const protector=fileURLToPath(new URL('./LoginProtection.exe',import.meta.url));
+function protect(mode, input) {
+  const result=spawnSync(protector,[mode],{input,windowsHide:true,timeout:6000,maxBuffer:16384});
+  if(result.status!==0 || !result.stdout?.length) throw Error('LOGIN_STORAGE_UNAVAILABLE');
+  return result.stdout;
+}
+const workspace=windowsWorkspace(fileURLToPath(new URL('./WorkspaceSnapshot.exe',import.meta.url)));
+const client=new WindowsClient(cfg,{...workspace,loginProtection:{
+  seal:bytes=>protect('seal',bytes),open:bytes=>protect('open',bytes)
+}});
 if (peer.legacy) await peer.start().catch(()=>{});
 // Reissue the same login's lease after a network-service restart or a missing peer process.
 const repair = setInterval(() => {
@@ -78,5 +92,5 @@ try {
   }
 } finally {
   clearInterval(repair);
-  try { await client.control('logout',{}); } finally { await peer.stop(); }
+  try { await client.suspend(); } finally { await peer.stop(); }
 }

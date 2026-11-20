@@ -14,5 +14,5 @@ input.on('line',async line=>{
     reply({id,value:await control(socket,r.method,r.params)});
   } catch(e){reply({id,error:e.message});}
 });
-input.on('close',async()=>{await control(socket,'logout',{}).catch(()=>{});process.exit(0);});
+input.on('close',async()=>{await control(socket,'suspend',{}).catch(()=>{});process.exit(0);});
 reply({event:'ready'});

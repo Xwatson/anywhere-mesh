@@ -17,7 +17,7 @@ dest.mkdir(parents=True, exist_ok=True)
 payload = dest / "payload"
 payload.mkdir()
 release = hashlib.sha256()
-version = "0.3.3"
+version = "0.3.4"
 
 def pinned(name, expected):
     archive = args.archives / name
@@ -57,7 +57,7 @@ release.update(args.app.read_bytes())
     "version":version,"main":"experimental/desktop/main.cjs"}))
 release.update((app / "package.json").read_bytes())
 native = app / "experimental/account-devices/windows"
-for name in ("WorkspaceSnapshot.exe", "PeerHost.exe", "TaskHost.exe"):
+for name in ("WorkspaceSnapshot.exe", "PeerHost.exe", "TaskHost.exe", "LoginProtection.exe"):
     binary = (args.native / name).read_bytes()
     if binary[:2] != b"MZ":
         raise SystemExit("Missing native helper: " + name)
