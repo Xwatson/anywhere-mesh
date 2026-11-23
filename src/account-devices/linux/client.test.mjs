@@ -60,3 +60,46 @@ test('LinuxClient workspacePath protects root and private paths, and sessionConf
   assert.match(toml, /no_tun = true/);
   assert.match(toml, /bind_addr = "127\.0\.0\.1:41234"/);
 });
+
+test('LinuxClient negotiates direct HTTPS/WSS transport without starting EasyTier when server advertises direct', async t => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'anywhere-linux-direct-')));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const root = join(dir, 'data');
+  const defaultProj = join(root, 'project');
+  const stateDir = join(root, 'state');
+  mkdirSync(defaultProj, { recursive: true });
+  mkdirSync(stateDir, { recursive: true });
+  const { certPath } = makeCert(dir);
+
+  let peerStarts = 0;
+  const peer = {
+    child: null,
+    async start() { peerStarts++; this.child = {}; },
+    async ready() {},
+    async stop() { this.child = null; },
+  };
+  let seenNetworkReq = null;
+  const progress = [];
+  const client = new LinuxClient(
+    { name: 'Linux Direct', url: 'https://awc.xbxbe.com', ca: certPath, stateDir, projects: [{ label: 'Default', path: defaultProj }] },
+    { ...linuxWorkspace(), onStream: evt => progress.push(evt) },
+    {
+      peer,
+      privatePaths: [root],
+      bootstrap: async (route, data) => {
+        if (route === '/api/device/network') {
+          seenNetworkReq = data;
+          return { transport: 'direct' };
+        }
+        return {};
+      },
+    },
+  );
+  await client.ensureNetwork({ token: 'tok-123', deviceId: '11111111-2222-3333-4444-555555555555' });
+  assert.equal(seenNetworkReq?.supportsDirect, true);
+  assert.equal(peerStarts, 0);
+  assert.equal(client.directMode, true);
+  assert.equal(client.tunnelReady, true);
+  assert.equal(client.cfg.url, 'https://awc.xbxbe.com');
+  assert.ok(progress.some(e => e.type === 'connect_progress' && e.payload?.phase === 'tunnel_readiness' && e.payload?.status === 'done'));
+});

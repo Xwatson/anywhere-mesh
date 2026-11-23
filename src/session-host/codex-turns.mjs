@@ -168,7 +168,21 @@ export class CodexTurns {
     return { success: true, contentItems: [{ type: 'inputText', text: (slice || '(empty)') + more }] };
   }
 
+  async waitForWorkspaceReady(t, run, waitMs = 20000) {
+    const deadline = Date.now() + waitMs;
+    while (!run.ending && !this.turn(t.id)?.cancelRequested) {
+      try {
+        const info = await this.broker(t, 'workspace');
+        if (info.confirmed && info.phase === 'ready') return info;
+      } catch {}
+      if (Date.now() >= deadline) return null;
+      await delay(500);
+    }
+    return null;
+  }
+
   async call(t, run, method, params) {
+    run.touch?.();
     if (method !== 'item/tool/call') throw Error('UNSUPPORTED_CODEX_REQUEST');
     const realTurnId = await run.ready.promise;
     if (!realTurnId || params.threadId !== run.threadId || params.turnId !== realTurnId || params.namespace) throw Error('TOOL_CALL_OUT_OF_SCOPE');
@@ -209,6 +223,8 @@ export class CodexTurns {
     const h = await this.host.host(current);
     // Check live authorization again before issuing or returning a previously stored result.
     if (run.ending || this.turn(t.id).cancelRequested) return failure('Turn stopped.');
+    await this.waitForWorkspaceReady(current, run, 20000);
+    run.touch?.();
     if (!(await this.workspaceTools(current)).some(item => item.name === effectiveTool)) return failure('Workspace permission changed.');
     const ticket = await h.executor.issue(callId, effectiveTool, effectiveArgs);
     this.save(t.id, { operationId: ticket.operationId });
@@ -222,9 +238,10 @@ export class CodexTurns {
       return failure('Turn stopped.');
     }
     let result = await h.client.callTool({ name: effectiveTool, arguments: effectiveArgs, _meta: { 'anywhere/callTicket': ticket.ticket } });
-    const until = Date.now() + 125000;
+    const until = Date.now() + 180000;
     let outputSeq = 0;
     while (result.structuredContent?.task && !result.structuredContent.task.resultReady) {
+      run.touch?.();
       if (run.ending || result.structuredContent.task.state === 'unknown' || Date.now() > until) throw Error('WORKSPACE_RESULT_PENDING');
       const receivedSeq = result.structuredContent.task.receivedSeq ?? 0;
       if (receivedSeq > outputSeq) {
@@ -311,8 +328,17 @@ export class CodexTurns {
       },
     });
     run.app = app;
+    let idleTimer = null;
+    const resetIdle = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => run.end.reject(Error('CODEX_TURN_TIMEOUT')), 240000);
+    };
+    run.touch = resetIdle;
+    resetIdle();
+    const maxTimer = setTimeout(() => run.end.reject(Error('CODEX_TURN_TIMEOUT')), 1800000);
     app.onNotification((method, p) => {
       if (p.threadId !== run.threadId || !p.threadId) return;
+      resetIdle();
       if (method === 'item/agentMessage/delta' && typeof p.delta === 'string' && p.delta) {
         this.host.delta(t.sessionId, { kind: 'text', id: p.itemId ?? t.id, text: p.delta });
       }
@@ -333,7 +359,6 @@ export class CodexTurns {
       }
       if (method === 'turn/completed') run.end.resolve(p.turn);
     });
-    const timer = setTimeout(() => run.end.reject(Error('CODEX_TURN_TIMEOUT')), 300000);
     let outcome = 'interrupted';
     try {
       const [tools] = await Promise.all([this.workspaceTools(t), connected]);
@@ -408,7 +433,8 @@ export class CodexTurns {
       this.save(t.id, { error: String(error.message).slice(0, 280), durationMs: Date.now() - startedAt });
       if (this.turn(t.id).cancelRequested) outcome = 'cancelled';
     } finally {
-      clearTimeout(timer);
+      if (idleTimer) clearTimeout(idleTimer);
+      clearTimeout(maxTimer);
       run.ending = true;
       run.ready.resolve(null);
       app.stop(); socket.destroy();

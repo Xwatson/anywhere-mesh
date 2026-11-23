@@ -70,6 +70,9 @@ class LinuxAgentClient extends DeviceClient {
     this.serverUrl = serverUrl;
     this.peer = peer;
     this.direct = direct;
+    this.directMode = direct;
+    this.tunnelTls = this.tls;
+    this.publicTls = { rejectUnauthorized: true, minVersion: 'TLSv1.2' };
     this.tunnelReady = direct;
     this.networkToken = null;
     this.httpFailures = 0;
@@ -77,7 +80,7 @@ class LinuxAgentClient extends DeviceClient {
   }
   bootstrap(route, data, token) {
     return request(this.serverUrl, { rejectUnauthorized: true, minVersion: 'TLSv1.2' },
-      'POST', route, data, token, { idleMs: 15000, totalMs: 20000 });
+      'POST', route, data, token, { idleMs: 15000, totalMs: 25000 });
   }
   async authenticate(params) {
     if (this.direct) return super.authenticate(params);
@@ -88,19 +91,35 @@ class LinuxAgentClient extends DeviceClient {
     return this.bootstrap('/api/auth/logout', {}, signed.token);
   }
   connect(signed) {
-    if (this.direct || (this.peer.child && this.tunnelReady)) super.connect(signed);
+    if (this.directMode || (this.peer?.child && this.tunnelReady)) super.connect(signed);
   }
   async ensureNetwork(signed) {
     if (this.direct) return;
-    if (!this.peer.child || this.networkToken !== signed.token || this.probeFailures >= 2) {
-      console.log('[linux-agent] Enrolling encrypted EasyTier tunnel...');
-      const profile = await this.bootstrap('/api/device/network', {}, signed.token);
+    if ((!this.directMode && !this.peer.child) || this.networkToken !== signed.token || this.probeFailures >= 2) {
+      console.log('[linux-agent] Negotiating transport with server...');
+      const reqBody = process.env.ANYWHERE_MESH_TRANSPORT === 'easytier'
+        ? { supportsDirect: true, prefer: 'easytier' }
+        : { supportsDirect: true };
+      const profile = await this.bootstrap('/api/device/network', reqBody, signed.token);
+      if (profile?.transport === 'direct') {
+        this.directMode = true;
+        this.tls = this.publicTls;
+        this.cfg.url = this.serverUrl;
+        this.networkToken = signed.token;
+        this.tunnelReady = true;
+        this.probeFailures = 0;
+        if (this.peer?.child) await this.peer.stop();
+        console.log('[linux-agent] Using direct HTTPS/WSS transport (no EasyTier nesting).');
+        return;
+      }
+      this.directMode = false;
+      this.tls = this.tunnelTls;
       this.tunnelReady = false;
       await this.peer.start(profile, signed.deviceId, this.probeFailures >= 2);
       this.cfg.url = 'https://127.0.0.1:' + this.peer.port;
       this.networkToken = signed.token;
       this.probeFailures = 0;
-      console.log('[linux-agent] Tunnel peer started on 127.0.0.1:' + this.peer.port + ', waiting for TLS handshake...');
+      console.log('[linux-agent] EasyTier tunnel peer started on 127.0.0.1:' + this.peer.port + ', waiting for TLS handshake...');
     }
     if (this.tunnelReady) return;
     try {

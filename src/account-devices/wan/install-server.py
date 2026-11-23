@@ -71,6 +71,7 @@ copy(pki/'server.key',etc/'server.key',0o640);shutil.chown(etc/'server.key','roo
 (etc/'ca.crt').chmod(0o644);(etc/'server.crt').chmod(0o644)
 host_config={'host':'10.203.73.2','port':18443,'stateDir':state,'cert':str(etc/'server.crt'),'key':str(etc/'server.key')}
 if domain:
+    host_config['directTransport'] = True
     wire=tomllib.loads((etc/'network.toml').read_text())
     if wire['secure_mode']['enabled']:
         host_config['windowsNetwork']={'name':wire['network_identity']['network_name'],

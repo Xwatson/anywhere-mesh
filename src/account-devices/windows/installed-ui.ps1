@@ -196,10 +196,20 @@ try {
     }
     Sign-In; $signed=$true
     if ($fresh) {
-        $content=[IO.File]::ReadAllText($network)
-        if ((Test-Path $legacy) -or $content -match 'network_secret|local_private_key|credential\s*=') {throw 'Unexpected private material on disk'}
-        $instance=([regex]::Match($content,'instance_id = "([a-f0-9-]{36})"')).Groups[1].Value
-        if (!$instance) {throw 'Missing device identity'}
+        if (Test-Path $legacy) {throw 'Unexpected legacy network config'}
+        if (Test-Path $network) {
+            $content=[IO.File]::ReadAllText($network)
+            if ($content -match 'network_secret|local_private_key|credential\s*=') {throw 'Unexpected private material on disk'}
+            $instance=([regex]::Match($content,'instance_id = "([a-f0-9-]{36})"')).Groups[1].Value
+            if (!$instance) {throw 'Missing device identity'}
+        } else {
+            $vaultInit=Join-Path $base 'state\login.dpapi'
+            if (!(Test-Path $vaultInit)) {throw 'Missing saved login vault'}
+            Add-Type -AssemblyName System.Security
+            $plainInit=[Security.Cryptography.ProtectedData]::Unprotect([IO.File]::ReadAllBytes($vaultInit),$utf8.GetBytes('AnywhereMesh device login v1'),'CurrentUser')
+            $instance=($utf8.GetString($plainInit)|ConvertFrom-Json).deviceId
+            if (!$instance) {throw 'Missing direct-transport device identity'}
+        }
         $state.checks+='automatic-network-config'
     }
     $state.checks+='desktop-login'
@@ -266,7 +276,7 @@ try {
         Press 'name' $state.sessionTitle
         [void](Wait-For 'previous reply after reopening' {Find-Element 'name' $marker} 65)
         [void](Wait-For 'restored project permission' {Find-Element 'name' '只读'} 45)
-        if (![IO.File]::ReadAllText($network).Contains($instance)) {throw 'Restore selected a different device'}
+        if ((Test-Path $network) -and ![IO.File]::ReadAllText($network).Contains($instance)) {throw 'Restore selected a different device'}
         if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($vault)) -ne [Convert]::ToBase64String($sealed)) {throw 'Restore replaced the existing login'}
         $state.checks+='close-keeps-login','same-login-and-device-after-reopen','previous-chat-restored','same-project-grant'
         Shot 'restored'
@@ -349,7 +359,7 @@ try {
         $window=[System.Windows.Automation.AutomationElement]::FromHandle($proc.MainWindowHandle)
         Sign-In; $signed=$true
         [void](Element 'name' $state.sessionTitle)
-        if (![IO.File]::ReadAllText($network).Contains($instance)) {throw 'Device identity changed on second launch'}
+        if ((Test-Path $network) -and ![IO.File]::ReadAllText($network).Contains($instance)) {throw 'Device identity changed on second launch'}
         Sign-Out; [void](Element 'id' 'username'); $signed=$false
         $state.checks+='relaunch-same-device-and-thread'
     }

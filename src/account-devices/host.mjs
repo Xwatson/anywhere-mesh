@@ -155,9 +155,13 @@ export async function startServer(config) {
     const token = credential(req), { user, deviceId } = directory.authenticate(token);
     if (req.method === 'POST' && path === '/api/device/network') {
       if (!deviceId || !req.headers.authorization?.startsWith('Bearer ')) throw Error('FORBIDDEN');
-      fields(await body(req), []);
+      const input = await body(req);
+      fields(input, [], ['supportsDirect', 'prefer']);
+      if (config.directTransport && input.supportsDirect === true && input.prefer !== 'easytier') {
+        json(res, 200, { transport: 'direct' }); return;
+      }
       if (!network) throw Error('NETWORK_ENROLLMENT_UNAVAILABLE');
-      json(res, 200, await network.issue(token)); return;
+      json(res, 200, { transport: 'easytier', ...(await network.issue(token)) }); return;
     }
     if (req.method === 'POST' && path === '/api/device/workspaces') {
       if (!deviceId || !req.headers.authorization?.startsWith('Bearer ')) throw Error('FORBIDDEN');
@@ -413,6 +417,7 @@ export async function startServer(config) {
       if (!deviceId) throw Error('FORBIDDEN');
       if (req.url === '/ws/device') {
         socketServer.handleUpgrade(req, socket, head, ws => {
+          ws._socket?.setKeepAlive?.(true, 15000);
           detach(deviceId);
           const current = { socket: ws, token, userId: user.id, lastSeen: Date.now(), saved: Date.now(), tools: new Set() };
           online.set(deviceId, current); directory.seen(deviceId);
@@ -430,13 +435,14 @@ export async function startServer(config) {
       if (!w || w.grant.deviceId !== deviceId || !current || current.token !== token) throw Error('FORBIDDEN');
       const broker = projects.get(w.id).broker;
       socketServer.handleUpgrade(req, socket, head, ws => {
+        ws._socket?.setKeepAlive?.(true, 15000);
         current.tools.add(ws);
         const rpc = new Rpc(ws, (method, params, frame) => {
           if (current !== online.get(deviceId)) throw Error('STALE_CONNECTION');
           directory.authenticate(token);
           return broker.peer(rpc, method, params, frame);
         });
-        const timer = setTimeout(() => { if (!rpc.epoch) rpc.close(); }, 5000);
+        const timer = setTimeout(() => { if (!rpc.epoch) rpc.close(); }, 15000);
         ws.on('close', () => { clearTimeout(timer); current.tools.delete(ws); });
       });
     } catch { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); }
@@ -445,11 +451,11 @@ export async function startServer(config) {
     for (const [id, p] of online) {
       try {
         directory.authenticate(p.token);
-        if (Date.now() - p.lastSeen > 8000) detach(id, p); else p.socket.ping();
+        if (Date.now() - p.lastSeen > 35000) detach(id, p); else p.socket.ping();
       } catch { detach(id, p); }
     }
-  }, 2000);
-  server.headersTimeout = 8000; server.requestTimeout = 30000;
+  }, 5000);
+  server.headersTimeout = 20000; server.requestTimeout = 60000;
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(config.port, config.host, resolve); });
   const reap = network && setInterval(() => network.sweep().catch(() => {}), 5000);
   return { port: server.address().port, async close() {

@@ -296,7 +296,21 @@ export class AntigravityTurns {
     return { content: [{ type: 'text', text: (slice || '(empty)') + more }] };
   }
 
+  async waitForWorkspaceReady(t, run, waitMs = 20000) {
+    const deadline = Date.now() + waitMs;
+    while (!run.ending && !this.turn(t.id)?.cancelRequested) {
+      try {
+        const info = await this.broker(t, 'workspace');
+        if (info.confirmed && info.phase === 'ready') return info;
+      } catch {}
+      if (Date.now() >= deadline) return null;
+      await delay(500);
+    }
+    return null;
+  }
+
   async invokeMcpTool(t, run, params) {
+    run.touch?.();
     const current = this.turn(t.id), session = this.host.session(t.sessionId);
     if (session.activeTurnId !== t.id || current.cancelRequested || run.ending) {
       return { isError: true, content: [{ type: 'text', text: 'Turn stopped.' }] };
@@ -348,6 +362,8 @@ export class AntigravityTurns {
     if (run.ending || this.turn(t.id).cancelRequested) {
       return { isError: true, content: [{ type: 'text', text: 'Turn stopped.' }] };
     }
+    await this.waitForWorkspaceReady(current, run, 20000);
+    run.touch?.();
     if (!(await this.workspaceTools(current)).some(item => item.name === effectiveTool)) {
       return { isError: true, content: [{ type: 'text', text: 'Workspace permission changed.' }] };
     }
@@ -363,9 +379,10 @@ export class AntigravityTurns {
       return { isError: true, content: [{ type: 'text', text: 'Turn stopped.' }] };
     }
     let result = await h.client.callTool({ name: effectiveTool, arguments: effectiveArgs, _meta: { 'anywhere/callTicket': ticket.ticket } });
-    const until = Date.now() + 125000;
+    const until = Date.now() + 180000;
     let outputSeq = 0;
     while (result.structuredContent?.task && !result.structuredContent.task.resultReady) {
+      run.touch?.();
       if (run.ending || result.structuredContent.task.state === 'unknown' || Date.now() > until) throw Error('WORKSPACE_RESULT_PENDING');
       const receivedSeq = result.structuredContent.task.receivedSeq ?? 0;
       if (receivedSeq > outputSeq) {
@@ -485,13 +502,21 @@ export class AntigravityTurns {
     };
     this.active.set(t.id, run);
     let outcome = 'interrupted';
-    const timer = setTimeout(() => { run.acp?.close(Error('ANTIGRAVITY_TURN_TIMEOUT')); }, 300000);
+    let idleTimer = null;
+    const resetIdle = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => { run.acp?.close(Error('ANTIGRAVITY_TURN_TIMEOUT')); }, 240000);
+    };
+    run.touch = resetIdle;
+    resetIdle();
+    const maxTimer = setTimeout(() => { run.acp?.close(Error('ANTIGRAVITY_TURN_TIMEOUT')); }, 1800000);
     try {
       const [tools] = await Promise.all([this.workspaceTools(t), connected]);
       run.tools = new Set(tools.map(tool => tool.name));
       run.mcpServer = await this.startMcpBridgeServer(t, run, tools);
 
       const acp = new AcpConnection(socket, msg => {
+        resetIdle();
         const { id, method, params } = msg;
         if (id !== undefined) {
           if (method === 'session/request_permission' && params?.sessionId === run.sessionId) {
@@ -607,7 +632,8 @@ export class AntigravityTurns {
       this.save(t.id, { error: String(error.message).slice(0, 280), durationMs: Date.now() - startedAt });
       if (this.turn(t.id).cancelRequested) outcome = 'cancelled';
     } finally {
-      clearTimeout(timer);
+      if (idleTimer) clearTimeout(idleTimer);
+      clearTimeout(maxTimer);
       run.ending = true;
       run.prompting = false;
       run.acp?.close();

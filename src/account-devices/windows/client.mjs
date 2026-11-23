@@ -37,6 +37,9 @@ export class WindowsClient extends DeviceClient {
   constructor(cfg, workspace, {peer, privatePaths, bootstrap=publicRequest}) {
     super({...cfg,workspacePicker:true},workspace);
     this.peer=peer;this.privatePaths=privatePaths;this.bootstrap=bootstrap;
+    this.tunnelTls=this.tls;
+    this.publicTls={rejectUnauthorized:true,minVersion:'TLSv1.2'};
+    this.directMode=false;
     this.httpFailures=0;this.probeFailures=0;
     this.emitProgress = payload => { try { this.onStream?.({ type: 'connect_progress', payload }); } catch {} };
   }
@@ -123,20 +126,41 @@ export class WindowsClient extends DeviceClient {
     return phase('authentication','WINDOWS_BOOTSTRAP_UNAVAILABLE',()=>this.bootstrap('/api/auth/login',params),true,this.emitProgress);
   }
   connect(signed) {
-    if(this.peer.child && this.tunnelReady) super.connect(signed);
+    if((this.directMode || this.peer.child) && this.tunnelReady) super.connect(signed);
   }
   async ensureNetwork(signed,waitMs) {
     const peer=this.peer;
     const notify = !this.presence ? this.emitProgress : null;
-    if(!peer.legacy && (!peer.child || this.networkToken!==signed.token || this.probeFailures>=2)) {
+    if(!peer.legacy && ((!this.directMode && !peer.child) || this.networkToken!==signed.token || this.probeFailures>=2)) {
+      const reqBody = process.env.ANYWHERE_MESH_TRANSPORT === 'easytier'
+        ? { supportsDirect: true, prefer: 'easytier' }
+        : { supportsDirect: true };
       const profile=await phase('network_enrollment','WINDOWS_NETWORK_CONFIG_UNAVAILABLE',
-        ()=>this.bootstrap('/api/device/network',{},signed.token),true,notify);
+        ()=>this.bootstrap('/api/device/network',reqBody,signed.token),true,notify);
+      if (profile?.transport === 'direct') {
+        this.directMode=true;
+        this.tls=this.publicTls;
+        this.cfg.url=service;
+        this.networkToken=signed.token;
+        this.tunnelReady=true;
+        this.probeFailures=0;
+        if (peer.child) await peer.stop();
+        if (notify) {
+          notify({ phase: 'peer_start', status: 'done' });
+          notify({ phase: 'tunnel_readiness', status: 'done' });
+        }
+        return;
+      }
+      this.directMode=false;
+      this.tls=this.tunnelTls;
       this.tunnelReady=false;
       await phase('peer_start','WINDOWS_TUNNEL_NOT_READY',()=>peer.start(profile,signed.deviceId,this.probeFailures>=2),true,notify);
       this.cfg.url='https://127.0.0.1:'+peer.port;
       this.networkToken=signed.token;
       this.probeFailures=0;
     } else if(peer.legacy && !peer.child) {
+      this.directMode=false;
+      this.tls=this.tunnelTls;
       this.tunnelReady=false;
       await phase('peer_start','WINDOWS_TUNNEL_NOT_READY',()=>peer.start(),true,notify);
     }
@@ -185,13 +209,14 @@ export class WindowsClient extends DeviceClient {
     finally {
       this.retryNetworkAt=0;this.networkFailure=null;this.httpFailures=0;this.probeFailures=0;
       if(!this.peer.legacy) {
+        this.directMode=false;this.tls=this.tunnelTls;
         this.networkToken=null;this.tunnelReady=false;
         await this.peer.stop();
       }
     }
   }
   async recover(signed) {
-    if(!signed || this.signed!==signed || (this.peer.child && this.tunnelReady && !this.httpFailures && this.presence?.readyState===1)) return;
+    if(!signed || this.signed!==signed || ((this.directMode || this.peer.child) && this.tunnelReady && !this.httpFailures && this.presence?.readyState===1)) return;
     try { await this.currentState(); }
     catch(error) {
       if(['LOGIN_REQUIRED','DEVICE_DISABLED','LOGIN_BINDING_MISMATCH'].includes(error.message)) await this.signout(false);

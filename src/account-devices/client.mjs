@@ -42,7 +42,7 @@ function singleRequest(url, tls, method, path, raw, token, { idleMs, totalMs, fr
     req.on('timeout', () => req.destroy(Error('NETWORK_TIMEOUT'))); req.end(raw);
   });
 }
-export async function request(url, tls, method, path, data, token, {idleMs=8000,totalMs=10000}={}) {
+export async function request(url, tls, method, path, data, token, {idleMs=15000,totalMs=25000}={}) {
   const raw = data === undefined ? undefined : JSON.stringify(data);
   try {
     return await singleRequest(url, tls, method, path, raw, token, { idleMs, totalMs, freshSocket: false });
@@ -113,7 +113,7 @@ export class DeviceClient {
   api(method, path, data) { return request(this.cfg.url, this.tls, method, path, data, this.signed?.token); }
   ws(path) {
     return new WebSocket(new URL(path, this.cfg.url.replace(/^https:/, 'wss:')), {
-      ...this.tls, headers: { Authorization: 'Bearer ' + this.signed.token }, handshakeTimeout: 6000, maxPayload: 524288, perMessageDeflate: false
+      ...this.tls, headers: { Authorization: 'Bearer ' + this.signed.token }, handshakeTimeout: 15000, maxPayload: 524288, perMessageDeflate: false
     });
   }
   local(id) {
@@ -285,8 +285,11 @@ export class DeviceClient {
     const ws = this.ws('/ws/device'); this.presence = ws; ws.on('error', () => {});
     let lastPing = Date.now();
     ws.on('ping', () => { lastPing = Date.now(); });
-    const timer = setInterval(() => { if (Date.now() - lastPing > 11000) ws.terminate(); }, 2000);
-    ws.once('open', () => { for (const p of this.locals.values()) this.connectProject(signed, ws, p); });
+    const timer = setInterval(() => { if (Date.now() - lastPing > 40000) ws.terminate(); }, 5000);
+    ws.once('open', () => {
+      ws._socket?.setKeepAlive?.(true, 15000);
+      for (const p of this.locals.values()) this.connectProject(signed, ws, p);
+    });
     ws.once('close', () => {
       clearInterval(timer);
       if (this.presence !== ws) return;

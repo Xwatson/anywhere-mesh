@@ -66,6 +66,8 @@ wire = tomllib.loads(Path("/etc/anywhere-wan/network.toml").read_text())
 if wire["secure_mode"]["enabled"] and wire["listeners"] == ["ws://127.0.0.1:31483/"]:
     cfg["windowsNetwork"] = {"name": wire["network_identity"]["network_name"],
                              "serverKey": wire["secure_mode"]["local_public_key"]}
+if Path("/etc/nginx/conf.d/anywhere-wan-domain.conf").exists():
+    cfg["directTransport"] = True
 config = release / "host.json"
 config.write_text(json.dumps(cfg) + "\n")
 config.chmod(0o644)

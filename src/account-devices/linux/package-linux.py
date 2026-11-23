@@ -11,7 +11,7 @@ import tarfile
 import tempfile
 import zipfile
 
-VERSION = "0.4.5"
+VERSION = "0.4.6"
 WS_INTEGRITY = "sha512-Ydggc987+RO0AnWtZ/7Wq9FtNvcrL1b/RO0ud9mWjUPgDrsAAwQSF51sm2hm1XofbU/4jkpGEsLFsZZxU+1DOg=="
 PINNED = {
     "electron-v45.3.3-linux-x64.zip": "0a63ce0e2b6a69d6ced7194949934b8414a6dadeca82910f88dc8720a1433269",
