@@ -1,0 +1,26 @@
+# AnywhereMesh Linux Headless Agent systemd user service template.
+#
+# Setup:
+#   1. Sign in once interactively so credentials are saved under ~/.anywhere-mesh/linux-agent:
+#        anywhere-mesh-agent --project /path/to/your/repo --mode execute
+#      Wait for "ONLINE & READY", then press Ctrl+C.
+#   2. Copy this template and edit --project / --mode as needed:
+#        mkdir -p ~/.config/systemd/user
+#        cp anywhere-mesh-agent.service.example ~/.config/systemd/user/anywhere-mesh-agent.service
+#        systemctl --user daemon-reload
+#        systemctl --user enable --now anywhere-mesh-agent.service
+#        journalctl --user -u anywhere-mesh-agent.service -f
+
+[Unit]
+Description=AnywhereMesh Linux Device Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/anywhere-mesh-agent --project %h/workspace --mode execute
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

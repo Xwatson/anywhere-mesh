@@ -2,6 +2,7 @@
 const { app, BrowserWindow, ipcMain, protocol, session, net, screen, clipboard, dialog, Menu, nativeTheme } = require('electron');
 const { spawn } = require('node:child_process');
 const { realpathSync, mkdirSync, existsSync, copyFileSync, constants } = require('node:fs');
+const { homedir } = require('node:os');
 const { resolve, sep, extname } = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { createInterface } = require('node:readline');
@@ -10,19 +11,23 @@ const sessionsProfile = process.argv.includes('--lab-sessions');
 const deviceSlot = process.argv.find(arg => /^--lab-device=[ab]$/.test(arg))?.at(-1);
 const installedWindows = process.platform === 'win32' && existsSync(resolve(process.resourcesPath, 'tools/node.exe'));
 const windowsDevice = installedWindows || (process.platform === 'win32' && process.argv.includes('--lab-windows'));
+const installedLinux = process.platform === 'linux' && existsSync(resolve(process.resourcesPath, 'tools/node'));
+const linuxDesktop = installedLinux || (process.platform === 'linux' && process.argv.includes('--desktop-linux'));
+const standaloneDevice = windowsDevice || linuxDesktop;
 const windowsRoot = windowsDevice ? resolve(process.env.LOCALAPPDATA, 'AnywhereMesh') : null;
+const linuxRoot = linuxDesktop ? resolve(process.env.ANYWHERE_MESH_DATA_DIR || resolve(process.env.XDG_DATA_HOME || resolve(homedir(), '.local/share'), 'AnywhereMesh')) : null;
 const wanProfile = deviceSlot && process.argv.includes('--lab-wan');
-const appDir = deviceSlot || windowsDevice ? resolve(__dirname,'../account-devices') : sessionsProfile ? resolve(__dirname, '../desktop-sessions') : __dirname;
+const appDir = deviceSlot || standaloneDevice ? resolve(__dirname,'../account-devices') : sessionsProfile ? resolve(__dirname, '../desktop-sessions') : __dirname;
 const contract = require(resolve(appDir, 'contract.cjs'));
 const validate = contract.internalValidate ?? contract.validate;
 const validatePublic = contract.publicValidate ?? contract.validate;
 let testPickerPath;
 let pickingWorkspace=false;
 
-if (windowsDevice) {
-  if (sessionsProfile || deviceSlot) throw Error('WINDOWS_LAB_PROFILE_REQUIRED');
+if (standaloneDevice) {
+  if (sessionsProfile || deviceSlot) throw Error('STANDALONE_PROFILE_REQUIRED');
 } else if (process.platform !== 'linux' || !existsSync('/etc/anywhere-crossborder-lab')) throw Error('LAB_LINUX_REQUIRED');
-const profile = windowsDevice ? resolve(windowsRoot,'profile') : deviceSlot ? '/srv/anywhere-lab/'+(wanProfile ? 'wan' : 'd3')+'/shell-'+deviceSlot :
+const profile = windowsDevice ? resolve(windowsRoot,'profile') : linuxDesktop ? resolve(linuxRoot, 'profile') : deviceSlot ? '/srv/anywhere-lab/'+(wanProfile ? 'wan' : 'd3')+'/shell-'+deviceSlot :
   sessionsProfile ? '/srv/anywhere-lab/desktop-d2/shell-profile' : '/srv/anywhere-lab/desktop-d/shell-profile';
 mkdirSync(profile, { recursive: true, mode: 0o700 });
 app.setPath('userData', profile);
@@ -40,7 +45,7 @@ function request(method, params) {
   if (pending.size >= 16) return Promise.reject(Error('TOO_MANY_REQUESTS'));
   const id = nextId++;
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => { pending.delete(id); reject(Error('DESKTOP_REQUEST_TIMEOUT')); }, windowsDevice && (method === 'login' || method === 'state') ? 65000 : 40000);
+    const timer = setTimeout(() => { pending.delete(id); reject(Error('DESKTOP_REQUEST_TIMEOUT')); }, standaloneDevice && (method === 'login' || method === 'state') ? 65000 : 40000);
     pending.set(id, { resolve, reject, timer });
     child.stdin.write(JSON.stringify({ id, method, params }) + '\n');
   });
@@ -64,7 +69,13 @@ if (single) app.whenReady().then(async () => {
       copyFileSync(resolve(process.resourcesPath,'tools/ca.crt'),resolve(windowsRoot,'ca.crt'),constants.COPYFILE_EXCL);
     }
   }
-  const assets = realpathSync(resolve(appDir, deviceSlot || windowsDevice ? 'ui' : 'dist'));
+  if (installedLinux) {
+    mkdirSync(resolve(linuxRoot, 'project'), { recursive: true, mode: 0o700 });
+    if (!existsSync(resolve(linuxRoot, 'ca.crt'))) {
+      copyFileSync(resolve(process.resourcesPath, 'tools/ca.crt'), resolve(linuxRoot, 'ca.crt'), constants.COPYFILE_EXCL);
+    }
+  }
+  const assets = realpathSync(resolve(appDir, deviceSlot || standaloneDevice ? 'ui' : 'dist'));
   protocol.handle('anywhere-desktop', async req => {
     try {
       const u = new URL(req.url);
@@ -79,10 +90,19 @@ if (single) app.whenReady().then(async () => {
   ses.setPermissionCheckHandler(() => false);
   ses.on('will-download', event => event.preventDefault());
   const backend = installedWindows ? resolve(process.resourcesPath,'tools/node.exe') :
-    windowsDevice ? resolve(windowsRoot,'runtime/node.exe') : '/usr/local/bin/node';
+    windowsDevice ? resolve(windowsRoot,'runtime/node.exe') :
+    installedLinux ? resolve(process.resourcesPath, 'tools/node') :
+    linuxDesktop ? (process.env.ANYWHERE_MESH_NODE || process.execPath) : '/usr/local/bin/node';
+  const linuxEnv = Object.fromEntries(
+    ['PATH', 'HOME', 'USER', 'LANG', 'LC_ALL', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME', 'TMPDIR',
+      'ANYWHERE_MESH_DATA_DIR', 'ANYWHERE_MESH_URL', 'ANYWHERE_MESH_CA', 'ANYWHERE_MESH_EASYTIER',
+      'ANYWHERE_MESH_NAME', 'ANYWHERE_MESH_USE_PROXY']
+      .filter(k => process.env[k] !== undefined).map(k => [k, process.env[k]])
+  );
   const env = windowsDevice ? Object.fromEntries(['SystemRoot','WINDIR','LOCALAPPDATA','USERPROFILE','TEMP','TMP'].map(k=>[k,process.env[k]])) :
-    { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: '/home/lab', LANG: 'C.UTF-8' };
-  child = spawn(backend, [resolve(appDir, windowsDevice ? 'windows/controller.mjs' : 'controller.mjs'), ...(deviceSlot ? [deviceSlot] : []), ...(wanProfile ? ['wan'] : [])], {
+    linuxDesktop ? linuxEnv : { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: '/home/lab', LANG: 'C.UTF-8' };
+  const controllerScript = windowsDevice ? 'windows/controller.mjs' : linuxDesktop ? 'linux/controller.mjs' : 'controller.mjs';
+  child = spawn(backend, [resolve(appDir, controllerScript), ...(deviceSlot ? [deviceSlot] : []), ...(wanProfile ? ['wan'] : [])], {
     stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, env: { ...env, NODE_NO_WARNINGS: '1' },
   });
   child.stderr.on('data', chunk => process.stderr.write(chunk));
@@ -105,17 +125,19 @@ if (single) app.whenReady().then(async () => {
   });
   child.on('error', e => console.error('Desktop backend:', e.message));
   const area = screen.getPrimaryDisplay().workAreaSize;
+  const iconPath = installedWindows ? resolve(process.resourcesPath, 'AnywhereMesh.ico') :
+    installedLinux ? resolve(process.resourcesPath, 'AnywhereMesh.png') : null;
   win = new BrowserWindow({ width: Math.min(area.width, 1280), height: Math.min(area.height, 900), minWidth: 900, minHeight: 680,
-    show: false, backgroundColor: windowsDevice || deviceSlot ? (nativeTheme.shouldUseDarkColors ? '#1c201d' : '#fdfdfa') : '#09090b',
+    show: false, backgroundColor: standaloneDevice || deviceSlot ? (nativeTheme.shouldUseDarkColors ? '#1c201d' : '#fdfdfa') : '#09090b',
     title: 'AnywhereMesh', autoHideMenuBar: true,
-    ...(installedWindows ? {icon:resolve(process.resourcesPath,'AnywhereMesh.ico')} : {}),
+    ...(iconPath && existsSync(iconPath) ? { icon: iconPath } : {}),
     webPreferences: { preload: resolve(appDir, 'preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false,
       webSecurity: true, allowRunningInsecureContent: false, webviewTag: false, devTools: false, spellcheck: false },
   });
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', event => event.preventDefault());
   win.webContents.on('will-attach-webview', event => event.preventDefault());
-  if (windowsDevice) win.webContents.on('context-menu', (_event, params) => {
+  if (standaloneDevice) win.webContents.on('context-menu', (_event, params) => {
     const {editFlags, isEditable, selectionText, frame, x, y}=params;
     if (!isEditable && !selectionText) return;
     const items=[];
@@ -135,12 +157,12 @@ if (single) app.whenReady().then(async () => {
   ipcMain.handle('desktop:request', async (event, method, params) => {
     if (!trustedSender(event, win?.webContents)) throw Error('UNTRUSTED_DESKTOP_SENDER');
     validatePublic(method, params);
-    if (windowsDevice && method === 'chooseAttachment') {
+    if (standaloneDevice && method === 'chooseAttachment') {
       const picked = await dialog.showOpenDialog(win, { title: '选择附件', buttonLabel: '添加附件',
         properties: ['openFile', 'dontAddToRecent'] });
       return picked.canceled || !picked.filePaths[0] ? null : request('uploadAttachmentFile', { sessionId: params.sessionId, path: picked.filePaths[0] });
     }
-    if (windowsDevice && method === 'chooseWorkspace') {
+    if (standaloneDevice && method === 'chooseWorkspace') {
       if (pickingWorkspace) return null;
       pickingWorkspace=true;
       try {

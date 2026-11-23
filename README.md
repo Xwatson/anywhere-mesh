@@ -33,20 +33,23 @@ npm install
 npm test
 ```
 
-## Linux 设备 Agent
+## Linux 客户端（桌面 GUI + 无界面 CLI Agent）
 
-无需 root 权限即可将任意 Linux 电脑接入 AnywhereMesh（内置用户态 EasyTier `no_tun` 隧道与原生 16 工具工作区执行器）：
+无需 `root` 权限即可在 Linux 桌面或无头服务器 / NAS 上使用（内置用户态 EasyTier `no_tun` 隧道与原生 16 工具工作区执行器）：
 
-```bash
-node src/account-devices/linux-agent.mjs \
-  --project /path/to/repo --label my-repo \
-  --ca /path/to/ca.crt \
-  --easytier /path/to/easytier-core \
-  --mode execute \
-  --username <user> --password-stdin
-```
-
-首次登录后自动保存设备凭据，后续启动无需重复输入密码；退出登录可传入 `--logout`。
+- **打包完整离线 Linux x64 安装包**（同时包含 Electron 图形桌面客户端 `anywhere-mesh` 与无界面命令行客户端 `anywhere-mesh-agent`）：
+  ```bash
+  python3 src/account-devices/linux/package-linux.py \
+    --archives /path/to/images \
+    --ws /path/to/ws-8.22.0.tgz \
+    --ca /path/to/ca.crt \
+    --output ./AnywhereMesh-0.4.5-linux-x64.tar.gz
+  ```
+- **直接从源码运行无界面 CLI Agent**：
+  ```bash
+  bash src/account-devices/linux/agent.sh --project /path/to/repo --label my-repo --mode execute
+  ```
+  首次登录后自动保存设备凭据，后续启动无需重复输入密码；退出登录可传入 `--logout`；systemd 用户服务模板见 [src/account-devices/linux/anywhere-mesh-agent.service.example](src/account-devices/linux/anywhere-mesh-agent.service.example)，更多说明见 [src/account-devices/linux/README.md](src/account-devices/linux/README.md)。
 
 ## 构建发布
 
@@ -54,4 +57,5 @@ node src/account-devices/linux-agent.mjs \
   ```bash
   bash src/account-devices/wan/build.sh /tmp/wan-stage
   ```
+- **Linux x64 安装包（桌面 + CLI）**：详见 [src/account-devices/linux/README.md](src/account-devices/linux/README.md)。
 - **Windows x64 安装包**：详见 [src/account-devices/windows/README.md](src/account-devices/windows/README.md)。

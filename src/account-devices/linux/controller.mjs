@@ -1,0 +1,67 @@
+import { existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
+import { homedir, hostname } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { createInterface } from 'node:readline';
+import { linuxWorkspace } from '../linux-workspace.mjs';
+import { LinuxClient, makeBootstrap } from './client.mjs';
+import { LinuxPeer, service } from './network.mjs';
+
+if (process.platform !== 'linux') throw Error('LINUX_REQUIRED');
+process.umask(0o077);
+
+const dataBase = process.env.ANYWHERE_MESH_DATA_DIR ||
+  join(process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share'), 'AnywhereMesh');
+mkdirSync(dataBase, { recursive: true, mode: 0o700 });
+const root = realpathSync(dataBase);
+const projectDir = join(root, 'project');
+mkdirSync(projectDir, { recursive: true, mode: 0o700 });
+
+const serverUrl = process.env.ANYWHERE_MESH_URL || service;
+const easytierPath = process.env.ANYWHERE_MESH_EASYTIER || join(dirname(process.execPath), 'easytier-core');
+if (!existsSync(easytierPath)) throw Error('EASYTIER_BINARY_NOT_FOUND');
+
+const caPath = process.env.ANYWHERE_MESH_CA || join(root, 'ca.crt');
+const cfg = {
+  stateDir: join(root, 'state'),
+  name: process.env.ANYWHERE_MESH_NAME || ('Linux 桌面 · ' + hostname()),
+  url: serverUrl,
+  ca: caPath,
+  projects: [{ label: 'Linux 本地项目', path: realpathSync(projectDir) }],
+};
+
+const input = createInterface({ input: process.stdin });
+const peer = new LinuxPeer(root, easytierPath, readFileSync(cfg.ca), serverUrl);
+const reply = value => process.stdout.write(JSON.stringify(value) + '\n');
+const workspace = linuxWorkspace();
+const client = new LinuxClient(cfg, {
+  ...workspace,
+  onStream: data => reply({ event: 'stream', data }),
+}, {
+  peer,
+  bootstrap: makeBootstrap(serverUrl),
+  privatePaths: [root, resolve(import.meta.dirname, '../../..'), dirname(process.execPath)],
+});
+
+const repair = setInterval(() => {
+  const signed = client.signed;
+  if (!signed || client.repairPending) return;
+  client.repairPending = client.enqueue(() => client.recover(signed)).catch(() => {}).finally(() => { client.repairPending = null; });
+}, 30000);
+
+reply({ event: 'ready' });
+try {
+  for await (const line of input) {
+    let id;
+    try {
+      if (line.length > 16 * 1024 * 1024) throw Error('INVALID_FRAME');
+      const frame = JSON.parse(line);
+      id = frame.id;
+      reply({ id, value: await client.control(frame.method, frame.params) });
+    } catch (error) {
+      reply({ id, error: error.code ?? error.message });
+    }
+  }
+} finally {
+  clearInterval(repair);
+  try { await client.suspend(); } finally { await peer.stop(); }
+}
