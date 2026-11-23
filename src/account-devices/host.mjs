@@ -224,7 +224,12 @@ export async function startServer(config) {
     if (req.method === 'POST' && path === '/api/sessions') {
       const input = await body(req); fields(input, ['workspaceId', 'title', 'requestId'], ['options']);
       const w = host.workspace(input.workspaceId);
-      if (!deviceId || w.grant.deviceId !== deviceId) throw Error('CREATE_ON_THIS_DEVICE');
+      const isOwnDevice = Boolean(deviceId && w.grant.deviceId === deviceId);
+      if (!isOwnDevice) {
+        const broker = projects.get(w.id)?.broker;
+        if (!online.has(w.grant.deviceId)) throw Error('DEVICE_OFFLINE');
+        if (!broker || broker.phase !== 'ready' || broker.grant.mode === 'revoked') throw Error('LOCAL_PERMISSION_REQUIRED');
+      }
       json(res, 200, host.create(input)); return;
     }
     const sessionOnly = path.match(/^\/api\/sessions\/([a-f0-9-]{36})$/);

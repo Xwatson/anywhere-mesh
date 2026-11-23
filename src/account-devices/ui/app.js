@@ -48,6 +48,7 @@ async function action(method, p = {}) {
     case 'logout': path = '/api/auth/logout'; body = {}; httpMethod = 'POST'; break;
     case 'changePassword': path = '/api/auth/password'; body = p; httpMethod = 'POST'; break;
     case 'state': path = '/api/state'; break;
+    case 'create': path = '/api/sessions'; body = p; httpMethod = 'POST'; break;
     case 'admin': path = '/api/admin/devices'; break;
     case 'disable': path = '/api/admin/devices/' + p.id; body = { disabled: p.disabled }; httpMethod = 'POST'; break;
     case 'renameSession': path = '/api/sessions/' + p.sessionId; body = { title: p.title }; httpMethod = 'PATCH'; break;
@@ -103,6 +104,8 @@ const deviceById = id => state.devices.find(d => d.id === id);
 const thread = () => state?.sessions.find(s => s.id === selected);
 const project = () => projectById(thread()?.workspaceId ?? projectId);
 const isLocal = p => Boolean(native && p && p.deviceId === state.deviceId);
+const isRemoteAuthorized = p => Boolean(p && !isLocal(p) && p.ready && p.mode && p.mode !== 'revoked' && deviceById(p.deviceId)?.online && !deviceById(p.deviceId)?.disabled);
+const selectableProjects = () => [...mine(), ...state.projects.filter(isRemoteAuthorized)];
 const connecting = d => d && !d.disabled && !d.online && d.id === state?.deviceId && Date.now() < localConnectUntil;
 const status = d => !online ? '状态未知' : !d ? '未连接' : d.disabled ? '已停用' : d.online ? '在线' : connecting(d) ? '连接中' : '离线';
 const deviceName = d => d ? d.name + ' · ' + d.id.slice(0, 6) : '未知设备';
@@ -394,7 +397,7 @@ function sidebar() {
   const labels = projects.map(p => p.label);
   for (const p of projects) {
     const sessions = state.sessions.filter(s => s.workspaceId === p.id);
-    if (!sessions.length && !isLocal(p)) continue;
+    if (!sessions.length && !isLocal(p) && !isRemoteAuthorized(p)) continue;
     const group = element('section', undefined, 'project-group');
     const toggle = element('button', undefined, 'group-toggle');
     const open = groups.get(p.id) ?? (isLocal(p) || p.id === thread()?.workspaceId);
@@ -544,7 +547,7 @@ function controls() {
   $('send').disabled = busy || !online || !d?.online || d.disabled || !p?.ready || Boolean(t) ||
     (!localRevoked && p.mode === 'revoked') || (!$('draft').value.trim() && !pendingAttachments.length);
   $('attach-file').disabled = busy || !online || Boolean(t) || pendingAttachments.length >= 8;
-  $('context').disabled = busy || (!p && !(state.workspacePicker && !selected));
+  $('context').disabled = busy || (!p && !(state.workspacePicker && !selected) && !selectableProjects().length);
   $('choose-workspace').disabled = busy || !online;
   $('rename-session').disabled = busy || !online || !selected;
   $('delete-session').disabled = busy || !online || !selected || Boolean(t);
@@ -581,7 +584,8 @@ function renderNotice(s, p, d) {
 function render() {
   if (!state?.user) return;
   const s = thread(), p = project(), d = p ? deviceById(p.deviceId) : deviceById(state.deviceId);
-  const webEmpty = !s && !native, home = !s;
+  const canStart = Boolean(native || selectableProjects().length);
+  const webEmpty = !s && !canStart, home = !s;
   const eng = activeEngine();
   const hasAI = eng !== 'mock';
   const engine = engineLabel(eng);
@@ -592,7 +596,7 @@ function render() {
   $('device-count').textContent = online ? state.devices.filter(d => d.online).length + ' 在线' : '';
   $('settings-project').hidden = !state.workspacePicker && !mine().length;
   $('admin-nav').hidden = !state.user.isAdmin;
-  $('new-chat').hidden = !native;
+  $('new-chat').hidden = !canStart;
   $('chat').hidden = tab !== 'chat'; $('management').hidden = tab !== 'admin';
   $('crumb-project').textContent = tab === 'chat' && s && p ? p.label : '工作区';
   $('session-title').textContent = tab === 'admin' ? '设备管理' : s?.title || (webEmpty ? '会话' : '新对话');
@@ -611,9 +615,9 @@ function render() {
   $('web-devices').textContent = state.user.isAdmin ? '设备管理' : '查看设备';
   $('suggestions').hidden = !home || webEmpty;
   $('input-hint').hidden = home;
-  $('project-label').textContent = s && p ? modes[p.localMode ?? p.mode]?.[0] ?? '项目权限' : p?.label ?? '选择项目文件夹';
+  $('project-label').textContent = s && p ? modes[p.localMode ?? p.mode]?.[0] ?? '项目权限' : p ? (isLocal(p) ? p.label : p.label + ' · ' + (deviceById(p.deviceId)?.name ?? '远程')) : '选择项目文件夹';
   $('context').querySelector('use').setAttribute('href', s ? '#i-lock' : '#i-folder');
-  $('context').title = !s && state.workspacePicker ? '选择本机项目文件夹' : p ? '查看「' + p.label + '」项目与权限' : '暂无本机项目';
+  $('context').title = !s ? '选择本机或在线远程设备项目' : p ? '查看「' + p.label + '」项目与权限' : '暂无可用项目';
   $('engine-name').textContent = engine; $('recipient').textContent = '发给' + (hasAI ? ' ' + engine : engine);
   $('example-code').lastElementChild.textContent = hasAI ? '解释代码' : '查看指令';
   $('draft').placeholder = home ? '描述任务，或问问项目里的代码…' : '继续对话…';
@@ -720,7 +724,7 @@ async function sync() {
   state = latest; online = true;
   if (first) localConnectUntil = native ? Date.now() + 12000 : 0;
   if (deviceById(state.deviceId)?.online) localConnectUntil = 0;
-  const projects = mine();
+  const projects = selectableProjects();
   if (!projects.some(p => p.id === projectId)) {
     projectId = projects[0]?.id;
     if (!selected) select(null);
@@ -771,18 +775,20 @@ function openProject(fromAccount = false) {
   if (busy || !state) return;
   projectSource = fromAccount ? 'settings' : 'context';
   const bound = Boolean(thread() && !fromAccount);
-  if (bound ? !project() : !state.workspacePicker && !mine().length) return;
+  const available = fromAccount ? mine() : selectableProjects();
+  if (bound ? !project() : !state.workspacePicker && !available.length) return;
   showDialog('project-dialog');
   projectChoices(bound, bound ? thread().workspaceId : projectId);
 }
 function projectChoices(bound, preferred) {
-  const modalProjects = bound ? [project()].filter(Boolean) : mine();
+  const modalProjects = bound ? [project()].filter(Boolean) : projectSource === 'settings' ? mine() : selectableProjects();
   const initial = modalProjects.find(p => p.id === preferred) ?? modalProjects[0];
-  $('project').replaceChildren(...modalProjects.map(p => new Option(p.label, p.id)));
+  const optionLabel = p => isLocal(p) ? p.label : `${p.label} · ${deviceById(p.deviceId)?.name ?? '远程设备'}（${modes[p.mode]?.[0] ?? '已授权'}）`;
+  $('project').replaceChildren(...modalProjects.map(p => new Option(optionLabel(p), p.id)));
   $('project').value = initial?.id ?? '';
   $('project').disabled = modalProjects.length < 2;
-  $('project-caption').textContent = bound ? '会话绑定项目' : '本机项目';
-  $('choose-workspace').hidden = bound || !state.workspacePicker;
+  $('project-caption').textContent = bound ? '会话绑定项目' : projectSource === 'settings' ? '本机项目' : '对话目标项目（本机或在线远程设备）';
+  $('choose-workspace').hidden = bound || !native || !state.workspacePicker;
   showProject(initial?.id);
 }
 async function chooseProject() {
@@ -934,7 +940,7 @@ async function sendMessage() {
   const requestId = entry.text === rawText && entry.requestId || crypto.randomUUID();
   let sessionId = selected;
   if (!sessionId) {
-    if (!isLocal(p)) throw Error('请在桌面客户端新建对话。');
+    if (!isLocal(p) && !isRemoteAuthorized(p)) throw Error('请先在目标设备上给项目授权。');
     const title = entry.title || newTitle(text), createId = entry.createId || crypto.randomUUID();
     saveDraft(originalKey, { text: rawText, requestId, title, createId });
     const options = {};
@@ -942,7 +948,7 @@ async function sendMessage() {
     if (pendingModel) options.model = pendingModel;
     if (pendingEffort) options.effort = pendingEffort;
     const s = await action('create', { requestId: createId, title, workspaceId: p.id, ...(Object.keys(options).length ? { options } : {}) });
-    if (s.workspaceId !== p.id || s.deviceId !== state.deviceId) throw Error('会话绑定设备不一致。');
+    if (s.workspaceId !== p.id || s.deviceId !== p.deviceId) throw Error('会话绑定设备不一致。');
     state.sessions = [s, ...state.sessions.filter(t => t.id !== s.id)];
     sessionId = s.id;
     saveDraft(keyFor(sessionId), { text: rawText, requestId });
@@ -1235,7 +1241,7 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && $('app').classList.contains('drawer')) { drawer(false); $('show-rail').focus(); return; }
   if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
   if (e.key.toLowerCase() === 'k') { e.preventDefault(); if (!activeDialog()) openSearch(); }
-  if (e.key.toLowerCase() === 'n' && native && !activeDialog()) { e.preventDefault(); openThread(null); }
+  if (e.key.toLowerCase() === 'n' && (native || selectableProjects().length) && !activeDialog()) { e.preventDefault(); openThread(null); }
 });
 loginView(undefined, Boolean(native)); void refresh();
 setInterval(() => { if (!busy && (restoring || (state && !document.hidden))) void refresh(); }, 1500);

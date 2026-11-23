@@ -383,7 +383,7 @@ export class DeviceClient {
     }
     if (method === 'admin') return this.api('GET', '/api/admin/devices');
     if (method === 'disable') return this.api('POST', '/api/admin/devices/' + p.id, { disabled: p.disabled });
-    if (method === 'create') { this.local(p.workspaceId); return this.api('POST', '/api/sessions', p); }
+    if (method === 'create') { if (this.locals.has(p.workspaceId)) this.local(p.workspaceId); return this.api('POST', '/api/sessions', p); }
     const base = '/api/sessions/' + p.sessionId;
     if (method === 'renameSession') return this.api('PATCH', base, { title: p.title });
     if (method === 'deleteSession') return this.api('DELETE', base);

@@ -447,3 +447,63 @@ test('end-to-end v0.4.0: streaming deltas, model/effort, attachments, session CR
   const rem = removeWorkspace(client.signed.token, wsId);
   assert.equal(rem.ok, true);
 });
+
+test('linuxWorkspace supports read, write, edit, patch, move, delete, search, shell and blocks symlinks', async t => {
+  const { linuxWorkspace } = await import('../linux-workspace.mjs');
+  const { symlinkSync, readFileSync } = await import('node:fs');
+  const dir = mkdtempSync(join(tmpdir(), 'anywhere-linux-ws-'));
+  const outside = mkdtempSync(join(tmpdir(), 'anywhere-linux-out-'));
+  t.after(() => { rmSync(dir, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); });
+  writeFileSync(join(dir, 'hello.txt'), 'line1\nline2\nline3\n');
+  writeFileSync(join(outside, 'secret.txt'), 'TOP_SECRET\n');
+  symlinkSync(join(outside, 'secret.txt'), join(dir, 'escape.txt'));
+
+  const ws = linuxWorkspace();
+  const rootId = ws.identifyRoot(dir);
+  const runOp = (kind, args, caps = ['dc.tool', 'dc.search', 'dc.run', 'workspace.write', 'workspace.exec']) => {
+    const launch = ws.launcher({ workspaceRoot: dir, rootIdentity: rootId, readOnly: !caps.includes('workspace.write') });
+    const spec = launch({ request: { kind, cwdRelative: '.', args } }, { capabilities: caps });
+    return spec.read ? spec.read() : spec.perform(new AbortController().signal, () => {});
+  };
+
+  // Read + revision
+  const r1 = await runOp('dc.tool', { tool: 'read_file', arguments: { path: 'hello.txt', offset: 0, length: 10 } });
+  assert.equal(r1.ok, true);
+  assert.match(r1.response.content[0].text, /line2/);
+  const rev1 = r1.fileVersions[0].revision;
+
+  // Symlink escape denied
+  await assert.rejects(() => runOp('dc.tool', { tool: 'read_file', arguments: { path: 'escape.txt', offset: 0, length: 5 } }), /SYMLINK_DENIED/);
+
+  // Write with wrong revision rejected; right revision succeeds
+  await assert.rejects(() => runOp('dc.tool', { tool: 'write_file', arguments: { path: 'hello.txt', content: 'x', mode: 'rewrite', expectedRevision: 'file-v1:' + '0'.repeat(64) } }), /FILE_REVISION_CONFLICT/);
+  const ed = await runOp('dc.tool', { tool: 'edit_block', arguments: { file_path: 'hello.txt', old_string: 'line2', new_string: 'LINE_TWO', expected_replacements: 1, expectedRevision: rev1 } });
+  assert.equal(ed.ok, true);
+  const rev2 = ed.fileVersions[0].revision;
+
+  // Apply patch (update + add)
+  const patched = await runOp('dc.tool', {
+    tool: 'apply_patch',
+    arguments: {
+      patch: '*** Begin Patch\n*** Update File: hello.txt\n@@\n line1\n-LINE_TWO\n+LINE_2_PATCHED\n*** Add File: sub/added.txt\n+fresh\n*** End Patch',
+      expectedRevisions: { 'hello.txt': rev2, 'sub/added.txt': null },
+    },
+  });
+  assert.equal(patched.ok, true);
+  assert.match(readFileSync(join(dir, 'hello.txt'), 'utf8'), /LINE_2_PATCHED/);
+  assert.equal(readFileSync(join(dir, 'sub/added.txt'), 'utf8'), 'fresh\n');
+
+  // Move + Delete
+  const addedRev = patched.fileVersions.find(v => v.path === 'sub/added.txt').revision;
+  const moved = await runOp('dc.tool', { tool: 'move_file', arguments: { fromPath: 'sub/added.txt', toPath: 'sub/moved.txt', expectedFromRevision: addedRev, expectedToRevision: null } });
+  assert.equal(moved.ok, true);
+  const deleted = await runOp('dc.tool', { tool: 'delete_file', arguments: { path: 'sub/moved.txt', expectedRevision: moved.fileVersions[0].revision } });
+  assert.equal(deleted.ok, true);
+
+  // Search + Shell run
+  const found = await runOp('dc.search', { path: '.', pattern: 'LINE_2_PATCHED', searchType: 'content', literalSearch: true, maxResults: 10 });
+  assert.match(found.response.content[0].text, /hello\.txt:2:/);
+  const sh = await runOp('dc.run', { command: 'echo LINUX_EXEC_OK' });
+  assert.equal(sh.ok, true);
+  assert.match(sh.response.content[0].text, /LINUX_EXEC_OK/);
+});
