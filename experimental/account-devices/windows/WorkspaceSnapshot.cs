@@ -26,6 +26,7 @@ internal sealed class WorkspacePath : IDisposable {
     [DllImport("kernel32.dll",SetLastError=true)] static extern bool SetFileInformationByHandle(SafeFileHandle handle,int kind,ref int value,uint size);
     [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern bool CreateDirectory(string path,IntPtr security);
     public const int TextLimit=1024*1024;
+    public const int ImageLimit=5*1024*1024;
     public readonly string Root;
     public string Current;
     public Info Stat;
@@ -145,6 +146,12 @@ internal static class WorkspaceSnapshot {
                         data.Write(buffer,0,n);if(data.Length>WorkspacePath.TextLimit)WorkspacePath.Deny("FILE_SNAPSHOT_TOO_LARGE");}
                     path.Write(a[3],a[4],data.ToArray(),WorkspacePath.TextLimit);
                 }break;
+            case "remove": path.Remove(a[3],a[4],WorkspacePath.TextLimit);break;
+            case "read-image": {
+                byte[] raw=path.Read(a[3],WorkspacePath.ImageLimit);
+                using(var output=Console.OpenStandardOutput())output.Write(raw,0,raw.Length);
+                break;
+            }
             case "mkdir":var parts=WorkspacePath.Parts(a[3]);path.Enter(parts,parts.Length,true);break;
             case "info":
                 using(path.Leaf(a[3],null,0x80,3)){Print(new {directory=path.Stat.IsDirectory,size=path.Stat.Size});}break;

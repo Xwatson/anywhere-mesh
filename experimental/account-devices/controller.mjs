@@ -9,7 +9,7 @@ const input=createInterface({input:process.stdin});
 input.on('line',async line=>{
   let id;
   try {
-    if(line.length>24000)throw Error('INVALID_FRAME');
+    if(line.length>16*1024*1024)throw Error('INVALID_FRAME');
     const r=JSON.parse(line);id=r.id;contract.validate(r.method,r.params);
     reply({id,value:await control(socket,r.method,r.params)});
   } catch(e){reply({id,error:e.message});}

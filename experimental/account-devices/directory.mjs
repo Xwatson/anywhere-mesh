@@ -89,6 +89,19 @@ export function registerWorkspace(token, input) {
   } catch(error) { db.exec('ROLLBACK'); throw error; }
 }
 
+export function removeWorkspace(token, workspaceId) {
+  uuid(workspaceId);
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const { deviceId } = authenticate(token);
+    if (!deviceId) throw Error('FORBIDDEN');
+    const deleted = db.prepare('DELETE FROM mcp_workspaces WHERE id=? AND device_id=?').run(workspaceId, deviceId);
+    if (!deleted.changes) throw Error('NOT_FOUND');
+    db.exec('COMMIT');
+    return { ok: true, id: workspaceId };
+  } catch (error) { db.exec('ROLLBACK'); throw error; }
+}
+
 export function changePassword(token, input) {
   fields(input, ['current','password']);
   text(input.current, 200);

@@ -28,6 +28,7 @@ with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as bundle:
         "desktop": ["main.cjs", "package.json", "contract.cjs"],
         "desktop-commander": ["adapter.mjs"],
         "execution": ["agent.mjs", "grants.mjs", "journal.mjs", "protocol.mjs", "retention.mjs", "rpc.mjs"],
+        "workspace": ["patch.mjs"],
         "account-devices": ["client.mjs", "remembered-login.mjs", "contract.cjs", "preload.cjs", "ui/index.html", "ui/app.js", "ui/thread.js", "ui/style.css",
                             "windows/controller.mjs", "windows/client.mjs", "windows/network.mjs", "windows/read.mjs", "windows/tasks.mjs", "windows/WorkspaceTree.cs", "windows/TaskHost.cs", "windows/WorkspaceSnapshot.cs", "windows/PeerHost.cs", "windows/LoginProtection.cs", "windows/smoke.mjs"],
     }

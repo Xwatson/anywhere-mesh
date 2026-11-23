@@ -8,10 +8,14 @@ export function relative(value) {
       value.split('/').some((s) => !s || s === '..')) fail('PATH_DENIED');
   return value;
 }
-const text = (v, max = 8192) => { if (typeof v !== 'string' || v.length > max) fail('INVALID_TEXT'); };
+const text = (v, max = 131072) => { if (typeof v !== 'string' || v.length > max) fail('INVALID_TEXT'); };
+const validRevision = (v) => v === null || (typeof v === 'string' && /^file-v1:[a-f0-9]{64}$/.test(v));
 const toolFields = {
   read_file: ['path', 'offset', 'length'], read_multiple_files: ['paths'],
   write_file: ['path', 'content', 'mode', 'expectedRevision'], edit_block: ['file_path', 'old_string', 'new_string', 'expected_replacements', 'expectedRevision'],
+  delete_file: ['path', 'expectedRevision'],
+  move_file: ['fromPath', 'toPath', 'expectedFromRevision', 'expectedToRevision'],
+  apply_patch: ['patch', 'expectedRevisions'],
   list_directory: ['path', 'depth'], get_file_info: ['path'], create_directory: ['path'],
 };
 export function validate(request, grant) {
@@ -20,8 +24,8 @@ export function validate(request, grant) {
   if (request.kind === 'dc.inspect') { exact(a, []); return; }
   if (request.kind === 'dc.run') {
     if (!grant.capabilities.includes('workspace.exec')) fail('EXEC_DENIED');
-    exact(a, ['command', 'input']); string(a.command, 8192);
-    if (a.input !== undefined) text(a.input);
+    exact(a, ['command', 'input']); string(a.command, 32768);
+    if (a.input !== undefined) text(a.input, 65536);
     return;
   }
   if (request.kind === 'dc.search') {
@@ -36,16 +40,25 @@ export function validate(request, grant) {
   if (a.tool === 'read_multiple_files') {
     if (!Array.isArray(p.paths) || p.paths.length < 1 || p.paths.length > 5) fail('INVALID_PATHS');
     p.paths.forEach(relative);
+  } else if (a.tool === 'move_file') {
+    relative(p.fromPath); relative(p.toPath);
+  } else if (a.tool === 'apply_patch') {
+    string(p.patch, 131072);
+    if (!p.expectedRevisions || typeof p.expectedRevisions !== 'object' || Array.isArray(p.expectedRevisions)) fail('INVALID_FILE_REVISION');
+    const entries = Object.entries(p.expectedRevisions);
+    if (entries.length < 1 || entries.length > 32) fail('INVALID_FILE_REVISION');
+    for (const [k, v] of entries) { relative(k); if (!validRevision(v)) fail('INVALID_FILE_REVISION'); }
   } else relative(p.path ?? p.file_path);
-  if (['write_file', 'edit_block', 'create_directory'].includes(a.tool) && !grant.capabilities.includes('workspace.write')) fail('WRITE_DENIED');
+  if (['write_file', 'edit_block', 'create_directory', 'delete_file', 'move_file', 'apply_patch'].includes(a.tool) && !grant.capabilities.includes('workspace.write')) fail('WRITE_DENIED');
   if (a.tool === 'write_file') { text(p.content); if (!['rewrite', 'append'].includes(p.mode)) fail('INVALID_WRITE_MODE'); }
-  if (a.tool === 'edit_block') { string(p.old_string, 8192); text(p.new_string); integer(p.expected_replacements, 1, 20); }
-  if (p.expectedRevision !== undefined && p.expectedRevision !== null &&
-      (typeof p.expectedRevision !== 'string' || !/^file-v1:[a-f0-9]{64}$/.test(p.expectedRevision))) fail('INVALID_FILE_REVISION');
+  if (a.tool === 'edit_block') { string(p.old_string, 131072); text(p.new_string); integer(p.expected_replacements, 1, 20); }
+  if (a.tool === 'delete_file' && (typeof p.expectedRevision !== 'string' || !/^file-v1:[a-f0-9]{64}$/.test(p.expectedRevision))) fail('INVALID_FILE_REVISION');
+  if (a.tool === 'move_file' && (!validRevision(p.expectedFromRevision) || p.expectedFromRevision === null || !validRevision(p.expectedToRevision))) fail('INVALID_FILE_REVISION');
+  if (p.expectedRevision !== undefined && !validRevision(p.expectedRevision)) fail('INVALID_FILE_REVISION');
   if (p.offset !== undefined) integer(p.offset, -10000, 1000000);
-  if (p.length !== undefined) integer(p.length, 1, 200);
+  if (p.length !== undefined) integer(p.length, 1, 500);
   if (p.depth !== undefined) integer(p.depth, 1, 4);
-  if (Buffer.byteLength(JSON.stringify(request)) > 20000) fail('REQUEST_TOO_LARGE');
+  if (Buffer.byteLength(JSON.stringify(request)) > 262144) fail('REQUEST_TOO_LARGE');
 }
 export function register() {
   for (const kind of ['dc.tool', 'dc.run', 'dc.search', 'dc.inspect']) registerExecutor(kind, validate);

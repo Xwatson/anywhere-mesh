@@ -138,7 +138,7 @@ export class LocalAgent extends EventEmitter {
     const entry = { child, timer: null, killTimer: null, structured: Boolean(spec), resultBytes: 0, resultChunks: [] }; this.children.set(operationId, entry);
     if (spec) child.stdio[3].on('data', (chunk) => {
       entry.resultBytes += chunk.length;
-      if (entry.resultBytes <= 24576) entry.resultChunks.push(chunk);
+      if (entry.resultBytes <= 204800) entry.resultChunks.push(chunk);
       else this.signal(entry);
     });
     child.stdin.on('error', () => {});
@@ -171,7 +171,7 @@ export class LocalAgent extends EventEmitter {
     try {
       const perform = spec.perform ?? spec.read;
       tool = await perform(abort.signal,(stream,data) => this.output(op.operationId,stream,data));
-      if (Buffer.byteLength(JSON.stringify(tool)) > 22000) fail(spec.mutates ? 'WORKSPACE_COMMIT_UNCERTAIN' : 'RESULT_TOO_LARGE');
+      if (Buffer.byteLength(JSON.stringify(tool)) > 196608) fail(spec.mutates ? 'WORKSPACE_COMMIT_UNCERTAIN' : 'RESULT_TOO_LARGE');
     } catch (error) {
       const reason = /^[A-Z][A-Z0-9_]{1,60}$/.test(error.code) ? error.code : (spec.read ? 'READ_FAILED' : 'WORKSPACE_OPERATION_FAILED');
       uncertain = reason === 'WORKSPACE_COMMIT_UNCERTAIN';
@@ -210,7 +210,7 @@ export class LocalAgent extends EventEmitter {
       this.fault('agent_before_result');
       const op = this.journal.get('ops', operationId);
       let toolResult;
-      if (entry.structured && entry.resultBytes <= 24576) {
+      if (entry.structured && entry.resultBytes <= 204800) {
         try {
           toolResult = JSON.parse(Buffer.concat(entry.resultChunks).toString('utf8'));
           if (typeof toolResult.ok !== 'boolean' || toolResult.version !== 1) toolResult = undefined;

@@ -20,10 +20,13 @@ function protect(mode, input) {
   if(result.status!==0 || !result.stdout?.length) throw Error('LOGIN_STORAGE_UNAVAILABLE');
   return result.stdout;
 }
+const reply = value => process.stdout.write(JSON.stringify(value)+'\n');
 const workspace=windowsWorkspace(fileURLToPath(new URL('./WorkspaceSnapshot.exe',import.meta.url)));
-const client=new WindowsClient(cfg,{...workspace,loginProtection:{
-  seal:bytes=>protect('seal',bytes),open:bytes=>protect('open',bytes)
-}},{peer,privatePaths:[root,resolve(import.meta.dirname,'../../..'),dirname(process.execPath)]});
+const client=new WindowsClient(cfg,{...workspace,
+  onStream:data=>reply({event:'stream',data}),
+  loginProtection:{
+    seal:bytes=>protect('seal',bytes),open:bytes=>protect('open',bytes)
+  }},{peer,privatePaths:[root,resolve(import.meta.dirname,'../../..'),dirname(process.execPath)]});
 if (peer.legacy) await peer.start().catch(()=>{});
 // Recover a missing peer even when the window is minimized.
 const repair = setInterval(() => {
@@ -31,13 +34,12 @@ const repair = setInterval(() => {
   if (!signed || client.repairPending) return;
   client.repairPending=client.enqueue(()=>client.recover(signed)).catch(()=>{}).finally(()=>{client.repairPending=null;});
 },30000);
-const reply = value => process.stdout.write(JSON.stringify(value)+'\n');
 reply({event:'ready'});
 try {
   for await (const line of input) {
     let id;
     try {
-      if (line.length>24000) throw Error('INVALID_FRAME');
+      if (line.length>16*1024*1024) throw Error('INVALID_FRAME');
       const frame = JSON.parse(line); id = frame.id;
       reply({id,value:await client.control(frame.method,frame.params)});
     } catch (error) { reply({id,error:error.code ?? error.message}); }

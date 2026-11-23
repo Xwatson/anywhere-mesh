@@ -16,7 +16,7 @@ export class WorkspaceExecutor {
       permission: { mode: info.grant.mode, version: info.grant.grantVersion, confirmed: info.confirmed }, bindingCurrent,
       tools: listTools(info.grant, info.confirmed && bindingCurrent, info.sandbox?.supportedTools), activeOperations: info.activeOperations,
       blockers: info.blockers, sandbox: info.sandbox, history: info.history,
-      limits: { maxRuntimeMs: 120000, maxReadLines: 200, maxSearchResults: 50, maxResultBytes: 22000, retainedOutputBytes: 65536, concurrentTasks: 1 } };
+      limits: { maxRuntimeMs: 120000, maxReadLines: 500, maxSearchResults: 50, maxResultBytes: 196608, retainedOutputBytes: 65536, concurrentTasks: 1 } };
   }
   key(callId) { string(callId); return hash({ binding: this.binding, callId }); }
   verifyOperation(record, op) {
@@ -44,7 +44,7 @@ export class WorkspaceExecutor {
           if (concurrent.inputHash !== inputHash || (requestedExpiry !== undefined && concurrent.params.expiresAt !== requestedExpiry)) fail('TOOL_CALL_CONFLICT');
           return concurrent;
         }
-        if (this.journal.all('calls').length >= 128) fail('TICKET_CAPACITY');
+        if (this.journal.all('calls').length >= 256) fail('TICKET_CAPACITY');
         this.journal.ensureCapacity();
         const { sessionId, turnId, turnEpoch, grantVersion } = this.binding;
         const params = { sessionId, turnId, turnEpoch, toolCallId: callId, ...normalized, expiresAt, expectedGrantVersion: grantVersion };

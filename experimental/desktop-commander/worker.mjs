@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { prepareFileGuard } from './file-guard.mjs';
 const started = Date.now();
 let data = '';
-for await (const chunk of process.stdin) { data += chunk; if (data.length > 32768) throw new Error('INPUT_LIMIT'); }
+for await (const chunk of process.stdin) { data += chunk; if (data.length > 300000) throw new Error('INPUT_LIMIT'); }
 const { request, profile, operationId } = JSON.parse(data);
 let fileGuard, guardFailure;
 try { if (profile.guardedFiles) fileGuard = await prepareFileGuard(request, profile, operationId); }
@@ -119,7 +119,7 @@ try {
 if (uncertain) process.exit(70);
 result = { version: 1, ...result, timing: { initMs: initMs ?? null, elapsedMs: Date.now() - started }, calls };
 let encoded = JSON.stringify(result);
-if (Buffer.byteLength(encoded) > 22000) {
+if (Buffer.byteLength(encoded) > 196608) {
   const readOnly = ['dc.search', 'dc.inspect'].includes(request.kind) || (request.kind === 'dc.tool' &&
     ['read_file', 'read_multiple_files', 'list_directory', 'get_file_info'].includes(request.args.tool));
   if (readOnly) {

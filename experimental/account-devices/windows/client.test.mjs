@@ -76,6 +76,11 @@ function fixture(t) {
       clients.push(this);
     }
     async api(method,route,input) {
+      if (method==='DELETE' && route.startsWith('/api/device/workspaces/')) {
+        const wsId=route.split('/').at(-1);
+        for (const [localId,p] of remote.projects) if (p.id===wsId) remote.projects.delete(localId);
+        return {ok:true,id:wsId};
+      }
       assert.equal(method,'POST');
       if (route==='/api/sessions') return input;
       assert.equal(route,'/api/device/workspaces');
@@ -180,4 +185,8 @@ test('selected folders reserve stable IDs across dropped responses and restarts'
   const create=workspaceId=>moved.control('create',{workspaceId,title:'New chat',requestId:randomUUID()});
   await assert.rejects(create(second.id),/WORKSPACE_ROOT_CHANGED/);
   assert.equal((await create(initial.id)).workspaceId,initial.id);
+  await assert.rejects(moved.control('removeWorkspace',{workspaceId:initial.id}),/DEFAULT_WORKSPACE_PROTECTED/);
+  const removed=await moved.control('removeWorkspace',{workspaceId:second.id});
+  assert.equal(removed.ok,true);
+  assert.equal(JSON.parse(readFileSync(join(stateDir,'installation.json'),'utf8')).projects.length,1);
 });

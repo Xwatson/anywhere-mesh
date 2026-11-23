@@ -78,35 +78,80 @@ function formatted(text) {
 }
 
 const toolLabels = {
-  workspace_read_file: '读取文件', workspace_list_directory: '查看目录', workspace_search: '搜索项目',
-  workspace_write_file: '写入文件', workspace_run: '执行命令'
+  workspace_read_file: '读取文件', workspace_read_files: '批量读取', workspace_list_directory: '查看目录',
+  workspace_file_info: '文件信息', workspace_search: '搜索项目', workspace_create_directory: '创建目录',
+  workspace_write_file: '写入文件', workspace_edit_file: '编辑文件', workspace_delete_file: '删除文件',
+  workspace_move_file: '移动文件', workspace_apply_patch: '应用补丁', workspace_run: '执行命令',
+  session_read_attachment: '读取附件', session_send_attachment: '写入附件',
 };
 
-function toolStep(event, expanded) {
+function fmtSize(bytes) {
+  if (bytes >= 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  if (bytes >= 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return bytes + ' B';
+}
+function fmtDuration(ms) {
+  if (!ms) return '';
+  return ms >= 1000 ? (ms / 1000).toFixed(1) + 's' : ms + 'ms';
+}
+
+function toolStep(event, expanded, liveOutput) {
   const step = element('details', undefined, 'tool-step');
   step.dataset.call = event.id;
   step.open = expanded.has(event.id);
   const summary = element('summary');
   const label = toolLabels[event.name] ?? event.name;
-  const subject = event.input?.path ?? event.input?.query ?? '';
+  const subject = event.input?.path ?? event.input?.fromPath ?? event.input?.attachment ?? event.input?.pattern ?? event.input?.command?.slice(0, 48) ?? '';
   const status = event.status === 'failed' ? '失败' : event.status === 'running' ? '进行中' : '';
-  summary.append(icon(event.name === 'workspace_read_file' ? 'file' : 'terminal'),
+  summary.append(icon(event.name?.includes('read') ? 'file' : 'terminal'),
     element('span', [label, subject, status].filter(Boolean).join(' · ')), icon('down'));
-  step.append(summary, element('pre', event.output ?? (event.status === 'running' ? '等待设备返回结果…' : '本次操作已结束。')));
+  const outputText = event.output ?? (event.status === 'running' && liveOutput ? liveOutput : null);
+  step.append(summary, element('pre', outputText ?? (event.status === 'running' ? '等待设备返回结果…' : '本次操作已结束。')));
   return step;
 }
 
-export function renderThread(container, rows) {
+function thinkingStep(id, text, expanded, openDefault = false) {
+  const details = element('details', undefined, 'thinking-step');
+  details.dataset.think = id;
+  details.open = expanded.has(id) || openDefault;
+  const summary = element('summary');
+  summary.append(icon('spark'), element('span', '思考过程'), icon('down'));
+  details.append(summary, element('div', text, 'thinking-body'));
+  return details;
+}
+
+export function renderThread(container, rows, { sessionId, isWeb = false, liveToolOutput = new Map() } = {}) {
   const latest = new Map();
-  const expanded = new Set([...container.querySelectorAll('details[open]')].map(d => d.dataset.call));
+  const expandedTools = new Set([...container.querySelectorAll('details.tool-step[open]')].map(d => d.dataset.call));
+  const expandedThink = new Set([...container.querySelectorAll('details.thinking-step[open]')].map(d => d.dataset.think));
   for (const row of rows) if (row.event.type === 'tool_call') latest.set(row.event.id, row.seq);
   const output = document.createDocumentFragment();
   for (let i = 0; i < rows.length; i++) {
-    const {event, seq} = rows[i];
+    const { event, seq } = rows[i];
     if (event.type === 'user_message') {
-      const bubble = element('article', event.text, 'user-message');
+      const bubble = element('article', undefined, 'user-message');
       bubble.setAttribute('aria-label', '你的消息');
+      bubble.append(element('div', event.text));
+      if (Array.isArray(event.attachments) && event.attachments.length) {
+        const list = element('div', undefined, 'msg-atts');
+        for (const att of event.attachments) {
+          const url = isWeb && sessionId ? `/api/sessions/${sessionId}/attachments/${att.id}` : null;
+          if (url && /^image\//.test(att.mime)) {
+            const img = element('img', undefined, 'msg-att-img');
+            img.src = url; img.alt = att.name; img.loading = 'lazy';
+            list.append(img);
+          } else {
+            const chip = element(url ? 'a' : 'span', undefined, 'msg-att');
+            if (url) { chip.href = url; chip.target = '_blank'; chip.rel = 'noopener'; }
+            chip.append(icon('paperclip'), element('span', `${att.name} (${fmtSize(att.size)})`));
+            list.append(chip);
+          }
+        }
+        bubble.append(list);
+      }
       output.append(bubble);
+    } else if (event.type === 'thinking' && event.text) {
+      output.append(thinkingStep(event.id ?? String(seq), event.text, expandedThink));
     } else if (event.type === 'assistant_text') {
       let text = event.text;
       const group = String(event.id).replace(/-\d+$/, '');
@@ -120,10 +165,44 @@ export function renderThread(container, rows) {
       message.append(author, formatted(text));
       output.append(message);
     } else if (event.type === 'tool_call' && latest.get(event.id) === seq) {
-      output.append(toolStep(event, expanded));
-    } else if (event.type === 'turn_end' && !event.ok) {
-      output.append(element('p', event.error || '本次回复中断。', 'turn-error'));
+      output.append(toolStep(event, expandedTools, liveToolOutput.get(event.id)));
+    } else if (event.type === 'turn_end') {
+      if (!event.ok) {
+        output.append(element('p', event.error || '本次回复中断。', 'turn-error'));
+      } else {
+        const parts = [];
+        if (event.model) parts.push(event.model);
+        if (event.durationMs) parts.push(fmtDuration(event.durationMs));
+        if (event.usage?.inputTokens || event.usage?.outputTokens) {
+          parts.push(`in ${event.usage.inputTokens ?? 0} / out ${event.usage.outputTokens ?? 0}`);
+        }
+        if (parts.length) output.append(element('p', parts.join(' · '), 'turn-meta'));
+      }
     }
   }
   container.replaceChildren(output);
+}
+
+export function renderLive(container, live, engineLabel = 'Codex') {
+  const hasContent = Boolean(live.thinking || live.text);
+  container.hidden = !hasContent;
+  if (!hasContent) { container.replaceChildren(); return; }
+  const frag = document.createDocumentFragment();
+  if (live.thinking) {
+    const details = element('details', undefined, 'thinking-step');
+    details.open = true;
+    const summary = element('summary');
+    summary.append(icon('spark'), element('span', '思考中…'), icon('down'));
+    details.append(summary, element('div', live.thinking, 'thinking-body'));
+    frag.append(details);
+  }
+  if (live.text) {
+    const msg = element('article', undefined, 'assistant-message');
+    const author = element('div', undefined, 'author'), mark = element('span', undefined, 'brand-mark');
+    mark.append(icon('terminal'));
+    author.append(mark, element('span', engineLabel));
+    msg.append(author, formatted(live.text));
+    frag.append(msg);
+  }
+  container.replaceChildren(frag);
 }

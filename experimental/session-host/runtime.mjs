@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { writeFile, unlink } from 'node:fs/promises';
+import { mkdir, readFile, rm, unlink, writeFile } from 'node:fs/promises';
+import { basename, join } from 'node:path';
 import { EventEmitter } from 'node:events';
 import { Client } from '../workspace/node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js';
 import { StdioClientTransport } from '../workspace/node_modules/@modelcontextprotocol/sdk/dist/esm/client/stdio.js';
@@ -8,6 +9,9 @@ import { WorkspaceExecutor } from '../workspace/executor.mjs';
 import { hash } from '../execution/protocol.mjs';
 import { SessionStore, uuid, fields, text } from './store.mjs';
 import { parseMock } from './mock.mjs';
+
+const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
+const sanitizeFileName = name => basename(String(name || 'file')).replace(/[\x00-\x1f/\\<>:"|?*]/g, '_').trim().slice(0, 120) || 'file';
 
 export class SessionHost extends EventEmitter {
   constructor(config) {
@@ -25,6 +29,7 @@ export class SessionHost extends EventEmitter {
   sessions() { return this.store.all('sessions').map(s => ({ ...s, activeTurn: s.activeTurnId ? this.publicTurn(this.store.get('turns', s.activeTurnId)) : null })).sort((a,b) => b.updatedAt-a.updatedAt); }
   publicTurn(t) { if (!t) return null; return { id: t.id, sessionId: t.sessionId, workspaceId: t.workspaceId, operationId: t.operationId ?? null,
     state: t.state, done: Boolean(t.done), consumed: Boolean(t.consumed), cancelRequested: Boolean(t.cancelRequested), outcome: t.outcome ?? null }; }
+  delta(sessionId, payload) { this.emit('delta', sessionId, payload); }
   async projectStates() {
     return Promise.all([...this.workspaces.values()].map(async w => {
       const info = await this.broker(w,'workspace'); return { id:w.id,label:w.label,deviceId:this.config.deviceId,
@@ -32,18 +37,71 @@ export class SessionHost extends EventEmitter {
     }));
   }
   create(body) {
-    fields(body,['requestId','workspaceId','title']);
+    fields(body,['requestId','workspaceId','title'],['options']);
     const w = this.workspace(body.workspaceId);
-    return this.store.create(body, this.config.requireDeviceBinding ? w.grant : undefined);
+    const created = this.store.create(body, this.config.requireDeviceBinding ? w.grant : undefined);
+    this.emit('state');
+    return created;
+  }
+  renameSession(sessionId, title) {
+    this.session(sessionId);
+    const updated = this.store.rename(sessionId, title);
+    this.emit('state');
+    return updated;
+  }
+  updateSessionOptions(sessionId, options) {
+    this.session(sessionId);
+    const updated = this.store.updateOptions(sessionId, options);
+    this.emit('state');
+    return updated;
+  }
+  async deleteSession(sessionId) {
+    this.session(sessionId);
+    const removed = this.store.remove(sessionId);
+    await rm(join(this.config.stateDir, 'attachments', sessionId), { recursive: true, force: true }).catch(() => {});
+    this.emit('state');
+    return { ok: true, id: removed.id };
+  }
+  async saveAttachment(sessionId, { name, mime, bytes }) {
+    this.session(sessionId);
+    if (!Buffer.isBuffer(bytes) || !bytes.length) throw Error('INVALID_ATTACHMENT');
+    if (bytes.length > MAX_ATTACHMENT_BYTES) throw Error('BODY_LIMIT');
+    const safeName = sanitizeFileName(name);
+    const safeMime = typeof mime === 'string' && /^[\w.+-]+\/[\w.+-]+$/.test(mime.split(';')[0].trim()) ? mime.split(';')[0].trim().toLowerCase() : 'application/octet-stream';
+    const id = randomUUID();
+    const dir = join(this.config.stateDir, 'attachments', sessionId);
+    await mkdir(dir, { recursive: true, mode: 0o700 });
+    const storedName = `${id.slice(0, 8)}-${safeName}`;
+    const fullPath = join(dir, storedName);
+    await writeFile(fullPath, bytes, { flag: 'wx', mode: 0o600 });
+    const meta = { id, name: safeName, mime: safeMime, size: bytes.length, storedName, createdAt: Date.now() };
+    this.store.addAttachment(sessionId, meta);
+    return { id, name: safeName, mime: safeMime, size: bytes.length };
+  }
+  attachmentPath(sessionId, attId) {
+    const att = this.store.attachment(sessionId, attId);
+    return { att, path: join(this.config.stateDir, 'attachments', sessionId, att.storedName) };
+  }
+  async readAttachmentBytes(sessionId, attId) {
+    const { att, path } = this.attachmentPath(sessionId, attId);
+    return { att, bytes: await readFile(path) };
   }
   async send(sessionId, body) {
-    fields(body,['requestId','text']); uuid(body.requestId); text(body.text);
-    const s = this.session(sessionId), payload = { kind:'send',sessionId,text:body.text }, prior = this.store.request(body.requestId,payload);
+    fields(body,['requestId','text'],['attachments']); uuid(body.requestId); text(body.text);
+    const attIds = body.attachments ?? [];
+    if (!Array.isArray(attIds) || attIds.length > 8) throw Error('INVALID_FIELDS');
+    const resolvedAtts = attIds.map(id => {
+      const { att, path } = this.attachmentPath(sessionId, id);
+      return { id: att.id, name: att.name, mime: att.mime, size: att.size, path };
+    });
+    const s = this.session(sessionId);
+    const payload = { kind:'send',sessionId,text:body.text,...(attIds.length ? { attachments: attIds } : {}) };
+    const prior = this.store.request(body.requestId,payload);
     if (prior) return prior;
     if (s.activeTurnId) throw Error('SESSION_BUSY');
     const w = this.workspace(s.workspaceId);
     const diagnostic = /^\s*\/(?:read|list|search|append|build|long|run|help)(?:\s|$)/.test(body.text);
-    const parsed = this.codex && !diagnostic ? { engine:'codex', text:body.text, calls:[] } :
+    const parsed = this.codex && !diagnostic ? { engine:'codex', text:body.text, attachments:resolvedAtts, calls:[] } :
       parseMock(body.text, path => this.store.get('revisions',hash({sessionId,workspaceId:w.id,path}))?.revision);
     let binding;
     if (!parsed.help) {
@@ -60,13 +118,14 @@ export class SessionHost extends EventEmitter {
       binding = Object.fromEntries(['accountId','deviceId','workspaceId','grantVersion'].map(k=>[k,remote.grant[k]]));
     }
     this.store.ensureCapacity(1024*1024);
-    if (this.store.all('turns').length >= 256) throw Error('TURN_LIMIT');
+    if (this.store.all('turns').length >= 2000) throw Error('TURN_LIMIT');
+    const publicAtts = resolvedAtts.map(({ id, name, mime, size }) => ({ id, name, mime, size }));
     const result = this.store.tx(()=>{
       const existing = this.store.request(body.requestId,payload); if(existing)return existing;
       if (this.session(s.id).activeTurnId || this.store.all('turns').some(t=>t.workspaceId===w.id&&!t.done)) throw Error('WORKSPACE_NOT_READY');
       const id = randomUUID(), turn = { id,sessionId:s.id,workspaceId:w.id,createdAt:Date.now(),state:'preparing',done:false,consumed:false,
         ...parsed,historyBefore:s.lastSeq,binding:binding?{...binding,sessionId:s.id,turnId:id,turnEpoch:1}:null };
-      this.store.append(s.id,{type:'user_message',text:body.text});
+      this.store.append(s.id,{type:'user_message',text:body.text,...(publicAtts.length?{attachments:publicAtts}:{})});
       if(parsed.help){
         turn.done=true;turn.consumed=true;turn.state='succeeded';
         this.store.append(s.id,{type:'assistant_text',id:randomUUID(),text:parsed.help});this.store.append(s.id,{type:'turn_end',ok:true});

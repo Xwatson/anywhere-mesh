@@ -85,6 +85,30 @@ export class WindowsClient extends DeviceClient {
     if(!local.rpc) this.connectProject(signed,this.presence,local);
     return this.localState({projects:[{...mapped,mode:local.agent.grant.mode,ready:false}]}).projects[0];
   }
+  async removeWorkspace(workspaceId) {
+    const local=this.locals.get(workspaceId);
+    if(!local) throw Error('ONLY_ON_BOUND_DEVICE');
+    if(local.path.toLowerCase()===this.cfg.projects[0].path.toLowerCase()) throw Error('DEFAULT_WORKSPACE_PROTECTED');
+    if(local.agent.journal.all('ops').some(o=>!['succeeded','failed','cancelled','rejected','reviewed'].includes(o.state))) {
+      throw Error('WORKSPACE_NOT_READY');
+    }
+    await this.api('DELETE','/api/device/workspaces/'+workspaceId);
+    clearTimeout(local.retry);
+    local.rpc?.close();
+    this.setMode(local,'revoked');
+    await local.agent.close();
+    local.store.close();
+    this.locals.delete(workspaceId);
+    const {file,secret}=this.profile;
+    const projects=this.profile.projects.filter(p=>p.localId!==local.localId);
+    const temp=file+'.'+randomUUID()+'.tmp';
+    try {
+      writeFileSync(temp,JSON.stringify({secret,projects}),{flag:'wx',mode:0o600,flush:true});
+      renameSync(temp,file);
+    } finally {rmSync(temp,{force:true});}
+    this.profile.projects=projects;
+    return {ok:true,id:workspaceId};
+  }
   async authenticate(params) {
     // Keep an already-started legacy peer while it negotiates its first route.
     if(this.peer.legacy) {

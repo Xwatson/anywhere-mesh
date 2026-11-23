@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
   <meta name="color-scheme" content="light dark">
   <title>Anywhere</title>
   <link rel="stylesheet" href="./style.css"><script type="module" src="./app.js"></script>
@@ -35,6 +35,10 @@
   <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
   <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5m0-9v.5"/></symbol>
   <symbol id="i-layers" viewBox="0 0 24 24"><path d="m3 7 9-4 9 4-9 4zM3 12l9 4 9-4M3 17l9 4 9-4"/></symbol>
+  <symbol id="i-paperclip" viewBox="0 0 24 24"><path d="m21.44 11.05-8.49 8.49a5.5 5.5 0 0 1-7.78-7.78l8.49-8.49a3.5 3.5 0 0 1 4.95 4.95l-8.49 8.49a1.5 1.5 0 0 1-2.12-2.12l7.78-7.78"/></symbol>
+  <symbol id="i-edit" viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2m-9 0 1 14h8l1-14M10 11v6m4-6v6"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3 2 20h20zM12 9v5m0 3.5v.5"/></symbol>
 </defs></svg>
 <main id="signin">
   <div class="wordmark login-brand"><span class="brand-mark" aria-hidden="true"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-terminal"></use></svg></span><span>Anywhere</span></div>
@@ -74,13 +78,22 @@
     <header class="topbar">
       <button id="show-rail" class="icon-button" aria-label="打开侧栏" title="打开侧栏"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-panel"></use></svg></button>
       <div class="crumb"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-folder"></use></svg><span id="crumb-project">工作区</span><i aria-hidden="true">/</i><span id="session-title">新对话</span></div>
+      <div id="session-actions" class="session-actions" hidden>
+        <button id="rename-session" class="icon-button" type="button" title="重命名会话" aria-label="重命名会话"><svg class="icon" aria-hidden="true"><use href="#i-edit"></use></svg></button>
+        <button id="delete-session" class="icon-button" type="button" title="删除会话" aria-label="删除会话"><svg class="icon" aria-hidden="true"><use href="#i-trash"></use></svg></button>
+      </div>
       <button id="device-status" class="presence-chip" aria-haspopup="dialog"><i id="status-dot" class="dot"></i><span id="target">本机</span><span id="presence">连接中</span><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-down"></use></svg></button>
     </header>
     <p id="error" class="error-banner" role="alert" hidden></p>
     <section id="chat" class="chat home">
-      <p id="notice" role="status" hidden></p>
+      <div id="notice-bar" hidden><p id="notice" role="status"></p><button id="review-banner-btn" type="button" class="secondary notice-action" hidden>核对未知任务</button></div>
       <div id="timeline" tabindex="0" aria-label="会话记录" hidden>
-        <div class="thread-width"><div id="events"></div><div id="working" class="working" role="status" hidden><i></i><span>正在处理…</span></div></div>
+        <div class="thread-width">
+          <button id="load-older" type="button" class="secondary load-older" hidden>加载更早记录</button>
+          <div id="events"></div>
+          <div id="live" class="live-area" hidden></div>
+          <div id="working" class="working" role="status" hidden><i></i><span>正在处理…</span></div>
+        </div>
       </div>
       <section id="composer-area">
         <div id="welcome" class="welcome">
@@ -88,11 +101,16 @@
           <h1 id="welcome-title">从哪里开始？</h1>
         </div>
         <form id="compose" aria-label="消息输入">
+          <div id="pending-attachments" class="att-strip" hidden></div>
           <label class="sr-only" for="draft" id="recipient">发给 Codex</label>
-          <textarea id="draft" rows="2" maxlength="8192" placeholder="描述任务，或问问项目里的代码…" spellcheck="false"></textarea>
+          <textarea id="draft" rows="2" maxlength="65536" placeholder="描述任务，或问问项目里的代码…" spellcheck="false"></textarea>
           <div class="composer-tools">
             <button id="context" type="button" class="context-button" aria-haspopup="dialog" title="查看项目与权限"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-folder"></use></svg><span id="project-label">选择项目</span><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-down"></use></svg></button>
+            <button id="attach-file" type="button" class="icon-button attach-btn" title="添加附件（或直接粘贴截图）" aria-label="添加附件"><svg class="icon" aria-hidden="true"><use href="#i-paperclip"></use></svg></button>
+            <input id="file-input" type="file" hidden>
             <span id="engine" class="engine"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-spark"></use></svg><span id="engine-name">Codex</span></span>
+            <select id="model-select" class="pill-select" aria-label="模型" title="选择模型" hidden></select>
+            <select id="effort-select" class="pill-select" aria-label="推理强度" title="选择推理强度" hidden></select>
             <button type="submit" id="send" class="send" aria-label="发送消息" title="发送消息 (Enter)" disabled><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-up"></use></svg></button>
             <button type="button" id="stop" class="send" aria-label="停止生成" title="停止生成" hidden><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-stop"></use></svg></button>
           </div>
@@ -101,7 +119,7 @@
           <button id="example-read"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-file"></use></svg><span>读取文件</span></button>
           <button id="example-code"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-code"></use></svg><span>解释代码</span></button>
         </div>
-        <p id="input-hint" class="input-hint" hidden>Enter 发送<span>·</span>Shift + Enter 换行</p>
+        <p id="input-hint" class="input-hint" hidden>Enter 发送<span>·</span>Shift + Enter 换行<span>·</span>支持粘贴图片</p>
         <div id="web-empty" hidden><p>在桌面客户端发起对话后，可以在这里继续。</p><button id="web-devices" class="secondary">查看设备</button></div>
       </section>
     </section>
@@ -155,9 +173,17 @@
     <p id="project-path" class="muted" hidden></p>
     <div id="grant"><label for="mode">项目权限</label><select id="mode"></select><p id="mode-description" class="muted"></p></div>
     <p id="remote-mode" class="muted" hidden></p>
+    <div id="project-unknown-box" class="review-alert" hidden>
+      <p id="project-unknown-text"></p>
+      <button id="open-review" class="secondary" type="button">核对未知任务</button>
+    </div>
     <p class="dialog-error inline-error" role="alert"></p>
   </div>
-  <div class="dialog-actions"><button id="choose-workspace" class="secondary" type="button" hidden>选择文件夹…</button><button id="apply" class="primary">完成</button></div>
+  <div class="dialog-actions">
+    <button id="remove-workspace" class="secondary danger-text" type="button" hidden>移除项目</button>
+    <button id="choose-workspace" class="secondary" type="button" hidden>选择文件夹…</button>
+    <button id="apply" class="primary">完成</button>
+  </div>
 </dialog>
 <dialog id="consent-dialog" aria-labelledby="consent-heading">
   <div class="dialog-head"><span class="dialog-symbol"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-lock"></use></svg></span><button class="icon-button dialog-close" type="button" aria-label="关闭"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-close"></use></svg></button></div>
@@ -166,5 +192,29 @@
     <p id="consent-copy"></p><p class="dialog-error inline-error" role="alert"></p>
   </div>
   <div class="dialog-actions"><button id="cancel-consent" class="secondary">取消</button><button id="allow-send" class="primary">允许只读并发送</button></div>
+</dialog>
+<dialog id="rename-dialog" aria-labelledby="rename-heading">
+  <div class="dialog-head"><h2 id="rename-heading">重命名会话</h2><button class="icon-button dialog-close" type="button" aria-label="关闭"><svg class="icon" aria-hidden="true"><use href="#i-close"></use></svg></button></div>
+  <form id="rename-form">
+    <div class="dialog-body">
+      <label for="rename-input">会话标题</label>
+      <input id="rename-input" type="text" maxlength="80" required placeholder="输入新标题">
+      <p class="dialog-error inline-error" role="alert"></p>
+    </div>
+    <div class="dialog-actions"><button id="cancel-rename" class="secondary" type="button">取消</button><button id="save-rename" class="primary" type="submit">保存</button></div>
+  </form>
+</dialog>
+<dialog id="review-dialog" aria-labelledby="review-heading">
+  <div class="dialog-head"><h2 id="review-heading">本地未知任务核对</h2><button class="icon-button dialog-close" type="button" aria-label="关闭"><svg class="icon" aria-hidden="true"><use href="#i-close"></use></svg></button></div>
+  <div class="dialog-body">
+    <p class="muted">发生中断且无法确认磁盘写入结果的任务会暂停本项目的新操作。请先撤销权限，在本地核实实际文件内容后提交说明；核对记录仍保留“结果未知”，不会自动重跑。</p>
+    <div id="review-revoke-row" class="review-revoke" hidden>
+      <span>提交核对前必须先撤销本项目权限。</span>
+      <button id="review-revoke-btn" class="secondary" type="button">立即撤销权限</button>
+    </div>
+    <div id="review-list" class="dialog-list"></div>
+    <p class="dialog-error inline-error" role="alert"></p>
+  </div>
+  <div class="dialog-actions"><button id="close-review" class="secondary" type="button">关闭</button></div>
 </dialog>
 </body></html>

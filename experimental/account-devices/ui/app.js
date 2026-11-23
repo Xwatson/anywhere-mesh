@@ -1,4 +1,4 @@
-import {element, icon, renderThread} from './thread.js';
+import { element, icon, renderLive, renderThread } from './thread.js';
 
 const $ = id => document.getElementById(id);
 const native = window.desktopDevice;
@@ -9,6 +9,7 @@ const modes = {
   edit: ['编辑', '允许读取和修改本项目的文件。'],
   execute: ['完全访问', '允许读取、创建和修改本项目的文件，并在隔离环境中运行项目命令。']
 };
+const EFFORT_LABELS = { minimal: '极简', low: '低', medium: '中', high: '高', xhigh: '极高', max: '最大' };
 const errors = {
   LOGIN_STORAGE_UNAVAILABLE: '暂时无法读取或保存本机登录凭据。请稍后重试。',
   DEVICE_OFFLINE: '执行设备已离线，草稿已保留。', LOGIN_REQUIRED: '请重新登录。',
@@ -16,7 +17,7 @@ const errors = {
   INCORRECT_CURRENT_PASSWORD: '当前密码不正确。', PASSWORD_UNCHANGED: '请输入与当前密码不同的新密码。',
   INVALID_NEW_PASSWORD: '新密码须为 8–200 个字符，且应包含非空格字符。', PASSWORD_THROTTLED: '尝试次数过多，请在 15 分钟后重试。',
   LOGIN_THROTTLED: '登录尝试过多，请稍后重试。', LOCAL_PERMISSION_REQUIRED: '请在执行设备上给项目授权。',
-  WORKSPACE_NOT_READY: '项目正在同步或有任务在运行，请稍后重试。', READ_FILE_BEFORE_EDIT: '请先在本次会话中读取文件。',
+  WORKSPACE_NOT_READY: '项目正在同步或存在未核对/运行中任务，请先检查或稍后重试。', READ_FILE_BEFORE_EDIT: '请先在本次会话中读取文件。',
   TOOL_UNAVAILABLE_ON_DEVICE: '这台设备暂不支持该操作。', UNSUPPORTED_DEVICE_PERMISSION: '这台设备不支持所选权限。',
   NETWORK_ENROLLMENT_UNAVAILABLE: '服务端暂时无法签发设备连接配置。',
   NETWORK_ADDRESS_LIMIT: '设备连接数已满。', WINDOWS_NETWORK_EXITED: '本机连接进程已中断。',
@@ -29,29 +30,45 @@ const errors = {
   WORKSPACE_LIMIT: '这台设备最多可登记 16 个项目。',
   WORKSPACE_ROOT_CHANGED: '项目目录已移动或被替换，请选择其他目录。',
   WORKSPACE_PATH_RESERVED: '请选择应用及其私有数据目录之外的项目文件夹。',
+  DEFAULT_WORKSPACE_PROTECTED: '默认项目不能移除。',
   LOCAL_PROJECT_REQUIRED: '请选择固定本机磁盘上的现有文件夹。',
   WORKSPACE_REGISTRATION_UNAVAILABLE: '当前服务端版本暂不支持添加文件夹。',
-  DESKTOP_REQUEST_TIMEOUT: '连接超时，请重试。', SESSION_BUSY: '请等当前回复结束后再发送。'
+  DESKTOP_REQUEST_TIMEOUT: '连接超时，请重试。', SESSION_BUSY: '请等当前回复结束后再发送。',
+  BODY_LIMIT: '文件或内容超出大小限制。', REVOKE_BEFORE_REVIEW: '请先撤销本项目权限再提交核对。',
+  REVIEW_STALE: '核对证据已变化，请刷新后重试。',
 };
 const message = e => Object.entries(errors).find(([key]) => String(e.message).includes(key))?.[1] ?? String(e.message);
 
 async function action(method, p = {}) {
   if (native) return native.request(method, p);
-  let path, body;
+  let path, body, httpMethod = 'GET';
   switch (method) {
-    case 'login': path = '/api/auth/login'; body = p; break;
-    case 'logout': path = '/api/auth/logout'; body = {}; break;
-    case 'changePassword': path = '/api/auth/password'; body = p; break;
+    case 'login': path = '/api/auth/login'; body = p; httpMethod = 'POST'; break;
+    case 'logout': path = '/api/auth/logout'; body = {}; httpMethod = 'POST'; break;
+    case 'changePassword': path = '/api/auth/password'; body = p; httpMethod = 'POST'; break;
     case 'state': path = '/api/state'; break;
     case 'admin': path = '/api/admin/devices'; break;
-    case 'disable': path = '/api/admin/devices/' + p.id; body = {disabled: p.disabled}; break;
+    case 'disable': path = '/api/admin/devices/' + p.id; body = { disabled: p.disabled }; httpMethod = 'POST'; break;
+    case 'renameSession': path = '/api/sessions/' + p.sessionId; body = { title: p.title }; httpMethod = 'PATCH'; break;
+    case 'deleteSession': path = '/api/sessions/' + p.sessionId; httpMethod = 'DELETE'; break;
+    case 'setSessionOptions': {
+      path = '/api/sessions/' + p.sessionId;
+      const options = {};
+      if ('model' in p) options.model = p.model;
+      if ('effort' in p) options.effort = p.effort;
+      body = { options }; httpMethod = 'PATCH'; break;
+    }
     case 'history': path = '/api/sessions/' + p.sessionId + '/events?afterSeq=' + p.afterSeq; break;
-    case 'send': path = '/api/sessions/' + p.sessionId + '/messages'; body = {requestId: p.requestId, text: p.text}; break;
-    case 'stop': path = '/api/sessions/' + p.sessionId + '/stop'; body = {requestId: p.requestId, turnId: p.turnId}; break;
+    case 'historyBefore': path = '/api/sessions/' + p.sessionId + '/events?beforeSeq=' + p.beforeSeq; break;
+    case 'send': path = '/api/sessions/' + p.sessionId + '/messages'; body = { requestId: p.requestId, text: p.text, ...(p.attachments?.length ? { attachments: p.attachments } : {}) }; httpMethod = 'POST'; break;
+    case 'stop': path = '/api/sessions/' + p.sessionId + '/stop'; body = { requestId: p.requestId, turnId: p.turnId }; httpMethod = 'POST'; break;
+    case 'uploadAttachment': path = '/api/sessions/' + p.sessionId + '/attachments'; body = { name: p.name, mime: p.mime, dataBase64: p.dataBase64 }; httpMethod = 'POST'; break;
     default: throw Error('请在桌面客户端操作。');
   }
-  const response = await fetch(path, {method: body ? 'POST' : 'GET', credentials: 'same-origin', cache: 'no-store',
-    ...(body ? {headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)} : {})});
+  const response = await fetch(path, {
+    method: httpMethod, credentials: 'same-origin', cache: 'no-store',
+    ...(body ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {}),
+  });
   const data = await response.json();
   if (!response.ok) throw Error(data.error || '连接失败。');
   return data;
@@ -59,8 +76,14 @@ async function action(method, p = {}) {
 
 let state, selected, projectId, tab = 'chat', online = false, busy = false, generation = 0, polling;
 let localConnectUntil = 0;
-let rows = [], seq = 0, epoch, sidebarKey, searchKey, fleetKey, deviceKey, historyProblem = false, historyDirty = false;
-let fleet = [], consent, projectSource, restoring = false;
+let rows = [], seq = 0, firstSeq = 0, hasOlder = false, epoch, sidebarKey, searchKey, fleetKey, deviceKey, historyProblem = false, historyDirty = false;
+let fleet = [], consent, projectSource, restoring = false, reviewWorkspaceId = null;
+let pendingModel = null, pendingEffort = null;
+// Pending attachments: either already uploaded ({ id, name, mime, size }) or staged locally before session creation ({ localFile, name, mime, size, dataBase64 }).
+let pendingAttachments = [];
+let live = { text: '', thinking: '', toolOutput: new Map() };
+let eventSource = null, subscribedSessionId = null;
+
 const groups = new Map(), unfolded = new Set();
 const canUseProject = p => isLocal(p) && (!state.workspacePicker || (p.localMode !== undefined && !p.localUnavailable));
 const mine = () => state.projects.filter(canUseProject);
@@ -72,7 +95,7 @@ const isLocal = p => Boolean(native && p && p.deviceId === state.deviceId);
 const connecting = d => d && !d.disabled && !d.online && d.id === state?.deviceId && Date.now() < localConnectUntil;
 const status = d => !online ? '状态未知' : !d ? '未连接' : d.disabled ? '已停用' : d.online ? '在线' : connecting(d) ? '连接中' : '离线';
 const deviceName = d => d ? d.name + ' · ' + d.id.slice(0, 6) : '未知设备';
-const lastSeen = d => d.lastSeen ? '最近在线 ' + new Date(d.lastSeen).toLocaleString('zh-CN', {hour12:false}) : '暂无在线记录';
+const lastSeen = d => d.lastSeen ? '最近在线 ' + new Date(d.lastSeen).toLocaleString('zh-CN', { hour12: false }) : '暂无在线记录';
 const activeDialog = () => document.querySelector('dialog[open]');
 
 function notify(text = '') {
@@ -80,6 +103,86 @@ function notify(text = '') {
   box.textContent = text;
   box.hidden = !text;
 }
+function clearLive() {
+  live = { text: '', thinking: '', toolOutput: new Map() };
+  renderLive($('live'), live);
+}
+function stopStream() {
+  if (eventSource) { eventSource.close(); eventSource = null; }
+  if (native && subscribedSessionId) { void action('unsubscribe').catch(() => {}); }
+  subscribedSessionId = null;
+}
+function ensureStream() {
+  const target = thread();
+  if (!state || tab !== 'chat' || !target || !online) { stopStream(); return; }
+  if (subscribedSessionId === target.id) return;
+  stopStream();
+  subscribedSessionId = target.id;
+  if (native) {
+    void action('subscribe', { sessionId: target.id, afterSeq: seq }).catch(() => { subscribedSessionId = null; });
+  } else {
+    const es = new EventSource(`/api/sessions/${target.id}/stream?afterSeq=${seq}`);
+    es.addEventListener('events', e => {
+      try { applyStreamMessage({ type: 'events', payload: JSON.parse(e.data) }); } catch {}
+    });
+    es.addEventListener('delta', e => {
+      try { applyStreamMessage({ type: 'delta', payload: JSON.parse(e.data) }); } catch {}
+    });
+    es.onerror = () => { if (eventSource === es) { es.close(); eventSource = null; subscribedSessionId = null; } };
+    eventSource = es;
+  }
+}
+
+function applyEventPage(page, target) {
+  if (!target || page.sessionId !== target.id || page.workspaceId !== target.workspaceId) return;
+  const restart = epoch !== page.historyEpoch || (page.events.length && page.events[0].seq <= seq);
+  if (!restart && page.events.length && page.events[0].seq !== seq + 1) return;
+  const next = restart ? page.events : rows.concat(page.events);
+  if (page.events.some(r => r.event.type === 'assistant_text' || r.event.type === 'turn_end')) {
+    live.text = '';
+    live.thinking = '';
+  }
+  for (const r of page.events) {
+    if (r.event.type === 'tool_call' && r.event.status !== 'running') live.toolOutput.delete(r.event.id);
+  }
+  rows = next;
+  epoch = page.historyEpoch;
+  seq = Math.max(seq, page.throughSeq);
+  if (!firstSeq || restart) firstSeq = rows[0]?.seq ?? 0;
+  hasOlder = firstSeq > 1;
+  $('load-older').hidden = !hasOlder;
+  historyDirty = !drawHistory(rows, restart);
+  renderLive($('live'), live, state?.chatEngine === 'codex' ? 'Codex' : '助手');
+  historyProblem = false;
+  if (page.events.some(r => r.event.type === 'turn_end')) void refresh();
+}
+
+function applyStreamMessage(msg) {
+  const target = thread();
+  if (!target || tab !== 'chat') return;
+  if (msg.type === 'events' && msg.payload?.sessionId === target.id) {
+    applyEventPage(msg.payload, target);
+  } else if (msg.type === 'delta' && msg.payload?.sessionId === target.id) {
+    const d = msg.payload.delta;
+    if (!d) return;
+    const view = $('timeline');
+    const pinned = view.scrollHeight - view.clientHeight - view.scrollTop < 72;
+    if (d.kind === 'text' && typeof d.text === 'string') {
+      live.text += d.text;
+      renderLive($('live'), live, state?.chatEngine === 'codex' ? 'Codex' : '助手');
+    } else if (d.kind === 'thinking' && typeof d.text === 'string') {
+      live.thinking += d.text;
+      renderLive($('live'), live, state?.chatEngine === 'codex' ? 'Codex' : '助手');
+    } else if (d.kind === 'tool_output' && d.id && typeof d.text === 'string') {
+      const prev = live.toolOutput.get(d.id) ?? '';
+      live.toolOutput.set(d.id, (prev + d.text).slice(-12000));
+      const pre = $('events').querySelector(`details.tool-step[data-call="${CSS.escape(d.id)}"] pre`);
+      if (pre) pre.textContent = live.toolOutput.get(d.id);
+    }
+    if (pinned) view.scrollTop = view.scrollHeight;
+  }
+}
+if (native?.onEvent) native.onEvent(applyStreamMessage);
 
 function keyFor(id = selected, workspace = projectId) {
   if (!state?.user || (!id && !workspace)) return null;
@@ -95,12 +198,32 @@ function saveDraft(key, entry) {
 }
 function resetHistory() {
   generation++;
-  rows = []; seq = 0; epoch = null;
+  stopStream();
+  clearLive();
+  rows = []; seq = 0; firstSeq = 0; hasOlder = false; epoch = null;
   historyProblem = historyDirty = false;
   $('events').replaceChildren();
+  $('load-older').hidden = true;
+}
+function renderPendingAttachments() {
+  const strip = $('pending-attachments');
+  strip.hidden = !pendingAttachments.length;
+  strip.replaceChildren(...pendingAttachments.map((att, index) => {
+    const chip = element('span', undefined, 'att-chip');
+    const del = element('button', undefined, undefined);
+    del.type = 'button'; del.title = '移除附件'; del.setAttribute('aria-label', '移除 ' + att.name);
+    del.append(icon('close'));
+    del.onclick = () => { pendingAttachments.splice(index, 1); renderPendingAttachments(); controls(); };
+    chip.append(icon('paperclip'), element('span', att.name), del);
+    return chip;
+  }));
 }
 function select(id) {
-  if (id !== selected) resetHistory();
+  if (id !== selected) {
+    resetHistory();
+    pendingAttachments = [];
+    renderPendingAttachments();
+  }
   selected = id;
   const s = thread();
   if (s && id) {
@@ -126,7 +249,7 @@ function openThread(id) {
   select(id);
   notify();
   render();
-  if (!narrow.matches && (id || native)) $('draft').focus({preventScroll:true});
+  if (!narrow.matches && (id || native)) $('draft').focus({ preventScroll: true });
   void refresh(true);
 }
 function showDialog(id) {
@@ -143,9 +266,10 @@ function loginView(localName, restore = false, detail) {
     drawer(false);
     resetHistory();
     selected = projectId = consent = null;
+    pendingAttachments = []; renderPendingAttachments();
     sidebarKey = searchKey = fleetKey = deviceKey = null;
     groups.clear(); unfolded.clear(); fleet = [];
-    for (const id of ['sessions','devices','fleet','search-results','signed-user','account','notice','session-title','project','mode','consent-copy']) $(id).replaceChildren();
+    for (const id of ['sessions', 'devices', 'fleet', 'search-results', 'signed-user', 'account', 'notice', 'session-title', 'project', 'mode', 'consent-copy']) $(id).replaceChildren();
     $('draft').value = '';
     $('password-form').reset();
     $('account-feedback').textContent = '';
@@ -164,13 +288,13 @@ function loginView(localName, restore = false, detail) {
 }
 
 function sidebar() {
-  const fingerprint = JSON.stringify([selected, projectId, state.sessions.map(s => [s.id,s.title,s.workspaceId,Boolean(s.activeTurn)]),
-    state.projects.map(p => [p.id,p.label,p.deviceId]), state.devices.map(d => [d.id,d.name]), [...groups], [...unfolded]]);
+  const fingerprint = JSON.stringify([selected, projectId, state.sessions.map(s => [s.id, s.title, s.workspaceId, Boolean(s.activeTurn)]),
+    state.projects.map(p => [p.id, p.label, p.deviceId]), state.devices.map(d => [d.id, d.name]), [...groups], [...unfolded]]);
   if (fingerprint === sidebarKey) return;
   sidebarKey = fingerprint;
   const focus = document.activeElement?.closest('#sessions button')?.dataset;
   const parts = document.createDocumentFragment();
-  const projects = [...state.projects].sort((a,b) => Number(isLocal(b)) - Number(isLocal(a)));
+  const projects = [...state.projects].sort((a, b) => Number(isLocal(b)) - Number(isLocal(a)));
   const labels = projects.map(p => p.label);
   for (const p of projects) {
     const sessions = state.sessions.filter(s => s.workspaceId === p.id);
@@ -188,13 +312,13 @@ function sidebar() {
     group.append(toggle);
     if (open) {
       const list = element('div', undefined, 'thread-list');
-      const visible = unfolded.has(p.id) ? sessions : sessions.slice(0,4);
+      const visible = unfolded.has(p.id) ? sessions : sessions.slice(0, 4);
       for (const s of visible) {
         const b = element('button', undefined, 'thread-row');
         b.dataset.session = s.id; b.title = s.title;
         b.append(element('span', s.title));
-        if (s.activeTurn) { const dot = element('i'); dot.setAttribute('aria-label','处理中'); b.append(dot); }
-        if (selected === s.id && tab === 'chat') b.setAttribute('aria-current','page');
+        if (s.activeTurn) { const dot = element('i'); dot.setAttribute('aria-label', '处理中'); b.append(dot); }
+        if (selected === s.id && tab === 'chat') b.setAttribute('aria-current', 'page');
         b.onclick = () => openThread(s.id);
         list.append(b);
       }
@@ -211,8 +335,8 @@ function sidebar() {
   }
   if (!parts.childNodes.length) parts.append(element('p', '暂无项目会话', 'list-empty'));
   $('sessions').replaceChildren(parts);
-  if (focus) for (const key of ['group','session','more']) {
-    if (focus[key]) $('sessions').querySelector('[data-' + key + '="' + CSS.escape(focus[key]) + '"]')?.focus({preventScroll:true});
+  if (focus) for (const key of ['group', 'session', 'more']) {
+    if (focus[key]) $('sessions').querySelector('[data-' + key + '="' + CSS.escape(focus[key]) + '"]')?.focus({ preventScroll: true });
   }
 }
 
@@ -220,14 +344,14 @@ function searchResults() {
   const query = $('search-input').value.trim().toLocaleLowerCase();
   const matches = state.sessions.filter(s => [s.title, projectById(s.workspaceId)?.label, deviceById(s.deviceId)?.name]
     .some(value => value?.toLocaleLowerCase().includes(query)));
-  const key = JSON.stringify([query, matches.map(s => [s.id,s.title,projectById(s.workspaceId)?.label,deviceById(s.deviceId)?.name])]);
+  const key = JSON.stringify([query, matches.map(s => [s.id, s.title, projectById(s.workspaceId)?.label, deviceById(s.deviceId)?.name])]);
   if (key === searchKey) return;
   searchKey = key;
   const list = matches.map(s => {
     const result = element('button', undefined, 'result-row'), text = element('span');
     result.dataset.session = s.id;
-    text.append(element('strong',s.title), element('small',[projectById(s.workspaceId)?.label,deviceById(s.deviceId)?.name].filter(Boolean).join(' · ')));
-    result.append(icon('chat'),text);
+    text.append(element('strong', s.title), element('small', [projectById(s.workspaceId)?.label, deviceById(s.deviceId)?.name].filter(Boolean).join(' · ')));
+    result.append(icon('chat'), text);
     result.onclick = () => openThread(s.id);
     return result;
   });
@@ -240,36 +364,65 @@ function openSearch() {
 }
 
 function renderDevices() {
-  const key = JSON.stringify([online,state.deviceId,state.devices.map(d => [d.id,d.name,status(d),d.online ? null : d.lastSeen])]);
+  const key = JSON.stringify([online, state.deviceId, state.devices.map(d => [d.id, d.name, status(d), d.online ? null : d.lastSeen])]);
   if (key === deviceKey) return;
   deviceKey = key;
   const entries = state.devices.map(d => {
     const box = element('div', undefined, 'device-row');
     const identity = element('div'), badge = element('span', undefined, 'device-state');
     identity.append(element('strong', d.name + (d.id === state.deviceId ? ' · 本机' : '')),
-      element('small', d.online ? '设备 ' + d.id.slice(0,6) : lastSeen(d)));
+      element('small', d.online ? '设备 ' + d.id.slice(0, 6) : lastSeen(d)));
     badge.append(element('i', undefined, 'dot ' + (d.online && online ? 'online' : 'offline')), document.createTextNode(status(d)));
     box.append(icon('dev'), identity, badge);
     return box;
   });
-  $('devices').replaceChildren(...(entries.length ? entries : [element('p','还没有登录过的设备。','list-empty')]));
+  $('devices').replaceChildren(...(entries.length ? entries : [element('p', '还没有登录过的设备。', 'list-empty')]));
 }
 function renderFleet() {
-  const key = JSON.stringify([online,busy,fleet.map(d => [d.id,d.name,d.username,d.disabled,d.online,d.online ? null : d.lastSeen,d.sessions])]);
+  const key = JSON.stringify([online, busy, fleet.map(d => [d.id, d.name, d.username, d.disabled, d.online, d.online ? null : d.lastSeen, d.sessions])]);
   if (key === fleetKey) return;
   fleetKey = key;
   const table = element('table'), header = table.createTHead().insertRow(), body = table.createTBody();
-  for (const text of ['账号','设备','状态','绑定会话','接入权限']) header.append(element('th',text));
+  for (const text of ['账号', '设备', '状态', '绑定会话', '接入权限']) header.append(element('th', text));
   for (const d of fleet) {
     const row = body.insertRow(), presence = element('td', status(d));
-    presence.append(element('small',lastSeen(d)));
+    presence.append(element('small', lastSeen(d)));
     const button = element('button', d.disabled ? '恢复接入' : '停用接入', 'secondary');
     button.disabled = busy || !online;
-    button.onclick = () => perform(() => action('disable',{id:d.id,disabled:!d.disabled}));
+    button.onclick = () => perform(() => action('disable', { id: d.id, disabled: !d.disabled }));
     const op = element('td'); op.append(button);
-    row.append(element('td',d.username),element('td',deviceName(d)),presence,element('td',d.sessions.map(s => s.title).join('、') || '—'),op);
+    row.append(element('td', d.username), element('td', deviceName(d)), presence, element('td', d.sessions.map(s => s.title).join('、') || '—'), op);
   }
-  $('fleet').replaceChildren(fleet.length ? table : element('p','暂无设备记录。','list-empty'));
+  $('fleet').replaceChildren(fleet.length ? table : element('p', '暂无设备记录。', 'list-empty'));
+}
+
+function renderModelControls() {
+  const codex = state.chatEngine === 'codex';
+  const models = Array.isArray(state.models) ? state.models : [];
+  const s = thread();
+  const curModel = (s ? s.options?.model : pendingModel) ?? '';
+  const curEffort = (s ? s.options?.effort : pendingEffort) ?? '';
+  $('model-select').hidden = !codex || !models.length;
+  $('effort-select').hidden = !codex;
+  if (codex && models.length) {
+    const modelOpts = [new Option('默认模型', ''), ...models.map(m => new Option(m.name || m.id, m.id))];
+    const prevKey = [...$('model-select').options].map(o => o.value).join('|');
+    const nextKey = modelOpts.map(o => o.value).join('|');
+    if (prevKey !== nextKey) $('model-select').replaceChildren(...modelOpts);
+    $('model-select').value = models.some(m => m.id === curModel) ? curModel : '';
+  }
+  if (codex) {
+    const chosen = models.find(m => m.id === curModel) ?? models.find(m => m.isDefault) ?? models[0];
+    const efforts = chosen?.efforts?.length ? chosen.efforts : ['low', 'medium', 'high', 'xhigh'];
+    const effortOpts = [new Option('推理: 默认', ''), ...efforts.map(e => new Option('推理: ' + (EFFORT_LABELS[e] ?? e), e))];
+    const prevKey = [...$('effort-select').options].map(o => o.value).join('|');
+    const nextKey = effortOpts.map(o => o.value).join('|');
+    if (prevKey !== nextKey) $('effort-select').replaceChildren(...effortOpts);
+    $('effort-select').value = efforts.includes(curEffort) ? curEffort : '';
+  }
+  const locked = busy || !online || Boolean(s?.activeTurn);
+  $('model-select').disabled = locked;
+  $('effort-select').disabled = locked;
 }
 
 function controls() {
@@ -280,9 +433,12 @@ function controls() {
   $('stop').disabled = busy || !online || Boolean(t?.cancelRequested);
   $('draft').readOnly = busy;
   $('send').disabled = busy || !online || !d?.online || d.disabled || !p?.ready || Boolean(t) ||
-    (!localRevoked && p.mode === 'revoked') || !$('draft').value.trim();
+    (!localRevoked && p.mode === 'revoked') || (!$('draft').value.trim() && !pendingAttachments.length);
+  $('attach-file').disabled = busy || !online || Boolean(t) || pendingAttachments.length >= 8;
   $('context').disabled = busy || (!p && !(state.workspacePicker && !selected));
   $('choose-workspace').disabled = busy || !online;
+  $('rename-session').disabled = busy || !online || !selected;
+  $('delete-session').disabled = busy || !online || !selected || Boolean(t);
   $('logout').disabled = busy;
   $('change-password').disabled = busy;
   $('cancel-password').disabled = busy;
@@ -297,17 +453,20 @@ function controls() {
 function renderNotice(s, p, d) {
   let notice = '';
   const other = Boolean(s && d && !isLocal(p));
+  const hasLocalUnknown = Boolean(isLocal(p) && (p.unknownCount ?? 0) > 0);
   if (!online) notice = '暂时无法同步服务端状态，正在重试。草稿已保留。';
   else if (other) notice = '此会话只会操作「' + deviceName(d) + '」上的项目。';
-  if (online && isLocal(p) && p.localUnavailable) notice += '本机项目目录已无法访问。';
+  if (hasLocalUnknown) notice += (notice ? ' ' : '') + `本项目有 ${p.unknownCount} 条结果未知的任务阻塞新操作，请先在本地核对。`;
+  else if (online && isLocal(p) && p.localUnavailable) notice += '本机项目目录已无法访问。';
   else if (online && d && !d.online && !connecting(d)) notice += '执行设备' + (d.disabled ? '已停用。' : '已离线。') + (s ? '仍可查看会话历史。' : '');
   else if (online && p && !p.ready && (s || !isLocal(p))) notice += '项目正在连接…';
   else if (online && other && p?.mode === 'revoked') notice += '请在该设备上授权。';
   else if (online && isLocal(p) && p.localMode && p.localMode !== p.mode) notice += '正在同步项目权限…';
   if (s && historyProblem) notice += '会话记录暂时无法同步，稍后会自动重试。';
   $('notice').textContent = notice;
-  $('notice').hidden = !notice;
-  $('notice').className = !historyProblem && other && online && d?.online && p?.mode !== 'revoked' ? 'remote' : '';
+  $('notice-bar').hidden = !notice;
+  $('review-banner-btn').hidden = !hasLocalUnknown;
+  $('notice-bar').className = !hasLocalUnknown && !historyProblem && other && online && d?.online && p?.mode !== 'revoked' ? 'remote' : '';
 }
 
 function render() {
@@ -327,13 +486,14 @@ function render() {
   $('crumb-project').textContent = tab === 'chat' && s && p ? p.label : '工作区';
   $('session-title').textContent = tab === 'admin' ? '设备管理' : s?.title || (webEmpty ? '会话' : '新对话');
   $('session-title').title = $('session-title').textContent;
+  $('session-actions').hidden = tab !== 'chat' || !s;
   $('target').textContent = d ? d.id === state.deviceId ? '本机' : d.name : '我的设备';
   $('presence').textContent = d ? status(d) : '';
   $('status-dot').className = 'dot ' + (d?.online && online ? 'online' : 'offline');
   $('status-dot').hidden = !d;
   $('device-status').title = d ? deviceName(d) + ' · ' + status(d) : '我的设备';
-  renderNotice(s,p,d);
-  $('chat').classList.toggle('home',home);
+  renderNotice(s, p, d);
+  $('chat').classList.toggle('home', home);
   $('welcome').hidden = !home; $('welcome-title').textContent = webEmpty ? '从桌面开启对话' : '从哪里开始？';
   $('timeline').hidden = home; $('compose').hidden = webEmpty;
   $('web-empty').hidden = !webEmpty;
@@ -348,18 +508,20 @@ function render() {
   $('draft').placeholder = home ? '描述任务，或问问项目里的代码…' : '继续对话…';
   $('working').hidden = !s?.activeTurn;
   $('working').lastElementChild.textContent = s?.activeTurn?.cancelRequested ? '正在停止…' : engine + ' 正在处理…';
+  if (!s?.activeTurn && (live.text || live.thinking)) clearLive();
+  renderModelControls();
   controls(); sidebar();
   if ($('devices-dialog').open) renderDevices();
   if ($('search-dialog').open) searchResults();
   if (tab === 'admin') renderFleet();
+  ensureStream();
 }
 
 function drawHistory(next, fromStart = false) {
   const selection = document.getSelection(), events = $('events'), view = $('timeline');
-  // Preserve the selection until the user finishes copying, including during streamed replies.
   if (native && selection?.rangeCount && !selection.isCollapsed && selection.getRangeAt(0).intersectsNode(events)) return false;
   const pinned = fromStart || view.scrollHeight - view.clientHeight - view.scrollTop < 72;
-  renderThread(events, next);
+  renderThread(events, next, { sessionId: selected, isWeb: !native, liveToolOutput: live.toolOutput });
   if (pinned) view.scrollTop = view.scrollHeight;
   return true;
 }
@@ -373,24 +535,42 @@ async function syncHistory() {
   const restart = epoch !== target.historyEpoch || target.lastSeq < seq;
   const afterSeq = restart ? 0 : seq;
   try {
-    const page = await action('history',{sessionId:target.id,afterSeq});
+    const page = await action('history', { sessionId: target.id, afterSeq });
     if (generation !== stamp || tab !== 'chat') return;
     if (page.sessionId !== target.id || page.workspaceId !== target.workspaceId || page.historyEpoch !== target.historyEpoch ||
         !Array.isArray(page.events) || page.throughSeq !== afterSeq + page.events.length ||
-        !page.events.every((r,i) => r?.seq === afterSeq+i+1 && typeof r.event?.type === 'string' &&
+        !page.events.every((r, i) => r?.seq === afterSeq + i + 1 && typeof r.event?.type === 'string' &&
           (r.event.type !== 'assistant_text' || typeof r.event.text === 'string'))) throw Error('INVALID_HISTORY_PAGE');
     const next = restart ? page.events : rows.concat(page.events);
     historyDirty = !drawHistory(next, !afterSeq);
     rows = next; epoch = page.historyEpoch; seq = page.throughSeq;
+    firstSeq = rows[0]?.seq ?? 0;
+    hasOlder = firstSeq > 1;
+    $('load-older').hidden = !hasOlder;
     historyProblem = false;
   } catch (error) {
     if (generation !== stamp || tab !== 'chat') return;
     if (error.message.includes('LOGIN_REQUIRED')) { loginView(); return; }
     historyProblem = true;
-    console.warn('会话记录同步失败',error.message === 'INVALID_HISTORY_PAGE' ? 'INVALID_HISTORY_PAGE' : error.name);
+    console.warn('会话记录同步失败', error.message === 'INVALID_HISTORY_PAGE' ? 'INVALID_HISTORY_PAGE' : error.name);
   }
   const p = project();
-  renderNotice(target,p,deviceById(p?.deviceId ?? state.deviceId));
+  renderNotice(target, p, deviceById(p?.deviceId ?? state.deviceId));
+}
+
+async function loadOlderHistory() {
+  const target = thread(), stamp = generation;
+  if (!target || !hasOlder || firstSeq <= 1) return;
+  const view = $('timeline'), prevHeight = view.scrollHeight;
+  const page = await action('historyBefore', { sessionId: target.id, beforeSeq: firstSeq });
+  if (generation !== stamp || tab !== 'chat') return;
+  if (page.historyEpoch !== epoch) { resetHistory(); await syncHistory(); return; }
+  rows = page.events.concat(rows);
+  firstSeq = page.firstSeq;
+  hasOlder = page.hasMore;
+  $('load-older').hidden = !hasOlder;
+  renderThread($('events'), rows, { sessionId: selected, isWeb: !native, liveToolOutput: live.toolOutput });
+  view.scrollTop += view.scrollHeight - prevHeight;
 }
 
 async function sync() {
@@ -401,14 +581,15 @@ async function sync() {
     if (version !== generation) return;
     if (error.message.includes('LOGIN_REQUIRED')) { loginView(); return; }
     online = false;
+    stopStream();
     if (state) render();
-    else if (restoring) loginView(undefined,restoring === 'connecting' ? restoring : 'waiting',
+    else if (restoring) loginView(undefined, restoring === 'connecting' ? restoring : 'waiting',
       message(error) === error.message ? '暂时无法同步登录状态。' : message(error));
     return;
   }
   if (version !== generation) return;
   if (!latest.user) {
-    loginView(latest.localName,latest.restoring && (restoring === 'connecting' ? restoring : 'waiting'),
+    loginView(latest.localName, latest.restoring && (restoring === 'connecting' ? restoring : 'waiting'),
       latest.connectionError && errors[latest.connectionError]);
     return;
   }
@@ -428,7 +609,7 @@ async function sync() {
     if (first && !native && state.user.isAdmin && new URLSearchParams(location.search).get('view') === 'devices') tab = 'admin';
   }
   render();
-  if (first && native && !narrow.matches) $('draft').focus({preventScroll:true});
+  if (first && native && !narrow.matches) $('draft').focus({ preventScroll: true });
   if (tab === 'chat') await syncHistory();
   else if (state.user.isAdmin) {
     const stamp = generation;
@@ -445,10 +626,10 @@ async function sync() {
 }
 async function refresh(force = false) {
   if (polling) { await polling; if (force) await refresh(); return; }
-  polling = sync().catch(error => console.error('界面同步失败',error.name)).finally(() => { polling = null; });
+  polling = sync().catch(error => console.error('界面同步失败', error.name)).finally(() => { polling = null; });
   return polling;
 }
-async function perform(fn, {refreshState = true} = {}) {
+async function perform(fn, { refreshState = true } = {}) {
   if (busy) return;
   busy = true; render(); notify();
   $('login-error').textContent = ''; $('login-submit').disabled = $('forget-login').disabled = true;
@@ -488,12 +669,12 @@ async function chooseProject() {
   if (!picked) return;
   const index = state.projects.findIndex(p => p.id === picked.id);
   if (index < 0) state.projects.push(picked);
-  else state.projects[index] = {...state.projects[index],...picked};
+  else state.projects[index] = { ...state.projects[index], ...picked };
   if (!selected && projectSource === 'context') {
     projectId = picked.id;
     select(null);
   }
-  projectChoices(false,picked.id);
+  projectChoices(false, picked.id);
 }
 function showProject(id) {
   const p = projectById(id), d = deviceById(p?.deviceId), usable = canUseProject(p);
@@ -505,6 +686,10 @@ function showProject(id) {
   const allowed = p?.localModes ?? Object.keys(modes);
   $('mode').replaceChildren(...allowed.map(m => new Option(modes[m][0], m)));
   $('mode').value = p?.localMode ?? p?.mode ?? 'revoked';
+  const hasUnknown = Boolean(isLocal(p) && (p.unknownCount ?? 0) > 0);
+  $('project-unknown-box').hidden = !hasUnknown;
+  if (hasUnknown) $('project-unknown-text').textContent = `存在 ${p.unknownCount} 条结果未知的任务，需核对后才能继续操作本项目。`;
+  $('remove-workspace').hidden = !(isLocal(p) && p.canRemove && !thread());
   updateMode();
 }
 function updateMode() {
@@ -515,46 +700,150 @@ function updateMode() {
 async function saveProject() {
   const p = projectById($('project').value), mode = $('mode').value;
   if (canUseProject(p) && mode !== (p.localMode ?? p.mode)) {
-    await action('permission',{workspaceId:p.id,mode});
+    await action('permission', { workspaceId: p.id, mode });
   }
   if (!selected && p && projectSource === 'context' && projectId !== p.id) {
     projectId = p.id; select(null);
   }
   $('project-dialog').close();
 }
+async function removeCurrentWorkspace() {
+  const p = projectById($('project').value);
+  if (!p || !p.canRemove) return;
+  if (!confirm(`确定从设备移除项目「${p.label}」？（不会删除本地文件夹）`)) return;
+  await action('removeWorkspace', { workspaceId: p.id });
+  $('project-dialog').close();
+}
+
+async function openReviewDialog(workspaceId) {
+  if (!workspaceId || !native) return;
+  reviewWorkspaceId = workspaceId;
+  showDialog('review-dialog');
+  await refreshReviewList();
+}
+async function refreshReviewList() {
+  if (!reviewWorkspaceId) return;
+  const info = await action('reviewList', { workspaceId: reviewWorkspaceId });
+  $('review-revoke-row').hidden = info.revoked || !info.items.length;
+  const list = $('review-list');
+  if (!info.items.length) {
+    list.replaceChildren(element('p', '本项目当前没有待核对的未知任务。', 'list-empty'));
+    return;
+  }
+  list.replaceChildren(...info.items.map(item => {
+    const card = element('div', undefined, 'review-card');
+    card.append(
+      element('strong', `${item.tool} · 任务 ${item.operationId.slice(0, 8)}`),
+      element('small', `原因：${item.reason || 'unknown'} · 启动次数：${item.starts}`),
+      element('pre', JSON.stringify(item.args ?? {}, null, 2)),
+    );
+    if (item.needsRevoke) {
+      card.append(element('p', '请先点击上方「立即撤销权限」以生成核对摘要。', 'muted'));
+    } else if (item.error) {
+      card.append(element('p', message({ message: item.error }), 'inline-error'));
+    } else {
+      const noteInput = element('textarea');
+      noteInput.placeholder = '记录你在本地核实的文件状态（例如：已检查 notes.txt，内容完整）…';
+      noteInput.maxLength = 2048;
+      const submitBtn = element('button', '确认已核对（保留未知结论，解除阻塞）', 'primary');
+      submitBtn.type = 'button';
+      submitBtn.onclick = () => perform(async () => {
+        const note = noteInput.value.trim();
+        if (!note) throw Error('请先填写本地核对说明。');
+        await action('reviewSubmit', {
+          workspaceId: reviewWorkspaceId,
+          requestId: crypto.randomUUID(),
+          operationId: item.operationId,
+          expectedDigest: item.expectedDigest,
+          note,
+        });
+        await refreshReviewList();
+      });
+      card.append(noteInput, submitBtn);
+    }
+    return card;
+  }));
+}
+
+function readFileAsBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const str = String(reader.result || '');
+      const comma = str.indexOf(',');
+      resolve(comma >= 0 ? str.slice(comma + 1) : str);
+    };
+    reader.onerror = () => reject(Error('无法读取所选文件。'));
+    reader.readAsDataURL(file);
+  });
+}
+async function attachLocalFile(file) {
+  if (!file) return;
+  if (file.size > 10 * 1024 * 1024) throw Error('BODY_LIMIT');
+  const dataBase64 = await readFileAsBase64(file);
+  const name = file.name || ('paste-' + Date.now() + '.png');
+  const mime = file.type || 'application/octet-stream';
+  if (selected) {
+    const uploaded = await action('uploadAttachment', { sessionId: selected, name, mime, dataBase64 });
+    pendingAttachments.push(uploaded);
+  } else {
+    pendingAttachments.push({ name, mime, size: file.size, dataBase64 });
+  }
+  renderPendingAttachments();
+  controls();
+}
 
 function rememberInput() {
   const key = keyFor(), old = draftAt(key);
-  // A creation response can be lost. Keep its original id and title when the draft changes.
-  saveDraft(key,{text:$('draft').value, ...(old.createId ? {createId:old.createId,title:old.title} : {}),
-    ...(old.text === $('draft').value && old.requestId ? {requestId:old.requestId} : {})});
+  saveDraft(key, { text: $('draft').value, ...(old.createId ? { createId: old.createId, title: old.title } : {}),
+    ...(old.text === $('draft').value && old.requestId ? { requestId: old.requestId } : {}) });
   controls();
 }
 function newTitle(text) {
-  const first = text.trim().split(/\r?\n/,1)[0].replace(/\s+/g,' ');
+  const first = text.trim().split(/\r?\n/, 1)[0].replace(/\s+/g, ' ');
   const chars = Array.from(first);
-  return chars.length > 32 ? chars.slice(0,31).join('') + '…' : first;
+  return chars.length > 32 ? chars.slice(0, 31).join('') + '…' : first;
 }
 async function sendMessage() {
-  const p = project(), originalKey = keyFor(), text = $('draft').value;
+  const p = project(), originalKey = keyFor();
+  const rawText = $('draft').value;
+  const text = rawText.trim() ? rawText : (pendingAttachments.length ? '请查看附件。' : '');
   const entry = draftAt(originalKey);
   if (!p || !originalKey || !text.trim()) return;
-  const requestId = entry.text === text && entry.requestId || crypto.randomUUID();
+  const requestId = entry.text === rawText && entry.requestId || crypto.randomUUID();
   let sessionId = selected;
   if (!sessionId) {
     if (!isLocal(p)) throw Error('请在桌面客户端新建对话。');
     const title = entry.title || newTitle(text), createId = entry.createId || crypto.randomUUID();
-    saveDraft(originalKey,{text,requestId,title,createId});
-    const s = await action('create',{requestId:createId,title,workspaceId:p.id});
+    saveDraft(originalKey, { text: rawText, requestId, title, createId });
+    const options = {};
+    if (pendingModel) options.model = pendingModel;
+    if (pendingEffort) options.effort = pendingEffort;
+    const s = await action('create', { requestId: createId, title, workspaceId: p.id, ...(Object.keys(options).length ? { options } : {}) });
     if (s.workspaceId !== p.id || s.deviceId !== state.deviceId) throw Error('会话绑定设备不一致。');
-    state.sessions = [s,...state.sessions.filter(t => t.id !== s.id)];
+    state.sessions = [s, ...state.sessions.filter(t => t.id !== s.id)];
     sessionId = s.id;
-    saveDraft(keyFor(sessionId),{text,requestId});
+    saveDraft(keyFor(sessionId), { text: rawText, requestId });
     sessionStorage.removeItem(originalKey);
-    select(sessionId); render();
-  } else saveDraft(originalKey,{text,requestId});
-  await action('send',{sessionId,requestId,text});
+    selected = sessionId;
+    groups.set(s.workspaceId, true);
+    render();
+  } else saveDraft(originalKey, { text: rawText, requestId });
+
+  const attIds = [];
+  for (let i = 0; i < pendingAttachments.length; i++) {
+    const att = pendingAttachments[i];
+    if (att.id) attIds.push(att.id);
+    else {
+      const uploaded = await action('uploadAttachment', { sessionId, name: att.name, mime: att.mime, dataBase64: att.dataBase64 });
+      pendingAttachments[i] = uploaded;
+      attIds.push(uploaded.id);
+    }
+  }
+  await action('send', { sessionId, requestId, text, ...(attIds.length ? { attachments: attIds } : {}) });
   sessionStorage.removeItem(keyFor(sessionId));
+  pendingAttachments = [];
+  renderPendingAttachments();
   if (selected === sessionId) $('draft').value = '';
   $('timeline').scrollTop = $('timeline').scrollHeight;
 }
@@ -562,9 +851,9 @@ function requestSend() {
   if (busy || $('send').disabled || $('send').hidden) return;
   const p = project();
   if (isLocal(p) && (p.localMode ?? p.mode) === 'revoked') {
-    consent = {key:keyFor(), project:p.id, user:state.user.id};
+    consent = { key: keyFor(), project: p.id, user: state.user.id };
     const allowed = (p.localModes ?? Object.keys(modes)).filter(mode => mode !== 'revoked');
-    $('consent-mode').replaceChildren(...allowed.map(mode => new Option(modes[mode][0],mode)));
+    $('consent-mode').replaceChildren(...allowed.map(mode => new Option(modes[mode][0], mode)));
     $('consent-mode').value = 'read';
     updateConsent();
     showDialog('consent-dialog');
@@ -581,7 +870,7 @@ async function allowAndSend() {
   if (!$('consent-dialog').open || !approved || approved.key !== keyFor() || approved.project !== p?.id || approved.user !== state.user.id || !isLocal(p)) throw Error('目标会话已改变，请重新发送。');
   const currentMode = p.localMode ?? p.mode;
   const requested = currentMode === 'revoked' ? $('consent-mode').value : currentMode;
-  if (currentMode === 'revoked') await action('permission',{workspaceId:p.id,mode:requested});
+  if (currentMode === 'revoked') await action('permission', { workspaceId: p.id, mode: requested });
   const end = Date.now() + 18000;
   do {
     const next = await action('state');
@@ -593,7 +882,7 @@ async function allowAndSend() {
       await sendMessage();
       return;
     }
-    await new Promise(resolve => setTimeout(resolve,350));
+    await new Promise(resolve => setTimeout(resolve, 350));
   } while (Date.now() < end);
   throw Error('授权已保存，设备仍在同步。草稿已保留，请稍后发送。');
 }
@@ -614,7 +903,7 @@ async function savePassword() {
   if (!password.trim()) throw Error('INVALID_NEW_PASSWORD');
   if (password === current) throw Error('PASSWORD_UNCHANGED');
   try {
-    await action('changePassword',{current,password});
+    await action('changePassword', { current, password });
   } catch (error) {
     if (error.message.includes('LOGIN_REQUIRED')) loginView();
     if (error.message.includes('INCORRECT_CURRENT_PASSWORD')) {
@@ -630,8 +919,9 @@ async function savePassword() {
 }
 function showAdmin() {
   if (!state?.user.isAdmin || busy) return;
-  activeDialog()?.close(); drawer(false); tab = 'admin'; sidebarKey = null; render(); void refresh(true);
+  activeDialog()?.close(); drawer(false); stopStream(); tab = 'admin'; sidebarKey = null; render(); void refresh(true);
 }
+
 $('login').onsubmit = e => {
   e.preventDefault();
   if (busy) return;
@@ -641,10 +931,9 @@ $('login').onsubmit = e => {
   label.textContent = '登录中…';
   void perform(async () => {
     generation++;
-    await action('login',{username:$('username').value.trim(), password});
-    loginView(undefined,'connecting');
-  })
-    .finally(() => { label.textContent = '登录'; });
+    await action('login', { username: $('username').value.trim(), password });
+    loginView(undefined, 'connecting');
+  }).finally(() => { label.textContent = '登录'; });
 };
 $('logout').onclick = $('forget-login').onclick = () => perform(async () => {
   generation++;
@@ -658,7 +947,7 @@ $('change-password').onclick = () => {
   showDialog('password-dialog');
   $('current-password').focus();
 };
-$('password-form').onsubmit = e => { e.preventDefault(); void perform(savePassword, {refreshState:false}); };
+$('password-form').onsubmit = e => { e.preventDefault(); void perform(savePassword, { refreshState: false }); };
 $('password-form').oninput = () => { $('password-error').textContent = ''; };
 $('cancel-password').onclick = () => showAccount();
 $('password-dialog').addEventListener('close', () => {
@@ -683,7 +972,7 @@ $('search-input').oninput = searchResults;
 $('search-dialog').onkeydown = e => {
   const results = [...$('search-results').querySelectorAll('button')];
   if (e.key === 'Enter' && e.target === $('search-input') && results.length) { e.preventDefault(); results[0].click(); }
-  if (!['ArrowDown','ArrowUp'].includes(e.key) || !results.length) return;
+  if (!['ArrowDown', 'ArrowUp'].includes(e.key) || !results.length) return;
   e.preventDefault();
   const index = results.indexOf(document.activeElement);
   const focusedSearch = index < 0 ? (e.key === 'ArrowDown' ? 0 : results.length - 1) :
@@ -694,8 +983,90 @@ $('context').onclick = () => openProject(false);
 $('settings-project').onclick = () => openProject(true);
 $('project').onchange = () => showProject($('project').value);
 $('choose-workspace').onclick = () => perform(chooseProject);
+$('remove-workspace').onclick = () => perform(removeCurrentWorkspace);
+$('open-review').onclick = () => perform(() => openReviewDialog($('project').value), { refreshState: false });
+$('review-banner-btn').onclick = () => { const p = project(); if (p) void perform(() => openReviewDialog(p.id), { refreshState: false }); };
+$('review-revoke-btn').onclick = () => perform(async () => {
+  if (!reviewWorkspaceId) return;
+  await action('permission', { workspaceId: reviewWorkspaceId, mode: 'revoked' });
+  await refreshReviewList();
+});
+$('close-review').onclick = () => $('review-dialog').close();
 $('mode').onchange = updateMode;
 $('apply').onclick = () => perform(saveProject);
+$('load-older').onclick = () => perform(loadOlderHistory, { refreshState: false });
+
+$('rename-session').onclick = () => {
+  const s = thread();
+  if (!s || busy) return;
+  $('rename-input').value = s.title;
+  showDialog('rename-dialog');
+  $('rename-input').focus();
+  $('rename-input').select();
+};
+$('cancel-rename').onclick = () => $('rename-dialog').close();
+$('rename-form').onsubmit = e => {
+  e.preventDefault();
+  const title = $('rename-input').value.trim();
+  if (!title || !selected) return;
+  void perform(async () => {
+    await action('renameSession', { sessionId: selected, title });
+    $('rename-dialog').close();
+  });
+};
+$('delete-session').onclick = () => {
+  const s = thread();
+  if (!s || busy) return;
+  if (!confirm(`确定删除会话「${s.title}」？此操作不可撤销。`)) return;
+  void perform(async () => {
+    const id = s.id;
+    await action('deleteSession', { sessionId: id });
+    select(null);
+  });
+};
+
+$('model-select').onchange = () => {
+  const val = $('model-select').value || null;
+  if (selected) void perform(() => action('setSessionOptions', { sessionId: selected, model: val }));
+  else { pendingModel = val; renderModelControls(); }
+};
+$('effort-select').onchange = () => {
+  const val = $('effort-select').value || null;
+  if (selected) void perform(() => action('setSessionOptions', { sessionId: selected, effort: val }));
+  else { pendingEffort = val; renderModelControls(); }
+};
+
+$('attach-file').onclick = () => {
+  if (busy) return;
+  if (native && selected) {
+    void perform(async () => {
+      const uploaded = await action('chooseAttachment', { sessionId: selected });
+      if (uploaded) { pendingAttachments.push(uploaded); renderPendingAttachments(); }
+    }, { refreshState: false });
+  } else {
+    $('file-input').value = '';
+    $('file-input').click();
+  }
+};
+$('file-input').onchange = () => {
+  const file = $('file-input').files?.[0];
+  if (file) void perform(() => attachLocalFile(file), { refreshState: false });
+};
+$('draft').addEventListener('paste', e => {
+  const items = e.clipboardData?.items;
+  if (!items) return;
+  for (const item of items) {
+    if (item.kind === 'file') {
+      const file = item.getAsFile();
+      if (file) {
+        e.preventDefault();
+        void perform(() => attachLocalFile(file), { refreshState: false });
+        return;
+      }
+    }
+  }
+});
+
 $('compose').onsubmit = e => { e.preventDefault(); requestSend(); };
 $('draft').oninput = rememberInput;
 $('draft').onkeydown = e => {
@@ -707,12 +1078,11 @@ $('consent-mode').onchange = updateConsent;
 $('allow-send').onclick = () => perform(allowAndSend);
 $('cancel-consent').onclick = () => $('consent-dialog').close();
 $('consent-dialog').addEventListener('close', () => {
-  // Chromium queues the close event. A new send can already have opened a fresh prompt.
   if (!$('consent-dialog').open) consent = null;
 });
 $('stop').onclick = () => {
   const turn = thread()?.activeTurn;
-  if (turn) void perform(() => action('stop',{sessionId:selected,turnId:turn.id,requestId:crypto.randomUUID()}));
+  if (turn) void perform(() => action('stop', { sessionId: selected, turnId: turn.id, requestId: crypto.randomUUID() }));
 };
 function example(text) {
   if (busy) return;
@@ -737,6 +1107,6 @@ document.addEventListener('keydown', e => {
   if (e.key.toLowerCase() === 'k') { e.preventDefault(); if (!activeDialog()) openSearch(); }
   if (e.key.toLowerCase() === 'n' && native && !activeDialog()) { e.preventDefault(); openThread(null); }
 });
-loginView(undefined,Boolean(native)); void refresh();
+loginView(undefined, Boolean(native)); void refresh();
 setInterval(() => { if (!busy && (restoring || (state && !document.hidden))) void refresh(); }, 1500);
 document.addEventListener('visibilitychange', () => { if (!document.hidden && !busy) void refresh(); });

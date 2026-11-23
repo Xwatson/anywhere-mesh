@@ -16,8 +16,8 @@ export class Rpc extends EventEmitter {
   send(frame) {
     if (this.ws.readyState !== 1) throw new ProtocolError('DISCONNECTED');
     const payload = JSON.stringify({ v: VERSION, epoch: this.epoch, ...frame });
-    if (Buffer.byteLength(payload) > 65536) throw new ProtocolError('FRAME_TOO_LARGE');
-    if (this.ws.bufferedAmount > 131072) { this.ws.terminate(); throw new ProtocolError('BACKPRESSURE'); }
+    if (Buffer.byteLength(payload) > 524288) throw new ProtocolError('FRAME_TOO_LARGE');
+    if (this.ws.bufferedAmount > 1048576) { this.ws.terminate(); throw new ProtocolError('BACKPRESSURE'); }
     this.ws.send(payload);
   }
   request(method, params) {
@@ -34,7 +34,7 @@ export class Rpc extends EventEmitter {
   async receive(data, binary) {
     let frame;
     try {
-      if (binary || data.length > 65536) throw new Error('INVALID_FRAME');
+      if (binary || data.length > 524288) throw new Error('INVALID_FRAME');
       frame = JSON.parse(data.toString());
       exact(frame, ['v', 'epoch', 'type', 'requestId', 'method', 'params', 'result', 'error']);
       if (frame.v !== VERSION) throw new Error('PROTOCOL_VERSION');

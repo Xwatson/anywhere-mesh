@@ -88,9 +88,10 @@ if (single) app.whenReady().then(async () => {
   child.stderr.on('data', chunk => process.stderr.write(chunk));
   const lines = createInterface({ input: child.stdout });
   lines.on('line', line => {
-    if (line.length > 256 * 1024) { child.stdin.end(); return; }
+    if (line.length > 2 * 1024 * 1024) { child.stdin.end(); return; }
     let msg; try { msg = JSON.parse(line); } catch { child.stdin.end(); return; }
     if (msg.event === 'ready') backendReady = true;
+    if (msg.event === 'stream' && win && !win.isDestroyed()) { win.webContents.send('desktop:event', msg.data); return; }
     if (!msg.id) return;
     const waiter = pending.get(msg.id); if (!waiter) return;
     pending.delete(msg.id); clearTimeout(waiter.timer);
@@ -134,6 +135,11 @@ if (single) app.whenReady().then(async () => {
   ipcMain.handle('desktop:request', async (event, method, params) => {
     if (!trustedSender(event, win?.webContents)) throw Error('UNTRUSTED_DESKTOP_SENDER');
     validatePublic(method, params);
+    if (windowsDevice && method === 'chooseAttachment') {
+      const picked = await dialog.showOpenDialog(win, { title: '选择附件', buttonLabel: '添加附件',
+        properties: ['openFile', 'dontAddToRecent'] });
+      return picked.canceled || !picked.filePaths[0] ? null : request('uploadAttachmentFile', { sessionId: params.sessionId, path: picked.filePaths[0] });
+    }
     if (windowsDevice && method === 'chooseWorkspace') {
       if (pickingWorkspace) return null;
       pickingWorkspace=true;
