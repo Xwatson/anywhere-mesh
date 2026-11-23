@@ -1,9 +1,18 @@
 node_modules/
 dist/
+build/
 .env
 *.log
 *.tsbuildinfo
-
-# Native Linux helper tests
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.db
+*.db-wal
+*.db-shm
+*.exe
+*.tar.gz
+*.zip
 __pycache__/
 *.py[cod]
+.DS_Store

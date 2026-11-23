@@ -1,26 +1,24 @@
 {
-  "name": "anywhere-coding",
-  "version": "0.1.0",
+  "name": "anywhere-crossborder",
+  "version": "0.4.2",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
   "workspaces": [
-    "server",
-    "web",
-    "experimental/execution"
+    "experimental/execution",
+    "experimental/workspace"
   ],
   "scripts": {
-    "dev": "npm run dev -w server & npm run dev -w web",
-    "build": "npm run build -w web && npm run build -w server",
-    "start": "npm run start -w server",
-    "user": "npm run user -w server --",
-    "network-helper": "node native/linux/network-helper/cli.mjs",
-    "test:network-helper": "python3 -m unittest discover -s native/linux/network-helper -v && node --test native/linux/network-helper/test_client.mjs",
-    "test:network-helper:integration": "node native/linux/network-helper/lab/integration.mjs",
-    "test:execution": "npm run test -w @anywhere/execution-lab",
-    "test:execution:integration": "node experimental/execution/lab/integration.mjs"
+    "test": "node --test experimental/**/*.test.mjs",
+    "build:wan": "bash experimental/account-devices/wan/build.sh"
   },
-  "allowScripts": {
-    "node-pty@1.1.0": true,
-    "esbuild@0.28.2": true
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "ws": "^8.22.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
   }
 }

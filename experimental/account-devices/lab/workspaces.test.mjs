@@ -8,8 +8,8 @@ import test from 'node:test';
 test('live folder registration is idempotent and bound to an authenticated device',async () => {
   const dir=mkdtempSync(join(tmpdir(),'anywhere-workspaces-'));
   process.env.DATA_DIR=dir;
-  const {createUser}=await import('../../../server/dist/auth.js');
-  const {db}=await import('../../../server/dist/db.js');
+  const {createUser}=await import('../auth.mjs');
+  const {db}=await import('../auth-db.mjs');
   const {login,logout,registerWorkspace,workspaces}=await import('../directory.mjs');
   try {
     const account={username:'member',password:'test password'};

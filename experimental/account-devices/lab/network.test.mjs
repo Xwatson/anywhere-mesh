@@ -11,8 +11,8 @@ test('only active native logins receive separate, revocable network leases', asy
   process.env.DATA_DIR = dir;
   const {NetworkLeases} = await import('../network-leases.mjs');
   const directory = await import('../directory.mjs');
-  const {createUser} = await import('../../../server/dist/auth.js');
-  const {db} = await import('../../../server/dist/db.js');
+  const {createUser} = await import('../auth.mjs');
+  const {db} = await import('../auth-db.mjs');
   try {
     const username = 'member', password = 'test password';
     createUser(username,password,false);

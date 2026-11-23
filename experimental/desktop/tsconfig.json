@@ -1,5 +1,0 @@
-{
-  "extends": "../../web/tsconfig.json",
-  "include": ["ui"],
-  "compilerOptions": { "types": ["vite/client"] }
-}

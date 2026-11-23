@@ -1,59 +1,33 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { createInterface } from 'node:readline';
-import type { Readable, Writable } from 'node:stream';
-import { config } from '../config.js';
 
 const require = createRequire(import.meta.url);
 const TIMEOUT_MS = 30_000;
 
-type Params = Record<string, unknown>;
-type RequestId = string | number;
-
-export interface CodexAppServerOptions {
-  /** Stop the process after this long without calls; 0 keeps it until stop(). */
-  idleMs?: number;
-  /** Cold workers may need time to refresh the model catalog during initialization. */
-  initializeTimeoutMs?: number;
-  env?: NodeJS.ProcessEnv;
-  /** Config overrides for this process only, as for `codex -c key=value`. */
-  config?: string[];
-  /** Attach to an already launched app-server, e.g. under a separate OS login. */
-  transport?: { input: Readable; output: Writable };
-  experimentalApi?: boolean;
-  /**
-   * Handles requests Codex sends to us (approvals, questions). The resolved value is
-   * the JSON-RPC result; a rejection is returned as a JSON-RPC error.
-   */
-  onRequest?: (method: string, params: Params, id: RequestId) => Promise<unknown>;
-  /** The process exited on its own (crash or kill from outside). */
-  onExit?: (err: Error) => void;
-}
-
 /**
- * JSON-RPC client for `codex app-server` (stdio, one JSON message per line).
- * The process is started on demand.
+ * JSON-RPC client for `codex app-server` (stdio or attached Duplex transport, one JSON message per line).
  */
 export class CodexAppServer {
-  private proc: ChildProcessWithoutNullStreams | null = null;
-  private output: Writable | null = null;
-  private disconnect?: () => void;
-  private ready: Promise<void> | null = null;
-  private nextId = 0;
-  private waiters = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
-  private idleTimer: NodeJS.Timeout | null = null;
-  private holds = 0;
-  private notificationListeners = new Set<(method: string, params: Params) => void>();
+  constructor(opts = {}) {
+    this.opts = opts;
+    this.proc = null;
+    this.output = null;
+    this.disconnect = undefined;
+    this.ready = null;
+    this.nextId = 0;
+    this.waiters = new Map();
+    this.idleTimer = null;
+    this.holds = 0;
+    this.notificationListeners = new Set();
+  }
 
-  constructor(private opts: CodexAppServerOptions = {}) {}
-
-  onNotification(fn: (method: string, params: Params) => void): () => void {
+  onNotification(fn) {
     this.notificationListeners.add(fn);
     return () => this.notificationListeners.delete(fn);
   }
 
-  /** Keeps the process alive past the idle timeout, for long operations such as compaction. */
-  hold(): () => void {
+  hold() {
     this.holds++;
     let released = false;
     return () => {
@@ -64,39 +38,39 @@ export class CodexAppServer {
     };
   }
 
-  get running(): boolean {
+  get running() {
     return this.output !== null;
   }
 
-  async call<T>(method: string, params: unknown): Promise<T> {
+  async call(method, params) {
     await this.start();
     this.touch();
-    return this.request<T>(method, params);
+    return this.request(method, params);
   }
 
-  private command(): [string, string[]] {
-    const args = ['app-server', ...(this.opts.config ?? []).flatMap((c) => ['-c', c])];
-    if (config.codexPath) return [config.codexPath, args];
-    // The bundled CLI that @openai/codex-sdk depends on; works without codex on PATH.
+  command() {
+    const args = ['app-server', ...(this.opts.config ?? []).flatMap(c => ['-c', c])];
+    const codexPath = this.opts.codexPath || process.env.CODEX_PATH;
+    if (codexPath) return [codexPath, args];
     return [process.execPath, [require.resolve('@openai/codex/bin/codex.js'), ...args]];
   }
 
-  private start(): Promise<void> {
+  start() {
     if (this.ready) return this.ready;
     let transport = this.opts.transport;
     if (!transport) {
       const [cmd, args] = this.command();
       this.proc = spawn(cmd, args, { stdio: ['pipe', 'pipe', 'pipe'], env: this.opts.env ?? process.env });
       this.proc.stderr.resume();
-      this.proc.stdin.on('error', () => {}); // A buffered write can fail after the child exits.
+      this.proc.stdin.on('error', () => {});
       transport = { input: this.proc.stdout, output: this.proc.stdin };
     }
     const proc = this.proc;
     const { input, output } = transport;
     this.output = output;
     const lines = createInterface({ input });
-    lines.on('line', (line) => this.onLine(line));
-    const fail = (err: Error) => {
+    lines.on('line', line => this.onLine(line));
+    const fail = err => {
       if (this.disconnect !== detach) return;
       this.reset(err);
       proc?.kill();
@@ -119,7 +93,7 @@ export class CodexAppServer {
     proc?.once('exit', ended);
 
     this.ready = this.request('initialize', {
-      clientInfo: { name: 'anywhere-coding', title: 'Anywhere Coding', version: '0.1.0' },
+      clientInfo: { name: 'anywhere-coding-crossborder', title: 'Anywhere Coding Crossborder', version: '0.4.2' },
       capabilities: this.opts.experimentalApi ? { experimentalApi: true } : null,
     }).then(() => {
       this.write({ jsonrpc: '2.0', method: 'initialized' });
@@ -128,14 +102,9 @@ export class CodexAppServer {
     return this.ready;
   }
 
-  private onLine(line: string) {
-    let msg: { id?: RequestId; method?: string; params?: Params; result?: unknown; error?: { message?: string } };
-    try {
-      msg = JSON.parse(line);
-    } catch {
-      return;
-    }
-    // A request from Codex: it has both a method and an id, and waits for our answer.
+  onLine(line) {
+    let msg;
+    try { msg = JSON.parse(line); } catch { return; }
     if (msg.method && msg.id !== undefined) {
       void this.answer(msg.id, msg.method, msg.params ?? {});
       return;
@@ -152,7 +121,7 @@ export class CodexAppServer {
     else w.resolve(msg.result);
   }
 
-  private async answer(id: RequestId, method: string, params: Params) {
+  async answer(id, method, params) {
     const connection = this.disconnect;
     try {
       if (!this.opts.onRequest) throw new Error(`unsupported request: ${method}`);
@@ -160,39 +129,39 @@ export class CodexAppServer {
       if (this.disconnect === connection) this.write({ jsonrpc: '2.0', id, result });
     } catch (e) {
       if (this.disconnect === connection) {
-        this.write({ jsonrpc: '2.0', id, error: { code: -32601, message: (e as Error).message } });
+        this.write({ jsonrpc: '2.0', id, error: { code: -32601, message: e.message } });
       }
     }
   }
 
-  private request<T>(method: string, params: unknown): Promise<T> {
+  request(method, params) {
     if (!this.output) return Promise.reject(new Error('codex app-server 已断开'));
     const id = ++this.nextId;
-    return new Promise<T>((resolve, reject) => {
+    return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.waiters.delete(id);
         reject(new Error(`codex app-server 请求超时: ${method}`));
       }, method === 'initialize' ? this.opts.initializeTimeoutMs ?? TIMEOUT_MS : TIMEOUT_MS);
       this.waiters.set(id, {
-        resolve: (v) => (clearTimeout(timer), resolve(v as T)),
-        reject: (e) => (clearTimeout(timer), reject(e)),
+        resolve: v => (clearTimeout(timer), resolve(v)),
+        reject: e => (clearTimeout(timer), reject(e)),
       });
       this.write({ jsonrpc: '2.0', id, method, params });
     });
   }
 
-  private write(msg: unknown) {
+  write(msg) {
     this.output?.write(JSON.stringify(msg) + '\n');
   }
 
-  private touch() {
+  touch() {
     const idleMs = this.opts.idleMs ?? 0;
     if (this.idleTimer) clearTimeout(this.idleTimer);
     if (!idleMs) return;
     this.idleTimer = setTimeout(() => (this.holds > 0 ? this.touch() : this.stop()), idleMs);
   }
 
-  private reset(err: Error) {
+  reset(err) {
     if (this.idleTimer) clearTimeout(this.idleTimer);
     this.disconnect?.();
     this.disconnect = undefined;
@@ -209,6 +178,3 @@ export class CodexAppServer {
     p?.kill();
   }
 }
-
-/** Shared instance for read-only queries: thread history, rate limits, model list. */
-export const codexAppServer = new CodexAppServer({ idleMs: 2 * 60 * 1000 });

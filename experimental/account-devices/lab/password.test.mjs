@@ -9,8 +9,8 @@ test('changing a password keeps only the initiating login for that account', asy
   const dir = mkdtempSync(join(tmpdir(),'anywhere-password-'));
   process.env.DATA_DIR = dir;
   const directory = await import('../directory.mjs');
-  const {createUser} = await import('../../../server/dist/auth.js');
-  const {db} = await import('../../../server/dist/db.js');
+  const {createUser} = await import('../auth.mjs');
+  const {db} = await import('../auth-db.mjs');
   try {
     const previous = 'first password', next = ' 新的密码 123 ';
     createUser('member',previous,false);

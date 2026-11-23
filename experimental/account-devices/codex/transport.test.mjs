@@ -11,7 +11,7 @@ import test from 'node:test';
 const dir = await mkdtemp(join(tmpdir(), 'codex-rpc-test-'));
 process.env.DATA_DIR = dir;
 process.env.CODEX_PATH = join(dir, 'stdio');
-const { CodexAppServer } = await import('../../../server/src/external/codexAppServer.ts');
+const { CodexAppServer } = await import('../../session-host/codex-app-server.mjs');
 test.after(() => rm(dir, { recursive: true, force: true }));
 
 test('app-server still launches the configured CLI using the stable handshake', async t => {

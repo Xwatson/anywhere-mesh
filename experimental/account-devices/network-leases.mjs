@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
-import { db } from '../../server/dist/db.js';
+import { db } from './auth-db.mjs';
 import { authenticate } from './directory.mjs';
 
 const run = promisify(execFile);

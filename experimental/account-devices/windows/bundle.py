@@ -10,9 +10,11 @@ import zipfile
 ws_archive, dc_archive, output = map(Path, sys.argv[1:])
 root = Path(__file__).resolve().parents[3]
 modules = root / "experimental"
-ws = json.loads((root / "package-lock.json").read_text())["packages"]["node_modules/ws"]
+WS_INTEGRITY = "sha512-Ydggc987+RO0AnWtZ/7Wq9FtNvcrL1b/RO0ud9mWjUPgDrsAAwQSF51sm2hm1XofbU/4jkpGEsLFsZZxU+1DOg=="
+lock = root / "package-lock.json"
+ws_integrity = json.loads(lock.read_text())["packages"]["node_modules/ws"]["integrity"] if lock.exists() else WS_INTEGRITY
 vendor = json.loads((modules / "desktop-commander/vendor/provenance.json").read_text())
-if "sha512-" + base64.b64encode(hashlib.sha512(ws_archive.read_bytes()).digest()).decode() != ws["integrity"]:
+if "sha512-" + base64.b64encode(hashlib.sha512(ws_archive.read_bytes()).digest()).decode() != ws_integrity:
     raise SystemExit("ws archive checksum mismatch")
 if hashlib.sha256(dc_archive.read_bytes()).hexdigest() != vendor["sha256"]:
     raise SystemExit("Desktop Commander archive checksum mismatch")

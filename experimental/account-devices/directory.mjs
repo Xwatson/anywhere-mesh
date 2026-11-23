@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { db } from '../../server/dist/db.js';
+import { db } from './auth-db.mjs';
 import { checkCredentials, checkPassword, createAuthSession, destroyAuthSession, isThrottled, isThrottledKey,
-  passwordProblem, recordFailure, recordFailureKey, setPassword, userFromToken } from '../../server/dist/auth.js';
+  passwordProblem, recordFailure, recordFailureKey, setPassword, userFromToken } from './auth.mjs';
 import { fields, text, uuid } from '../session-host/store.mjs';
 import contract from './contract.cjs';
 

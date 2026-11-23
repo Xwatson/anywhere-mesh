@@ -3,7 +3,7 @@ import { createConnection } from 'node:net';
 import { once } from 'node:events';
 import { extname } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { CodexAppServer } from '../../server/src/external/codexAppServer.ts';
+import { CodexAppServer } from './codex-app-server.mjs';
 import { CATALOG, listTools, normalize } from '../workspace/catalog.mjs';
 import { assertIdentity } from '../execution/grants.mjs';
 import { hash, string } from '../execution/protocol.mjs';

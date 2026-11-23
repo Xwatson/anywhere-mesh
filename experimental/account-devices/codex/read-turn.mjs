@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Client } from '../../workspace/node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js';
 import { StdioClientTransport } from '../../workspace/node_modules/@modelcontextprotocol/sdk/dist/esm/client/stdio.js';
-import { CodexAppServer } from '../../../server/src/external/codexAppServer.ts';
+import { CodexAppServer } from '../../session-host/codex-app-server.mjs';
 import { control } from '../../execution/control.mjs';
 import { canonical } from '../../execution/protocol.mjs';
 import { SessionStore, uuid } from '../../session-host/store.mjs';

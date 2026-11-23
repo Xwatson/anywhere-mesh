@@ -68,7 +68,7 @@ if ca.count(b"-----BEGIN CERTIFICATE-----") != 1 or b"PRIVATE KEY" in ca:
     raise SystemExit("Expected a public deployment CA certificate")
 (tools / "ca.crt").write_bytes(ca)
 release.update(ca)
-with Image.open(src / "web/public/icons/icon-512.png") as im:
+with Image.open(Path(__file__).with_name("icon-512.png")) as im:
     im.convert("RGBA").save(resources / "Anywhere.ico", sizes=[(16,16),(32,32),(48,48),(128,128),(256,256)], bitmap_format="bmp")
 release.update((resources / "Anywhere.ico").read_bytes())
 shutil.copyfile(Path(__file__).with_name("setup.nsi"),dest / "setup.nsi")

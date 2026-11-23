@@ -9,8 +9,8 @@ if (!isAbsolute(config.stateDir) || process.env.DATA_DIR !== join(config.stateDi
   throw Error('ISOLATED_AUTH_DATABASE_REQUIRED');
 }
 if (process.argv[3] === '--bootstrap') {
-  const { userCount, createUser, usernameProblem, passwordProblem } = await import('../../../server/dist/auth.js');
-  const { db } = await import('../../../server/dist/db.js');
+  const { userCount, createUser, usernameProblem, passwordProblem } = await import('../auth.mjs');
+  const { db } = await import('../auth-db.mjs');
   if (userCount() === 0) {
     const accounts = JSON.parse(readFileSync(0,'utf8'));
     if (!Array.isArray(accounts) || !accounts.some(a=>a.isAdmin===true)) throw Error('ADMIN_REQUIRED');

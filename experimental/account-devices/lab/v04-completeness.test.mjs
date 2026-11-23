@@ -285,8 +285,8 @@ test('end-to-end v0.4.0: streaming deltas, model/effort, attachments, session CR
   t.after(() => agyServer.close());
 
   process.env.DATA_DIR = authDir;
-  const { createUser } = await import('../../../server/dist/auth.js');
-  const { db } = await import('../../../server/dist/db.js');
+  const { createUser } = await import('../auth.mjs');
+  const { db } = await import('../auth-db.mjs');
   const { startServer } = await import('../host.mjs');
   const { DeviceClient } = await import('../client.mjs');
   const { removeWorkspace } = await import('../directory.mjs');
