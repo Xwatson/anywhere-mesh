@@ -23,7 +23,7 @@ args.reports.mkdir(parents=True,exist_ok=True)
 stage="AppData/Local/AnywhereMesh/staging"
 with tempfile.TemporaryDirectory() as staging:
     inputfile=Path(staging) / ("installed-ui-"+run+".ps1")
-    inputfile.write_text(Path(__file__).with_name("installed-ui.ps1").read_text(),encoding="utf-8-sig")
+    inputfile.write_text(Path(__file__).with_name("installed-ui.ps1").read_text(encoding="utf-8-sig"),encoding="utf-8-sig")
     subprocess.run(["scp","-q",*opts,str(inputfile),args.windows+":"+stage+"/"+inputfile.name],check=True)
 member=next(a for a in json.loads(args.accounts.read_text()) if a["username"]==("lab-other" if args.fresh else "lab-coder"))
 print("Windows interactive verification",run,flush=True)

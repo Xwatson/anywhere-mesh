@@ -32,6 +32,7 @@ function parseArgs(argv) {
     else if (a === '--username') opts.username = argv[++i];
     else if (a === '--password-file') opts.passwordFile = resolve(argv[++i]);
     else if (a === '--password-stdin') opts.passwordStdin = true;
+    else if (a === '--logout') opts.logout = true;
     else if (a === '--direct') opts.direct = true;
     else if (a === '--project') {
       const p = realpathSync(resolve(argv[++i]));
@@ -47,15 +48,15 @@ function parseArgs(argv) {
         '    --ca /path/to/ca.crt --easytier /path/to/easytier-core \\',
         '    [--url https://awc.xbxbe.com] [--state ~/.anywhere-mesh/linux-agent] \\',
         '    [--name "Linux · Host"] [--mode read|edit|execute|revoked] \\',
-        '    [--username user --password-stdin|--password-file /path/pass]',
+        '    [--username user --password-stdin|--password-file /path/pass] [--logout]',
       ].join('\n'));
       process.exit(0);
     }
   }
   if (!opts.ca) throw Error('Missing required --ca /path/to/ca.crt');
-  if (!opts.direct && !opts.easytier) throw Error('Missing required --easytier /path/to/easytier-core (or pass --direct)');
+  if (!opts.logout && !opts.direct && !opts.easytier) throw Error('Missing required --easytier /path/to/easytier-core (or pass --direct)');
   if (!['revoked', 'read', 'edit', 'execute'].includes(opts.mode)) throw Error('Invalid --mode: ' + opts.mode);
-  if (!opts.projects.length) throw Error('At least one --project /path/to/dir is required');
+  if (!opts.logout && !opts.projects.length) throw Error('At least one --project /path/to/dir is required');
   return opts;
 }
 
@@ -131,14 +132,28 @@ class LinuxPeer {
     writeAtomic(join(this.root, 'network-session.toml'), sessionConfig(this.serverUrl, profile, deviceId, this.port));
     const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^ET_/i.test(k)));
     env.ET_CREDENTIAL = profile.credential;
-    const child = spawn(this.easytierPath, ['--config-file', join(this.root, 'network-session.toml')], {
+    const child = spawn(this.easytierPath, [
+      '--config-file', join(this.root, 'network-session.toml'),
+      '--rpc-portal', '127.0.0.1:0',
+      '--console-log-level', 'error',
+    ], {
       cwd: this.root, env, stdio: ['ignore', 'ignore', 'pipe'],
     });
     this.child = child;
     this.credential = profile.credential;
-    child.stderr.on('data', () => {});
-    this.done = new Promise(r => { child.once('close', r); child.once('error', () => {}); })
-      .then(() => { if (this.child === child) this.child = null; });
+    let errTail = '';
+    child.stderr.on('data', chunk => {
+      errTail = (errTail + chunk.toString('utf8')).slice(-1024);
+    });
+    this.done = new Promise(r => {
+      child.once('close', code => {
+        if (code && this.child === child && errTail.trim()) {
+          console.error('[linux-agent] easytier-core exited (' + code + '):', errTail.trim());
+        }
+        r(code);
+      });
+      child.once('error', err => console.error('[linux-agent] easytier-core error:', err.message));
+    }).then(() => { if (this.child === child) this.child = null; });
   }
   async ready(waitMs = 25000) {
     const until = Date.now() + waitMs;
@@ -177,6 +192,10 @@ class LinuxAgentClient extends DeviceClient {
   async authenticate(params) {
     if (this.direct) return super.authenticate(params);
     return this.bootstrap('/api/auth/login', params);
+  }
+  remoteLogout(signed) {
+    if (this.direct) return super.remoteLogout(signed);
+    return this.bootstrap('/api/auth/logout', {}, signed.token);
   }
   connect(signed) {
     if (this.direct || (this.peer.child && this.tunnelReady)) super.connect(signed);
@@ -285,6 +304,12 @@ async function main() {
   };
   process.on('SIGINT', () => void shutdown('SIGINT'));
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
+
+  if (opts.logout) {
+    await client.control('logout');
+    console.log('[linux-agent] Signed out and cleared saved credentials.');
+    return;
+  }
 
   // Restore saved login or authenticate fresh
   let state = await client.control('state');
