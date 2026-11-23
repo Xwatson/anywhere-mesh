@@ -3,6 +3,7 @@ import { db } from '../../server/dist/db.js';
 import { checkCredentials, checkPassword, createAuthSession, destroyAuthSession, isThrottled, isThrottledKey,
   passwordProblem, recordFailure, recordFailureKey, setPassword, userFromToken } from '../../server/dist/auth.js';
 import { fields, text, uuid } from '../session-host/store.mjs';
+import contract from './contract.cjs';
 
 const digest = value => createHash('sha256').update(value).digest('hex');
 
@@ -21,6 +22,11 @@ db.exec(`
     local_id TEXT NOT NULL, label TEXT NOT NULL, UNIQUE(device_id, local_id)
   );
 `);
+const upsertWorkspace = db.prepare(`INSERT INTO mcp_workspaces VALUES(?,?,?,?)
+  ON CONFLICT(device_id,local_id) DO UPDATE SET label=excluded.label
+  RETURNING id, device_id AS deviceId, local_id AS localId, label`);
+
+function validateWorkspace(p) { fields(p,['localId','label']); uuid(p.localId); text(p.label,80); }
 
 export function login(input, ip) {
   const native = Object.hasOwn(input ?? {}, 'installation');
@@ -30,8 +36,8 @@ export function login(input, ip) {
   if (native) {
     if (typeof input.installation !== 'string' || !/^[0-9a-f]{64}$/.test(input.installation)) throw Error('INVALID_INSTALLATION');
     text(input.name, 80);
-    if (!Array.isArray(input.projects) || input.projects.length > 16) throw Error('INVALID_PROJECTS');
-    for (const p of input.projects) { fields(p,['localId','label']); uuid(p.localId); text(p.label,80); }
+    if (!Array.isArray(input.projects) || input.projects.length > contract.workspaceLimit) throw Error('INVALID_PROJECTS');
+    for (const p of input.projects) validateWorkspace(p);
     if (new Set(input.projects.map(p => p.localId)).size !== input.projects.length) throw Error('INVALID_PROJECTS');
   }
   db.exec('BEGIN IMMEDIATE');
@@ -46,9 +52,7 @@ export function login(input, ip) {
       deviceId = prior?.id ?? randomUUID();
       db.prepare(`INSERT INTO mcp_devices(id,user_id,installation_hash,name) VALUES(?,?,?,?)
         ON CONFLICT(user_id,installation_hash) DO UPDATE SET name=excluded.name`).run(deviceId,user.id,hash,input.name);
-      const upsert = db.prepare(`INSERT INTO mcp_workspaces VALUES(?,?,?,?)
-        ON CONFLICT(device_id,local_id) DO UPDATE SET label=excluded.label`);
-      for (const p of input.projects) upsert.run(randomUUID(),deviceId,p.localId,p.label);
+      for (const p of input.projects) upsertWorkspace.get(randomUUID(),deviceId,p.localId,p.label);
       invalidateDevice(deviceId);
     }
     const token = createAuthSession(user.id);
@@ -68,6 +72,22 @@ export function authenticate(token) {
 }
 
 export function logout(token) { destroyAuthSession(token); }
+
+export function registerWorkspace(token, input) {
+  validateWorkspace(input);
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const {deviceId}=authenticate(token);
+    if (!deviceId) throw Error('FORBIDDEN');
+    const existing=db.prepare('SELECT id FROM mcp_workspaces WHERE device_id=? AND local_id=?').get(deviceId,input.localId);
+    if (!existing && db.prepare('SELECT COUNT(*) AS total FROM mcp_workspaces WHERE device_id=?').get(deviceId).total>=contract.workspaceLimit) {
+      throw Error('WORKSPACE_LIMIT');
+    }
+    const project=upsertWorkspace.get(randomUUID(),deviceId,input.localId,input.label);
+    db.exec('COMMIT');
+    return project;
+  } catch(error) { db.exec('ROLLBACK'); throw error; }
+}
 
 export function changePassword(token, input) {
   fields(input, ['current','password']);

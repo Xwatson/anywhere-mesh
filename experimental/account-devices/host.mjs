@@ -126,6 +126,12 @@ export async function startServer(config) {
       if (!network) throw Error('NETWORK_ENROLLMENT_UNAVAILABLE');
       json(res,200,await network.issue(token)); return;
     }
+    if (req.method==='POST' && path==='/api/device/workspaces') {
+      if (!deviceId || !req.headers.authorization?.startsWith('Bearer ')) throw Error('FORBIDDEN');
+      const project=directory.registerWorkspace(token,await body(req));
+      await openProject(user.id,project);
+      json(res,200,project); return;
+    }
     if (req.method==='POST' && path==='/api/auth/password') {
       const userId=directory.changePassword(token,await body(req));
       for (const [id,peer] of online) {

@@ -107,6 +107,7 @@
     </section>
     <section id="management" hidden>
       <div class="management-head"><h1>设备管理</h1><button id="back-chat" class="secondary">返回对话</button></div>
+      <p id="fleet-error" class="error-banner" role="status" hidden>暂时无法同步设备管理列表，稍后会自动重试。</p>
       <div id="fleet"></div>
     </section>
   </section>
@@ -151,11 +152,12 @@
   <div class="dialog-body">
     <label for="project" id="project-caption">本机项目</label><select id="project"></select>
     <p id="project-identity"></p>
+    <p id="project-path" class="muted" hidden></p>
     <div id="grant"><label for="mode">项目权限</label><select id="mode"></select><p id="mode-description" class="muted"></p></div>
     <p id="remote-mode" class="muted" hidden></p>
     <p class="dialog-error inline-error" role="alert"></p>
   </div>
-  <div class="dialog-actions"><button id="apply" class="primary">完成</button></div>
+  <div class="dialog-actions"><button id="choose-workspace" class="secondary" type="button" hidden>选择文件夹…</button><button id="apply" class="primary">完成</button></div>
 </dialog>
 <dialog id="consent-dialog" aria-labelledby="consent-heading">
   <div class="dialog-head"><span class="dialog-symbol"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-lock"></use></svg></span><button class="icon-button dialog-close" type="button" aria-label="关闭"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-close"></use></svg></button></div>

@@ -17,7 +17,7 @@ dest.mkdir(parents=True, exist_ok=True)
 payload = dest / "payload"
 payload.mkdir()
 release = hashlib.sha256()
-version = "0.3.4"
+version = "0.3.5"
 
 def pinned(name, expected):
     archive = args.archives / name

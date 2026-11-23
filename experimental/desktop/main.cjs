@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, ipcMain, protocol, session, net, screen, dialog, nativeTheme } = require('electron');
+const { app, BrowserWindow, ipcMain, protocol, session, net, screen, clipboard, dialog, Menu, nativeTheme } = require('electron');
 const { spawn } = require('node:child_process');
 const { realpathSync, mkdirSync, existsSync, copyFileSync, constants } = require('node:fs');
 const { resolve, sep, extname } = require('node:path');
@@ -17,6 +17,7 @@ const contract = require(resolve(appDir, 'contract.cjs'));
 const validate = contract.internalValidate ?? contract.validate;
 const validatePublic = contract.publicValidate ?? contract.validate;
 let testPickerPath;
+let pickingWorkspace=false;
 
 if (windowsDevice) {
   if (sessionsProfile || deviceSlot) throw Error('WINDOWS_LAB_PROFILE_REQUIRED');
@@ -113,9 +114,35 @@ if (single) app.whenReady().then(async () => {
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', event => event.preventDefault());
   win.webContents.on('will-attach-webview', event => event.preventDefault());
+  if (windowsDevice) win.webContents.on('context-menu', (_event, params) => {
+    const {editFlags, isEditable, selectionText, frame, x, y}=params;
+    if (!isEditable && !selectionText) return;
+    const items=[];
+    if (isEditable) items.push({role:'cut',label:'剪切',enabled:editFlags.canCut});
+    items.push(selectionText ? {
+      label:'复制',enabled:editFlags.canCopy,
+      async click() {
+        // The menu can take focus away from the selected message or input.
+        try {await clipboard.writeText(selectionText);}
+        catch {console.error('Desktop clipboard copy failed');}
+      }
+    } : {role:'copy',label:'复制',enabled:editFlags.canCopy});
+    if (isEditable) items.push({role:'paste',label:'粘贴',enabled:editFlags.canPaste},
+      {role:'selectAll',label:'全选',enabled:editFlags.canSelectAll});
+    Menu.buildFromTemplate(items).popup({window:win,frame:frame??undefined,x,y,sourceType:params.menuSourceType});
+  });
   ipcMain.handle('desktop:request', async (event, method, params) => {
     if (!trustedSender(event, win?.webContents)) throw Error('UNTRUSTED_DESKTOP_SENDER');
     validatePublic(method, params);
+    if (windowsDevice && method === 'chooseWorkspace') {
+      if (pickingWorkspace) return null;
+      pickingWorkspace=true;
+      try {
+        const picked=await dialog.showOpenDialog(win,{title:'选择本机项目文件夹',buttonLabel:'选择文件夹',
+          properties:['openDirectory','dontAddToRecent']});
+        return picked.canceled || !picked.filePaths[0] ? null : request('registerWorkspace',{path:picked.filePaths[0]});
+      } finally { pickingWorkspace=false; }
+    }
     if (sessionsProfile && method === 'chooseWorkspace') {
       const picked = testPickerPath && process.argv.includes('--lab-sessions-smoke') ? { canceled: false, filePaths: [testPickerPath] } :
         await dialog.showOpenDialog(win, { title: '选择本地项目（实验目录）', defaultPath: '/srv/anywhere-lab/desktop-d2/projects',

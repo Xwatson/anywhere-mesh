@@ -56,12 +56,12 @@ function probe(port,ca) {
   });
 }
 export class WindowsPeer {
-  constructor(root,ca,onUnexpectedExit) {
-    this.root = root; this.ca = ca; this.onUnexpectedExit = onUnexpectedExit;
+  constructor(root,ca) {
+    this.root = root; this.ca = ca;
     this.legacy = existsSync(join(root,'windows.toml'));
   }
-  async start(profile,deviceId) {
-    if (this.child && (!profile || this.credential===profile.credential)) return;
+  async start(profile,deviceId,restart=false) {
+    if (!restart && this.child && (!profile || this.credential===profile.credential)) return;
     await this.stop();
     if (this.legacy) {
       this.port = await freePort(31844);
@@ -89,11 +89,11 @@ export class WindowsPeer {
       child.once('close',resolve);
       child.once('error',()=>{});
     }).then(() => {
-      if (this.child===child) { this.child = null; this.onUnexpectedExit(); }
+      if (this.child===child) this.child = null;
     });
   }
-  async ready() {
-    const until = Date.now()+23000;
+  async ready(waitMs=23000) {
+    const until = Date.now()+waitMs;
     do {
       if (!this.child) throw Error('WINDOWS_NETWORK_EXITED');
       if (await probe(this.port,this.ca)) return;

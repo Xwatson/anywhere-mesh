@@ -14,12 +14,12 @@ import { rememberedLogin } from './remembered-login.mjs';
 
 register(); CAPABILITIES.push('workspace.grants.v1','history.archive.v1','review.v1');
 
-export function request(url, tls, method, path, data, token) {
+export function request(url, tls, method, path, data, token, {idleMs=8000,totalMs=10000}={}) {
   const raw=data===undefined ? undefined : JSON.stringify(data);
   // An unconnected socket may never reach its inactivity timeout. Bound the whole request.
-  const deadline=AbortSignal.timeout(10000);
+  const deadline=AbortSignal.timeout(totalMs);
   return new Promise((resolve,reject)=>{
-    const req=https.request(new URL(path,url),{...tls,method,timeout:8000,signal:deadline,headers:{
+    const req=https.request(new URL(path,url),{...tls,method,timeout:idleMs,signal:deadline,headers:{
       'User-Agent':'AnywhereCodingLab/1', ...(token ? {Authorization:'Bearer '+token} : {}), ...(raw ? {'Content-Type':'application/json'} : {})
     }},res=>{
       const chunks=[];let size=0;
@@ -48,6 +48,10 @@ function installation(cfg, identifyRoot) {
     }))};
     writeFileSync(file,JSON.stringify(identity),{flag:'wx',mode:0o600});
   }
+  if(cfg.workspacePicker) {
+    const defaults=new Map(cfg.projects.map(p=>[p.path,p.label]));
+    return {file,secret:identity.secret,projects:identity.projects.map(p=>({...p,label:p.label??defaults.get(p.path)}))};
+  }
   const projects=cfg.projects.map(p=>{
     const known=identity.projects.find(k=>k.path===p.path);
     if(!known || known.inode!==identifyRoot(p.path)) throw Error('WORKSPACE_ROOT_CHANGED');
@@ -68,7 +72,12 @@ export class DeviceClient {
       ...this.tls,headers:{Authorization:'Bearer '+this.signed.token},handshakeTimeout:6000,maxPayload:65536,perMessageDeflate:false
     });
   }
-  local(id) { const p=this.locals.get(id);if (!p) throw Error('ONLY_ON_BOUND_DEVICE');return p; }
+  local(id) {
+    const p=this.locals.get(id);
+    if(!p) throw Error('ONLY_ON_BOUND_DEVICE');
+    if(!p.available) throw Error('WORKSPACE_ROOT_CHANGED');
+    return p;
+  }
   setMode(p,mode) {
     if(this.modes && !this.modes.includes(mode)) throw Error('UNSUPPORTED_DEVICE_PERMISSION');
     if(p.agent.grant.mode!==mode) p.agent.control('setMode',{requestId:randomUUID(),expectedVersion:p.agent.grant.grantVersion,mode});
@@ -76,26 +85,32 @@ export class DeviceClient {
   }
   authenticate(input) { return this.api('POST','/api/auth/login',input); }
   attachProjects(signed, freshLogin) {
-    const bindings=this.profile.projects.map(root=>{
+    for(const root of this.profile.projects) {
       const mapped=signed.projects.find(w=>w.localId===root.localId && w.deviceId===signed.deviceId);
+      // A directory can be pinned locally before the server acknowledges registration.
+      if(!mapped && this.cfg.workspacePicker) continue;
       if(!mapped) throw Error('WORKSPACE_BINDING_MISMATCH');
-      if(this.identifyRoot(root.path)!==root.inode) throw Error('WORKSPACE_ROOT_CHANGED');
-      return {root,mapped};
-    });
-    for(const {root,mapped} of bindings) {
-      const stateDir=join(this.cfg.stateDir,mapped.id);
-      const store=new Journal(join(stateDir,'journal.sqlite'));
-      try {
-        const grant=grantFor({deviceId:signed.deviceId,accountId:String(signed.user.id),workspaceId:mapped.id},'revoked',1);
-        const launch=this.launcher({workspaceRoot:root.path,rootIdentity:root.inode,stateDir,guardedFiles:true});
-        const agent=new LocalAgent(store,grant,{stateDir,maxChildren:1,workspace:{label:root.label,reliability:true,sandbox:this.sandbox},
-          launcher:(op,g)=>{if(this.identifyRoot(root.path)!==root.inode) throw Error('WORKSPACE_ROOT_CHANGED');return launch(op,g);}});
-        const local={agent,store,id:mapped.id};
-        if(freshLogin) this.setMode(local,'revoked');
-        this.locals.set(mapped.id,local);
-        agent.on('changed',()=>local.rpc?.notify('changed',{}));
-      } catch(error) {store.close();throw error;}
+      this.attachProject(signed,root,mapped,freshLogin);
     }
+  }
+  attachProject(signed,root,mapped,freshLogin) {
+    let available=false;
+    try { available=this.identifyRoot(root.path)===root.inode; }
+    catch(error) { if(!this.cfg.workspacePicker) throw error; }
+    if(!available && !this.cfg.workspacePicker) throw Error('WORKSPACE_ROOT_CHANGED');
+    const stateDir=join(this.cfg.stateDir,mapped.id);
+    const store=new Journal(join(stateDir,'journal.sqlite'));
+    try {
+      const grant=grantFor({deviceId:signed.deviceId,accountId:String(signed.user.id),workspaceId:mapped.id},'revoked',1);
+      const launch=this.launcher({workspaceRoot:root.path,rootIdentity:root.inode,stateDir,guardedFiles:true});
+      const agent=new LocalAgent(store,grant,{stateDir,maxChildren:1,workspace:{label:root.label,reliability:true,sandbox:this.sandbox},
+        launcher:(op,g)=>{if(this.identifyRoot(root.path)!==root.inode) throw Error('WORKSPACE_ROOT_CHANGED');return launch(op,g);}});
+      const local={agent,store,id:mapped.id,path:root.path,available};
+      if(freshLogin) this.setMode(local,'revoked');
+      this.locals.set(mapped.id,local);
+      agent.on('changed',()=>local.rpc?.notify('changed',{}));
+      return local;
+    } catch(error) {store.close();throw error;}
   }
   remembered() {
     if(this.saved===undefined) this.saved=this.loginFile.load();
@@ -116,10 +131,11 @@ export class DeviceClient {
   verifiedState(saved) {
     return request(this.cfg.url,this.tls,'GET','/api/state',undefined,saved.token);
   }
+  currentState() { return this.api('GET','/api/state'); }
   async restore() {
     const signedOut={user:null,localName:this.cfg.name};
-    const pending={...signedOut,restoring:true};
-    if(Date.now()<this.nextRestore) return pending;
+    const pending=()=>({...signedOut,restoring:true,connectionError:this.restoreIssue});
+    if(Date.now()<this.nextRestore) return pending();
     try {
       const saved=this.remembered();
       if(!saved) return signedOut;
@@ -138,11 +154,13 @@ export class DeviceClient {
       await this.disconnect(false);
       // A failed transport or an unavailable key store leaves the saved login intact.
       this.nextRestore=Date.now()+5000;
-      return pending;
+      this.restoreIssue=error.stage;
+      return pending();
     }
   }
   connect(signed) {
-    if(this.signed!==signed) return;
+    if(this.signed!==signed || this.presence) return;
+    clearTimeout(this.retry);
     const ws=this.ws('/ws/device');this.presence=ws;ws.on('error',()=>{});
     let lastPing=Date.now();
     ws.on('ping',()=>{lastPing=Date.now();});
@@ -166,7 +184,8 @@ export class DeviceClient {
     });
   }
   connectProject(signed,presence,p) {
-    if(this.signed!==signed || this.presence!==presence || presence.readyState!==WebSocket.OPEN) return;
+    if(!p.available || this.signed!==signed || this.presence!==presence || presence?.readyState!==WebSocket.OPEN) return;
+    clearTimeout(p.retry);
     const ws=this.ws('/ws/projects/'+p.id);
     const rpc=new Rpc(ws,(m,params,frame)=>{
       if(this.signed!==signed || this.presence!==presence || p.rpc!==rpc) throw Error('STALE_CONNECTION');
@@ -203,7 +222,7 @@ export class DeviceClient {
     if(notify && signed===undefined) {
       try {signed=this.remembered();} catch {} // A locked vault can still be forgotten locally.
     }
-    this.saved=null;this.nextRestore=0;
+    this.saved=null;this.nextRestore=0;this.restoreIssue=undefined;
     try {this.loginFile.clear();}
     finally {
       try {await this.disconnect(true);}
@@ -221,12 +240,13 @@ export class DeviceClient {
     if(method==='login') return this.login(p);
     if(method==='logout') {await this.signout();return {ok:true};}
     if(!this.signed) {if(method==='state') return this.restore(); throw Error('LOGIN_REQUIRED');}
+    if(method==='registerWorkspace' && this.cfg.workspacePicker) return this.registerWorkspace(p.path);
     if(method==='changePassword') return this.api('POST','/api/auth/password',p);
     if(method==='permission') return this.setMode(this.local(p.workspaceId),p.mode);
     if(method==='state') {
-      try {return this.localState(await this.api('GET','/api/state'));}
+      try {return this.localState(await this.currentState());}
       catch(error) {
-        if(error.message!=='LOGIN_REQUIRED') throw error;
+        if(!['LOGIN_REQUIRED','DEVICE_DISABLED','LOGIN_BINDING_MISMATCH'].includes(error.message)) throw error;
         await this.signout(false);
         return {user:null,localName:this.cfg.name};
       }
@@ -243,11 +263,18 @@ export class DeviceClient {
   localState(state) {
     for(const project of state.projects) {
       const local=this.locals.get(project.id);
-      if(!local) continue;
+      if(!local) {
+        if(this.cfg.workspacePicker && state.deviceId===project.deviceId) {project.localUnavailable=true;project.ready=false;}
+        continue;
+      }
       project.localMode=local.agent.grant.mode;
       if(this.modes) project.localModes=this.modes;
+      if(this.cfg.workspacePicker) {
+        project.localPath=local.path;
+        if(!local.available) {project.localUnavailable=true;project.ready=false;}
+      }
     }
-    return {...state,localName:this.cfg.name};
+    return {...state,localName:this.cfg.name,...(this.cfg.workspacePicker ? {workspacePicker:true} : {})};
   }
   enqueue(work) {
     const result=this.queue.catch(()=>{}).then(work);
@@ -255,7 +282,7 @@ export class DeviceClient {
     return result;
   }
   control(method,p={}) {
-    contract.validate(method,p);
+    contract.internalValidate(method,p);
     return this.enqueue(()=>this.act(method,p));
   }
 }

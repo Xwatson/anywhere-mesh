@@ -4,10 +4,10 @@
 
 ## 在 Windows 上使用
 
-1. 双击桌面或开始菜单的 **Anywhere Coding Lab**，首次打开即显示账号登录页。登录成功后客户端自动配置本机连接。虚拟机「下载」目录中有同版安装程序 `Anywhere-Coding-Lab-0.3.4-win-x64-Setup.exe`。
+1. 双击桌面或开始菜单的 **Anywhere Coding Lab**，首次打开即显示账号登录页。账号验证通过后，客户端保存登录并自动配置本机连接。领取连接配置、建立 EasyTier 连接或同步账号状态暂时失败时，会沿用该登录自动重试。
 2. 在首页直接输入「请读取 notes.txt 的第一行」，按 Enter 发送。首次使用时选择项目权限并确认发送，默认选中「只读」。会话绑定本机，并用首条消息命名。取消授权会保留草稿。Shift+Enter 可以换行。
-3. 左侧按项目列出会话，Ctrl+K 可按会话名、项目或设备搜索。标题栏显示执行设备和在线状态。工具操作可展开查看原始返回。在其他电脑打开同一会话时，页面会提示它绑定的设备。
-4. 本机项目目录为 `%LOCALAPPDATA%\AnywhereCodingLab\project`。点击输入框下方的项目或权限按钮，选择 **完全访问 → 授予完全访问**，当前会话即可修改文件、运行项目命令。选「编辑」可单独授权读写，选「未授权」可撤销。左下角账户菜单提供退出登录，管理员还可查看所有设备和绑定会话。[打开服务端管理页](https://awc.xbxbe.com/?view=devices)
+3. 左侧按项目列出会话，Ctrl+K 可按会话名、项目或设备搜索。标题栏显示执行设备和在线状态。工具操作可展开查看原始返回，选中文字后可右键复制或按 Ctrl+C。在其他电脑打开同一会话时，页面会提示它绑定的设备。
+4. 首次安装的默认项目为 `%LOCALAPPDATA%\AnywhereCodingLab\project`。新对话中点击输入框下方的项目按钮，再点 **选择文件夹…**，可以登记并选用本机固定磁盘上的其他项目。首条消息把会话绑定到所选项目。新登记的项目初始为「未授权」，可按需授权只读、编辑或完全访问。左下角账户菜单提供退出登录，管理员还可查看所有设备和绑定会话。[打开服务端管理页](https://awc.xbxbe.com/?view=devices)
 5. 更改密码时，点左下角账号名 → **更改密码**，输入当前密码和两次新密码，再点 **保存密码**。当前登录保留，其他客户端需要用新密码重新登录。
 
 ## 关闭、重开和注销
@@ -34,7 +34,7 @@
 
 命令由 `cmd.exe` 在临时项目副本中运行。Windows AppContainer 以独立身份、无网络能力启动，Job Object 管理子进程。进程正常退出后，客户端校验原文件版本再写回改动，包括构建产物、重命名和删除。写回按文件内容与 Windows 默认不区分大小写的路径比较。只调整时间戳或文件名大小写的操作目前不会同步。取消执行会终止任务。提交中断且结果不明时，客户端保留任务数据以便核对。命令有 120 秒时限。项目副本支持至多 30,000 项、单文件 64 MiB、总文件内容 512 MiB。包含重解析点或多硬链接文件的项目会拒绝执行命令。[Microsoft AppContainer](https://learn.microsoft.com/en-us/windows/win32/secauthz/appcontainer-isolation)
 
-当前授权作用于预置项目，其他目录的注册仍待适配。安装包按 Windows 用户安装，尚未做 Authenticode 签名或自动更新。已配置的实验机器升级后沿用原有 `windows.toml`、设备身份与项目。新机器上，设备身份保存在 `state` 目录，本机连接参数与服务端公钥由客户端维护。
+安装包按 Windows 用户安装，尚未做 Authenticode 签名或自动更新。升级会沿用原有 `windows.toml`、设备身份、项目和 0.3.4 的已保存登录。登记新文件夹需要同步升级会话宿主以支持 `POST /api/device/workspaces`。项目路径和文件系统身份保存在本机 `state/installation.json`，服务端登记项目名称和设备绑定。
 
 ## 重建 Windows x64 安装包
 
@@ -55,7 +55,7 @@ python3 experimental/account-devices/windows/package-installer.py \
 ```sh
 python3 source/experimental/account-devices/windows/verify-installed.py --project-access \
   xwatson@192.168.8.210 /home/xwatson/.ssh/id_rsa \
-  secrets/wan-198.84.90.137/accounts.json artifacts/windows-installer/0.3.4
+  secrets/wan-198.84.90.137/accounts.json artifacts/windows-installer/0.3.5
 ```
 
 用 `--remember-login` 可以验证关闭应用后的自动登录、历史恢复、主动注销和服务端撤销。用 `--fresh` 替换 `--project-access` 可以同时复测错误密码的首次登录流程。

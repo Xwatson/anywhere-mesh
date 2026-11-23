@@ -101,24 +101,21 @@ function Mode($mode) {
     [void](Wait-For "applied permission $mode" {$b=Find-Element 'id' 'context';if($b -and $b.Current.IsEnabled -and !(Find-Element 'id' 'mode')){$b}})
 }
 function Sign-In {
-    for($attempt=1;$attempt -le 3;$attempt++) {
-        Edit 'username' $auth.username; Edit 'password' $auth.password
-        Press 'id' 'login-submit'
-        # Ignore a stale alert from the previous click; network enrollment can take 23 seconds.
-        $started=Get-Date
-        $outcome=Wait-For 'sign-in result' {
-            if(Find-Element 'id' 'account-menu' 'ControlType.Button') {'ok'}
-            elseif(((Get-Date)-$started).TotalSeconds -gt 10) {
-                $errorBox=Find-Element 'id' 'login-error'
-                if($errorBox) {
-                    $nodes=$errorBox.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
-                    $nodes | ForEach-Object {$_.Current.Name} | Where-Object {$_} | Select-Object -First 1
-                }
+    Edit 'username' $auth.username; Edit 'password' $auth.password
+    Press 'id' 'login-submit'
+    # Enrollment and first state synchronization retry inside the client.
+    $submitted=Get-Date
+    $outcome=Wait-For 'sign-in after one submission' {
+        if(Find-Element 'id' 'account-menu' 'ControlType.Button') {'ok'}
+        elseif(((Get-Date)-$submitted).TotalSeconds -gt 1) {
+            $errorBox=Find-Element 'id' 'login-error'
+            if($errorBox) {
+                $nodes=$errorBox.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+                $nodes | ForEach-Object {$_.Current.Name} | Where-Object {$_} | Select-Object -First 1
             }
-        } 80
-        if($outcome -eq 'ok') {return}
-        if($attempt -eq 3 -or $outcome -notlike '*连接*') {throw ('Sign-in failed: '+$outcome)}
-    }
+        }
+    } 150
+    if($outcome -ne 'ok') {throw ('Sign-in failed: '+$outcome)}
 }
 function Sign-Out { Press 'id' 'account-menu'; Press 'id' 'logout' }
 function Close-OpenDialog {

@@ -220,6 +220,7 @@ dialog::backdrop { background: #141f1a39; }
 .dialog-actions { justify-content: flex-end; margin-top: 20px; }
 .dialog-symbol { display: grid; place-items: center; background: var(--accent-fill); color: var(--accent); border-radius: 10px; width: 35px; height: 35px; }
 #project-identity { margin-top: 7px; }
+#project-path { overflow-wrap: anywhere; }
 #grant, #remote-mode { margin-top: 18px; }
 #grant { display: grid; }
 #mode-description { margin-top: 6px; }

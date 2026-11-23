@@ -1,7 +1,7 @@
 'use strict';
 const routes = {
   state: [], login: ['username','password'], changePassword: ['current','password'], logout: [], admin: [], disable: ['id','disabled'],
-  permission: ['workspaceId','mode'], create: ['workspaceId','requestId','title'],
+  chooseWorkspace: [], permission: ['workspaceId','mode'], create: ['workspaceId','requestId','title'],
   send: ['sessionId','requestId','text'], history: ['sessionId','afterSeq'], stop: ['sessionId','requestId','turnId']
 };
 function validate(method, p = {}) {
@@ -17,4 +17,9 @@ function validate(method, p = {}) {
   if ('disabled' in p && typeof p.disabled!=='boolean') throw Error('INVALID_FIELDS');
   if ('mode' in p && !['revoked','read','edit','execute'].includes(p.mode)) throw Error('INVALID_PERMISSION');
 }
-module.exports={validate};
+function internalValidate(method, p) {
+  if (method !== 'registerWorkspace') return validate(method, p);
+  if (!p || typeof p !== 'object' || Object.keys(p).length !== 1 || !Object.hasOwn(p,'path') ||
+      typeof p.path !== 'string' || !p.path.trim() || p.path.length > 1024 || p.path.includes('\0')) throw Error('INVALID_FIELDS');
+}
+module.exports={validate,internalValidate,workspaceLimit:16};
