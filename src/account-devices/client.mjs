@@ -315,13 +315,24 @@ export class DeviceClient {
       return p.agent.handle(m, params, frame.epoch);
     });
     p.rpc = rpc;
+    let lastActivity = Date.now();
+    const touch = () => { lastActivity = Date.now(); };
+    ws.on('message', touch);
+    ws.on('ping', touch);
+    ws.on('pong', touch);
+    const watchdog = setInterval(() => {
+      if (Date.now() - lastActivity > 30000) rpc.close();
+    }, 5000);
     ws.once('open', async () => {
+      touch();
+      ws._socket?.setKeepAlive?.(true, 15000);
       try {
         const hello = await rpc.request('hello', { deviceId: signed.deviceId, instanceId: p.agent.instanceId, capabilities: CAPABILITIES });
         p.agent.attach(hello.connectionEpoch); rpc.epoch = hello.connectionEpoch; await rpc.request('ready', {});
       } catch { rpc.close(); }
     });
     rpc.once('closed', () => {
+      clearInterval(watchdog);
       if (p.rpc !== rpc) return;
       p.rpc = null;
       if (this.signed === signed && this.presence === presence) p.retry = setTimeout(() => this.connectProject(signed, presence, p), 600);
@@ -436,6 +447,18 @@ export class DeviceClient {
         project.localPath = local.path;
         project.canRemove = project.localPath.toLowerCase() !== this.cfg.projects[0]?.path.toLowerCase();
         if (!local.available) { project.localUnavailable = true; project.ready = false; }
+      }
+      if (local.available && this.signed && this.presence?.readyState === WebSocket.OPEN) {
+        if (project.ready) {
+          local.notReadySince = 0;
+        } else {
+          local.notReadySince ||= Date.now();
+          if (Date.now() - local.notReadySince > 15000) {
+            local.notReadySince = Date.now();
+            if (local.rpc) local.rpc.close();
+            else this.connectProject(this.signed, this.presence, local);
+          }
+        }
       }
     }
     return { ...state, localName: this.cfg.name, ...(this.cfg.workspacePicker ? { workspacePicker: true } : {}) };

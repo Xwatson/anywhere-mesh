@@ -451,7 +451,13 @@ export async function startServer(config) {
     for (const [id, p] of online) {
       try {
         directory.authenticate(p.token);
-        if (Date.now() - p.lastSeen > 35000) detach(id, p); else p.socket.ping();
+        if (Date.now() - p.lastSeen > 35000) detach(id, p);
+        else {
+          p.socket.ping();
+          for (const toolWs of p.tools) {
+            if (toolWs.readyState === 1) toolWs.ping();
+          }
+        }
       } catch { detach(id, p); }
     }
   }, 5000);

@@ -10,7 +10,7 @@ export class Broker {
     this.syncPromise = null; this.again = false; this.lastError = null;
     this.workspace = workspace;
     if (workspace) this.grant = validateGrant(journal.get('meta', 'remoteGrant') ?? grantFor(grant, 'revoked', 1), grant);
-    this.timer = setInterval(() => { if (!this.syncPromise) this.kick(); }, 1000);
+    this.timer = setInterval(() => { if (!this.syncPromise) this.kick(); }, 3000);
   }
   hello(rpc, params) {
     exact(params, ['deviceId', 'instanceId', 'capabilities']); string(params.instanceId);

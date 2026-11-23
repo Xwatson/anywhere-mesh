@@ -3,7 +3,7 @@ import { id, exact, string, integer, ProtocolError, VERSION } from './protocol.m
 
 // A transport timeout is deliberately not a task failure. No automatic replay here.
 export class Rpc extends EventEmitter {
-  constructor(ws, handler, { epoch = 0, timeoutMs = 8000 } = {}) {
+  constructor(ws, handler, { epoch = 0, timeoutMs = 25000 } = {}) {
     super(); this.ws = ws; this.handler = handler; this.epoch = epoch;
     this.timeoutMs = timeoutMs; this.pending = new Map(); this.inflight = 0;
     ws.on('error', () => {});
