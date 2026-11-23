@@ -77,6 +77,15 @@ async function action(method, p = {}) {
 }
 
 let state, selected, projectId, tab = 'chat', online = false, busy = false, generation = 0, polling, syncFailures = 0;
+let knownUiVersion = null;
+const CONNECT_STEPS = [
+  ['authentication', '验证账号'],
+  ['network_enrollment', '领取网络配置'],
+  ['peer_start', '启动本机隧道'],
+  ['tunnel_readiness', '建立加密连接'],
+  ['state_sync', '同步设备与项目状态'],
+];
+let connectState = new Map();
 let localConnectUntil = 0;
 let rows = [], seq = 0, firstSeq = 0, hasOlder = false, epoch, sidebarKey, searchKey, fleetKey, deviceKey, historyProblem = false, historyDirty = false;
 let fleet = [], consent, projectSource, restoring = false, reviewWorkspaceId = null;
@@ -177,7 +186,72 @@ function applyEventPage(page, target) {
   if (page.events.some(r => r.event.type === 'turn_end')) void refresh();
 }
 
+function renderConnectProgress() {
+  const box = $('connect-progress');
+  const show = Boolean(native && restoring);
+  box.hidden = !show;
+  if (!show) return;
+  let doneCount = 0;
+  let activeLabel = '准备连接…';
+  let activePercent = 5;
+  const items = CONNECT_STEPS.map(([id, label], idx) => {
+    const info = connectState.get(id);
+    const st = info?.status ?? 'pending';
+    if (st === 'done') doneCount++;
+    const li = element('li', undefined, 'connect-step ' + (st === 'running' ? 'active' : st));
+    li.append(element('i'));
+    li.append(element('span', label));
+    const badge = st === 'done' ? '完成' : st === 'running' ? '进行中…' : st === 'failed' ? '重试中' : '';
+    if (badge) li.append(element('small', badge));
+    if (st === 'running') {
+      activeLabel = `步骤 ${idx + 1}/${CONNECT_STEPS.length}：正在${label}…`;
+      activePercent = Math.round(((idx + 0.5) / CONNECT_STEPS.length) * 100);
+    } else if (st === 'failed') {
+      activeLabel = `步骤 ${idx + 1}/${CONNECT_STEPS.length}：${label}重试中…`;
+      activePercent = Math.round(((idx + 0.3) / CONNECT_STEPS.length) * 100);
+    }
+    return li;
+  });
+  if (doneCount === CONNECT_STEPS.length) {
+    activeLabel = '连接就绪，正在进入工作区…';
+    activePercent = 100;
+  } else if (doneCount > 0 && !CONNECT_STEPS.some(([id]) => ['running', 'failed'].includes(connectState.get(id)?.status))) {
+    const nextIdx = Math.min(doneCount, CONNECT_STEPS.length - 1);
+    activeLabel = `步骤 ${nextIdx + 1}/${CONNECT_STEPS.length}：准备${CONNECT_STEPS[nextIdx][1]}…`;
+    activePercent = Math.round((doneCount / CONNECT_STEPS.length) * 100);
+  }
+  $('progress-step-label').textContent = activeLabel;
+  $('progress-percent').textContent = activePercent + '%';
+  $('progress-bar').setAttribute('aria-valuenow', String(activePercent));
+  $('progress-fill').style.width = activePercent + '%';
+  $('connect-steps').replaceChildren(...items);
+}
+
+function updateConnectProgress(payload) {
+  if (!payload?.phase) return;
+  const idx = CONNECT_STEPS.findIndex(([id]) => id === payload.phase);
+  if (idx < 0) return;
+  if (payload.status === 'running') {
+    for (let i = 0; i < idx; i++) {
+      const prevId = CONNECT_STEPS[i][0];
+      if (connectState.get(prevId)?.status !== 'done') connectState.set(prevId, { status: 'done' });
+    }
+    for (let i = idx + 1; i < CONNECT_STEPS.length; i++) connectState.delete(CONNECT_STEPS[i][0]);
+  }
+  connectState.set(payload.phase, { status: payload.status, code: payload.code });
+  if (restoring) {
+    renderConnectProgress();
+    if (payload.status === 'failed' && payload.code && errors[payload.code]) {
+      $('restore-status').textContent = errors[payload.code] + '稍后会自动重试。';
+      $('forget-login').hidden = false;
+    } else if (payload.status === 'running') {
+      $('restore-status').textContent = '正在建立到服务端的加密连接，请稍候…';
+    }
+  }
+}
+
 function applyStreamMessage(msg) {
+  if (msg?.type === 'connect_progress') { updateConnectProgress(msg.payload); return; }
   const target = thread();
   if (!target || tab !== 'chat') return;
   if (msg.type === 'events' && msg.payload?.sessionId === target.id) {
@@ -296,13 +370,15 @@ function loginView(localName, restore = false, detail) {
     tab = 'chat';
   }
   state = null; online = false; syncFailures = 0;
+  if (!restore) connectState.clear();
   restoring = restore;
   $('restoring').hidden = !restoring; $('login').hidden = restoring;
-  $('restore-title').textContent = restore === 'connecting' ? '账号已验证' : '正在恢复登录';
+  $('restore-title').textContent = restore === 'connecting' ? '正在建立连接' : '正在恢复登录';
   $('restore-status').textContent = detail ? detail + '稍后会自动重试。' :
-    restore === 'connecting' ? '正在连接设备并同步账号状态…' :
+    restore === 'connecting' ? '账号已验证，正在配置并连接加密隧道…' :
     restore === 'waiting' ? '暂时无法恢复登录，稍后会自动重试。' : '正在检查本机登录状态…';
   $('forget-login').hidden = restore !== 'waiting' && !(restore === 'connecting' && detail);
+  renderConnectProgress();
   $('app').hidden = true; $('signin').hidden = false;
   $('entry').textContent = localName ? '连接设备 · ' + localName : native ? '登录后继续本机项目的对话。' : '使用你的 Anywhere 账号继续。';
 }
@@ -631,7 +707,14 @@ async function sync() {
       latest.connectionError && errors[latest.connectionError]);
     return;
   }
-  restoring = false; syncFailures = 0;
+  if (!native && latest.uiVersion) {
+    if (knownUiVersion && knownUiVersion !== latest.uiVersion && !$('draft').value.trim()) {
+      location.reload();
+      return;
+    }
+    knownUiVersion = latest.uiVersion;
+  }
+  restoring = false; syncFailures = 0; connectState.clear();
   const first = !state || state.user.id !== latest.user.id;
   if (first && state) loginView();
   state = latest; online = true;
@@ -967,10 +1050,13 @@ $('login').onsubmit = e => {
   const password = $('password').value;
   $('password').value = '';
   const label = $('login-submit').querySelector('span');
-  label.textContent = '登录中…';
+  label.textContent = '正在验证账号…';
   void perform(async () => {
     generation++;
+    connectState.clear();
+    connectState.set('authentication', { status: 'running' });
     await action('login', { username: $('username').value.trim(), password });
+    connectState.set('authentication', { status: 'done' });
     loginView(undefined, 'connecting');
   }).finally(() => { label.textContent = '登录'; });
 };

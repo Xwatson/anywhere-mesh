@@ -43,8 +43,19 @@
 <main id="signin">
   <div class="wordmark login-brand"><span class="brand-mark" aria-hidden="true"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-terminal"></use></svg></span><span>Anywhere</span></div>
   <section id="restoring" aria-labelledby="restore-title" hidden>
+    <div class="hero-mark login-mark" aria-hidden="true"><span class="brand-mark" aria-hidden="true"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-terminal"></use></svg></span></div>
     <h1 id="restore-title">正在恢复登录</h1>
     <p id="restore-status" class="muted" role="status">正在检查本机登录状态…</p>
+    <div id="connect-progress" class="connect-progress" hidden>
+      <div class="progress-head">
+        <span id="progress-step-label">准备连接…</span>
+        <span id="progress-percent">0%</span>
+      </div>
+      <div id="progress-bar" class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+        <div id="progress-fill" class="progress-fill"></div>
+      </div>
+      <ol id="connect-steps" class="connect-steps"></ol>
+    </div>
     <button type="button" id="forget-login" class="secondary" hidden>退出登录</button>
   </section>
   <form id="login">

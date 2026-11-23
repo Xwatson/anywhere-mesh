@@ -10,8 +10,9 @@ const knownErrors = new Set(['INVALID_CREDENTIALS','LOGIN_THROTTLED','DEVICE_DIS
 const publicRequest = (route,data,token) => request(service,{rejectUnauthorized:true,minVersion:'TLSv1.2'},
   'POST',route,data,token,{idleMs:15000,totalMs:18000});
 
-async function phase(name, code, run, logSuccess=true) {
+async function phase(name, code, run, logSuccess=true, notify=null) {
   const started=Date.now();
+  if (notify) notify({ phase: name, status: 'running' });
   const report=(result, error) => {
     const reason=error?.code ?? error?.message;
     console.error(JSON.stringify({component:'windows-device',phase:name,result,elapsedMs:Date.now()-started,
@@ -20,12 +21,14 @@ async function phase(name, code, run, logSuccess=true) {
   try {
     const result=await run();
     if(logSuccess) report('ok');
+    if (notify) notify({ phase: name, status: 'done' });
     return result;
   } catch(error) {
     report('failed',error);
     const reason=error.code??error.message;
     const failure=Error(knownErrors.has(reason) ? reason : code, {cause:error});
     failure.stage=failure.message;
+    if (notify) notify({ phase: name, status: 'failed', code: failure.message });
     throw failure;
   }
 }
@@ -35,6 +38,7 @@ export class WindowsClient extends DeviceClient {
     super({...cfg,workspacePicker:true},workspace);
     this.peer=peer;this.privatePaths=privatePaths;this.bootstrap=bootstrap;
     this.httpFailures=0;this.probeFailures=0;
+    this.emitProgress = payload => { try { this.onStream?.({ type: 'connect_progress', payload }); } catch {} };
   }
   workspacePath(selected) {
     if(!/^[A-Za-z]:\\.+/.test(selected)) throw Error('LOCAL_PROJECT_REQUIRED');
@@ -113,36 +117,39 @@ export class WindowsClient extends DeviceClient {
     // Keep an already-started legacy peer while it negotiates its first route.
     if(this.peer.legacy) {
       await this.ensureNetwork(undefined,40000);
-      return phase('authentication','WINDOWS_AUTH_UNAVAILABLE',()=>super.authenticate(params));
+      return phase('authentication','WINDOWS_AUTH_UNAVAILABLE',()=>super.authenticate(params),true,this.emitProgress);
     }
     // The device token is saved by login() before attempting network enrollment.
-    return phase('authentication','WINDOWS_BOOTSTRAP_UNAVAILABLE',()=>this.bootstrap('/api/auth/login',params));
+    return phase('authentication','WINDOWS_BOOTSTRAP_UNAVAILABLE',()=>this.bootstrap('/api/auth/login',params),true,this.emitProgress);
   }
   connect(signed) {
     if(this.peer.child && this.tunnelReady) super.connect(signed);
   }
   async ensureNetwork(signed,waitMs) {
     const peer=this.peer;
+    const notify = !this.presence ? this.emitProgress : null;
     if(!peer.legacy && (!peer.child || this.networkToken!==signed.token || this.probeFailures>=2)) {
       const profile=await phase('network_enrollment','WINDOWS_NETWORK_CONFIG_UNAVAILABLE',
-        ()=>this.bootstrap('/api/device/network',{},signed.token));
+        ()=>this.bootstrap('/api/device/network',{},signed.token),true,notify);
       this.tunnelReady=false;
-      await phase('peer_start','WINDOWS_TUNNEL_NOT_READY',()=>peer.start(profile,signed.deviceId,this.probeFailures>=2));
+      await phase('peer_start','WINDOWS_TUNNEL_NOT_READY',()=>peer.start(profile,signed.deviceId,this.probeFailures>=2),true,notify);
       this.cfg.url='https://127.0.0.1:'+peer.port;
       this.networkToken=signed.token;
       this.probeFailures=0;
     } else if(peer.legacy && !peer.child) {
       this.tunnelReady=false;
-      await phase('peer_start','WINDOWS_TUNNEL_NOT_READY',()=>peer.start());
+      await phase('peer_start','WINDOWS_TUNNEL_NOT_READY',()=>peer.start(),true,notify);
     }
     if(this.tunnelReady) return;
     try {
-      await phase('tunnel_readiness','WINDOWS_TUNNEL_NOT_READY',()=>peer.ready(waitMs));
+      await phase('tunnel_readiness','WINDOWS_TUNNEL_NOT_READY',()=>peer.ready(waitMs),true,notify);
       this.tunnelReady=true;this.probeFailures=0;
     } catch(error) {this.probeFailures++;throw error;}
   }
   async verifiedState(saved) {
     if(Date.now()<this.retryNetworkAt) throw this.networkFailure;
+    const notify = !this.presence ? this.emitProgress : null;
+    if (notify) notify({ phase: 'authentication', status: 'done' });
     try {
       await this.ensureNetwork(saved);
       const state=await phase('state_sync','WINDOWS_STATE_UNAVAILABLE',async()=>{
@@ -151,7 +158,7 @@ export class WindowsClient extends DeviceClient {
           if(!['LOGIN_REQUIRED','DEVICE_DISABLED'].includes(error.message) && ++this.httpFailures>=2) this.tunnelReady=false;
           throw error;
         }
-      }, !this.presence);
+      }, !this.presence, notify);
       this.httpFailures=0;
       return state;
     } catch(error) {

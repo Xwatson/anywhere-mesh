@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import https from 'node:https';
@@ -122,6 +123,13 @@ export async function startServer(config) {
     try { return JSON.parse(raw); } catch { throw Error('INVALID_FIELDS'); }
   }
   const assets = new Map([['/', ['index.html', 'text/html']], ['/app.js', ['app.js', 'text/javascript']], ['/thread.js', ['thread.js', 'text/javascript']], ['/style.css', ['style.css', 'text/css']]]);
+  const uiVersion = (() => {
+    const h = createHash('sha256');
+    for (const [name] of assets.values()) {
+      try { h.update(readFileSync(new URL('./ui/' + name, import.meta.url))); } catch {}
+    }
+    return h.digest('hex').slice(0, 12);
+  })();
   async function handle(req, res) {
     const url = new URL(req.url, 'https://local.invalid'), path = url.pathname;
     res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -205,7 +213,7 @@ export async function startServer(config) {
       if (agyModels?.models) engineModels.antigravity = agyModels.models;
       const fallbackModels = codexModels?.models ?? agyModels?.models ?? null;
       json(res, 200, {
-        user, deviceId,
+        user, deviceId, uiVersion,
         chatEngine: engines[0] ?? 'mock',
         engines,
         ...(fallbackModels ? { models: fallbackModels } : {}),
