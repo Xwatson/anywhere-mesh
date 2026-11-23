@@ -22,13 +22,18 @@ const MIME_BY_EXT = {
   '.py': 'text/x-python', '.css': 'text/css', '.html': 'text/html', '.csv': 'text/csv', '.log': 'text/plain',
 };
 
-export function request(url, tls, method, path, data, token, {idleMs=8000,totalMs=10000}={}) {
-  const raw = data === undefined ? undefined : JSON.stringify(data);
+const RETRYABLE_SOCKET_ERR = /ECONNRESET|EPIPE|ERR_SOCKET_CLOSED|socket hang up/i;
+function singleRequest(url, tls, method, path, raw, token, { idleMs, totalMs, freshSocket }) {
   const deadline = AbortSignal.timeout(totalMs);
   return new Promise((resolve, reject) => {
-    const req = https.request(new URL(path, url), { ...tls, method, timeout: idleMs, signal: deadline, headers: {
-      'User-Agent': 'AnywhereCodingLab/1', ...(token ? { Authorization: 'Bearer ' + token } : {}), ...(raw ? { 'Content-Type': 'application/json' } : {})
-    } }, res => {
+    const req = https.request(new URL(path, url), {
+      ...tls, ...(freshSocket ? { agent: false } : {}), method, timeout: idleMs, signal: deadline,
+      headers: {
+        'User-Agent': 'AnywhereCodingLab/1',
+        ...(token ? { Authorization: 'Bearer ' + token } : {}),
+        ...(raw ? { 'Content-Type': 'application/json' } : {}),
+      },
+    }, res => {
       const chunks = []; let size = 0;
       res.on('error', reject); res.on('data', part => { size += part.length; if (size > 2 * 1024 * 1024) req.destroy(Error('RESPONSE_LIMIT')); else chunks.push(part); });
       res.on('end', () => { try { const b = JSON.parse(Buffer.concat(chunks)); if (res.statusCode !== 200) throw Error(b.error ?? 'REMOTE_ERROR'); resolve(b); } catch (e) { reject(e); } });
@@ -36,6 +41,17 @@ export function request(url, tls, method, path, data, token, {idleMs=8000,totalM
     req.on('error', error => reject(deadline.aborted ? Error('NETWORK_TIMEOUT') : error));
     req.on('timeout', () => req.destroy(Error('NETWORK_TIMEOUT'))); req.end(raw);
   });
+}
+export async function request(url, tls, method, path, data, token, {idleMs=8000,totalMs=10000}={}) {
+  const raw = data === undefined ? undefined : JSON.stringify(data);
+  try {
+    return await singleRequest(url, tls, method, path, raw, token, { idleMs, totalMs, freshSocket: false });
+  } catch (err) {
+    if (method === 'GET' && RETRYABLE_SOCKET_ERR.test(String(err?.code ?? '') + ' ' + String(err?.message ?? ''))) {
+      return singleRequest(url, tls, method, path, raw, token, { idleMs, totalMs, freshSocket: true });
+    }
+    throw err;
+  }
 }
 
 export function uploadBinary(url, tls, path, bytes, filename, mime, token, { totalMs = 30000 } = {}) {

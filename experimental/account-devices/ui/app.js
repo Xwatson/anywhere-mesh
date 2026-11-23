@@ -76,7 +76,7 @@ async function action(method, p = {}) {
   return data;
 }
 
-let state, selected, projectId, tab = 'chat', online = false, busy = false, generation = 0, polling;
+let state, selected, projectId, tab = 'chat', online = false, busy = false, generation = 0, polling, syncFailures = 0;
 let localConnectUntil = 0;
 let rows = [], seq = 0, firstSeq = 0, hasOlder = false, epoch, sidebarKey, searchKey, fleetKey, deviceKey, historyProblem = false, historyDirty = false;
 let fleet = [], consent, projectSource, restoring = false, reviewWorkspaceId = null;
@@ -295,7 +295,7 @@ function loginView(localName, restore = false, detail) {
     $('account-feedback').textContent = '';
     tab = 'chat';
   }
-  state = null; online = false;
+  state = null; online = false; syncFailures = 0;
   restoring = restore;
   $('restoring').hidden = !restoring; $('login').hidden = restoring;
   $('restore-title').textContent = restore === 'connecting' ? '账号已验证' : '正在恢复登录';
@@ -615,11 +615,14 @@ async function sync() {
   catch (error) {
     if (version !== generation) return;
     if (error.message.includes('LOGIN_REQUIRED')) { loginView(); return; }
-    online = false;
-    stopStream();
-    if (state) render();
-    else if (restoring) loginView(undefined, restoring === 'connecting' ? restoring : 'waiting',
-      message(error) === error.message ? '暂时无法同步登录状态。' : message(error));
+    syncFailures++;
+    if (state) {
+      if (syncFailures >= 3) { online = false; stopStream(); render(); }
+    } else if (restoring) {
+      online = false; stopStream();
+      loginView(undefined, restoring === 'connecting' ? restoring : 'waiting',
+        message(error) === error.message ? '暂时无法同步登录状态。' : message(error));
+    }
     return;
   }
   if (version !== generation) return;
@@ -628,7 +631,7 @@ async function sync() {
       latest.connectionError && errors[latest.connectionError]);
     return;
   }
-  restoring = false;
+  restoring = false; syncFailures = 0;
   const first = !state || state.user.id !== latest.user.id;
   if (first && state) loginView();
   state = latest; online = true;

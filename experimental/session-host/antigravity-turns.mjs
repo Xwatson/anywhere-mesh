@@ -87,28 +87,9 @@ function groupAvailableModels(session) {
   }));
 }
 
-function deviceInstructions(tools, hasAttachments) {
-  const names = new Set(tools.map(tool => tool.name));
-  const scope = names.has('workspace_run')
-    ? 'Full project access is active (read, create, edit, patch, delete, move files, and run commands via anywhere_workspace MCP tools).'
-    : names.has('workspace_write_file')
-      ? 'Project editing is active (read, create, edit, patch, delete, and move files via anywhere_workspace MCP tools).'
-      : 'Read-only project access is active (read, list, info, search via anywhere_workspace MCP tools).';
-  const attNote = hasAttachments
-    ? ' The user attached files in this session; inspect non-image attachments with session_read_attachment (or copy UTF-8 text attachments into the project with session_send_attachment when authorized).'
-    : '';
-  return [
-    'IMPORTANT WORKSPACE ISOLATION RULES:',
-    'You are the coding assistant for a REMOTE user device and project bound to this conversation.',
-    'The local filesystem where you are running is an isolated relay server and does NOT contain the user project.',
-    'NEVER call built-in local filesystem, shell, or command tools (read_file, write_file, edit_file, run_command, etc.) — they are blocked.',
-    `ALWAYS use the MCP tools from the "${MCP_NAME}" server (prefixed with "${MCP_PREFIX}") for EVERY project read, search, edit, patch, or command.`,
-    scope,
-    'Answer in the language of the user. Paths are relative to the bound remote project root.',
-    'For workspace_read_file, offset and length count lines (first line: offset 0, length 1; max 500).',
-    'For writes, edits, deletes, moves, or workspace_apply_patch, always pass the expectedRevision returned by the last read (or null to create a new file).',
-    'Prefer workspace_apply_patch for multi-file or multi-hunk edits. Report tool failures accurately.' + attNote,
-  ].join('\n');
+function deviceInstructions(hasAttachments) {
+  const att = hasAttachments ? ' Use session_read_attachment/session_send_attachment for non-image attachments.' : '';
+  return `The project is on a remote device; this host has no project files. Never call built-in local file/shell tools—only use ${MCP_NAME} (${MCP_PREFIX}*) tools with relative paths.${att}`;
 }
 
 function describeAttachments(text, atts) {
@@ -231,6 +212,7 @@ export class AntigravityTurns {
     this.active = new Map();
     this.modelCache = null;
     this.modelCacheAt = 0;
+    this.modelRefresh = null;
   }
 
   turn(id) { return this.db.get('turns', id); }
@@ -238,28 +220,39 @@ export class AntigravityTurns {
   event(t, event) { this.db.append(t.sessionId, { ...event, engine: 'antigravity' }); this.host.emit('events', t.sessionId); }
   broker(t, method, args) { return this.host.broker(this.host.workspace(t.workspaceId), method, args); }
 
-  async listModels() {
-    if (this.modelCache && Date.now() - this.modelCacheAt < 10 * 60 * 1000) return this.modelCache;
-    let socket, acp;
-    try {
-      socket = createConnection(this.socketPath);
-      await Promise.race([once(socket, 'connect'), delay(4000).then(() => { throw Error('TIMEOUT'); })]);
-      acp = new AcpConnection(socket, () => {});
-      const init = await acp.call('initialize', { protocolVersion: 1, clientInfo: { name: 'anywhere-lab', version: '0.4.0' }, clientCapabilities: {} }, 8000);
-      if (init.protocolVersion !== 1) throw Error('ACP_VERSION');
-      const session = await acp.call('session/new', { cwd: this.cwd, mcpServers: [] }, 10000);
-      const models = groupAvailableModels(session);
-      if (models.length) {
-        this.modelCache = { models };
-        this.modelCacheAt = Date.now();
-        return this.modelCache;
+  refreshModels() {
+    if (this.modelRefresh) return this.modelRefresh;
+    this.modelRefresh = (async () => {
+      let socket, acp;
+      try {
+        socket = createConnection(this.socketPath);
+        await Promise.race([once(socket, 'connect'), delay(4000).then(() => { throw Error('TIMEOUT'); })]);
+        acp = new AcpConnection(socket, () => {});
+        const init = await acp.call('initialize', { protocolVersion: 1, clientInfo: { name: 'anywhere-lab', version: '0.4.0' }, clientCapabilities: {} }, 8000);
+        if (init.protocolVersion !== 1) throw Error('ACP_VERSION');
+        const session = await acp.call('session/new', { cwd: this.cwd, mcpServers: [] }, 10000);
+        const models = groupAvailableModels(session);
+        if (models.length) {
+          this.modelCache = { models };
+          this.modelCacheAt = Date.now();
+          return this.modelCache;
+        }
+      } catch {}
+      finally {
+        try { acp?.close(); } catch {}
+        try { socket?.destroy(); } catch {}
+        this.modelRefresh = null;
       }
-    } catch {}
-    finally {
-      try { acp?.close(); } catch {}
-      try { socket?.destroy(); } catch {}
-    }
-    return this.modelCache ?? DEFAULT_MODELS;
+      return this.modelCache ?? DEFAULT_MODELS;
+    })();
+    return this.modelRefresh;
+  }
+
+  async listModels() {
+    if (this.modelCache && Date.now() - this.modelCacheAt < 30 * 60 * 1000) return this.modelCache;
+    const pending = this.refreshModels();
+    if (this.modelCache) return this.modelCache;
+    return Promise.race([pending, delay(1500).then(() => this.modelCache ?? DEFAULT_MODELS)]);
   }
 
   async workspaceTools(t) {
@@ -556,7 +549,7 @@ export class AntigravityTurns {
       const sessionParams = {
         cwd: this.cwd,
         mcpServers,
-        _meta: { antigravity: { systemPrompt: { append: deviceInstructions(tools, hasAtts) } } },
+        _meta: { antigravity: { systemPrompt: { append: deviceInstructions(hasAtts) } } },
       };
       if (this.turn(t.id).cancelRequested) throw Error('TURN_STOPPED');
       const acpSession = resume
