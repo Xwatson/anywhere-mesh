@@ -9,9 +9,9 @@ import { setTimeout as delay } from 'node:timers/promises';
 // The controller is the same one used by the installed Electron desktop.
 const base = join(process.env.LOCALAPPDATA, 'AnywhereCodingLab');
 const launch = await readFile(join(base, 'Start-Anywhere.cmd'), 'utf8');
-const appDir = launch.match(/runtime\\(app-[A-F0-9]+)\\experimental\\desktop/i)?.[1];
+const appDir = launch.match(/runtime\\(app-[A-F0-9]+)\\src\\desktop/i)?.[1];
 if (!appDir) throw Error('WINDOWS_RUNTIME_NOT_FOUND');
-const controller = spawn(process.execPath, [join(base, 'runtime', appDir, 'experimental', 'account-devices', 'windows', 'controller.mjs')], {
+const controller = spawn(process.execPath, [join(base, 'runtime', appDir, 'src', 'account-devices', 'windows', 'controller.mjs')], {
   stdio: ['pipe','pipe','inherit'], windowsHide: true
 });
 const responses = createInterface({ input: controller.stdout })[Symbol.asyncIterator]();

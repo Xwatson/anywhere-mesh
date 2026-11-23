@@ -17,7 +17,7 @@ $task = 'AnywhereLab-Smoke-' + $id
 $registered = $false
 try {
     $exe = Join-Path $root 'runtime\electron-v45.3.3\electron.exe'
-    $argsLine = '"' + (Join-Path $root ('runtime\'+$release+'\experimental\desktop')) + '" --lab-windows --lab-windows-smoke --lab-smoke-id=' + $id
+    $argsLine = '"' + (Join-Path $root ('runtime\'+$release+'\src\desktop')) + '" --lab-windows --lab-windows-smoke --lab-smoke-id=' + $id
     $action = New-ScheduledTaskAction -Execute $exe -Argument $argsLine -WorkingDirectory $root
     $user = New-ScheduledTaskPrincipal -UserId $who.Name -LogonType Interactive -RunLevel Limited
     $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 5) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries

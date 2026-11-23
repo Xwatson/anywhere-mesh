@@ -60,7 +60,7 @@ if (!(Test-Path -LiteralPath $app)) {
     $temp = Join-Path $runtime ([guid]::NewGuid().ToString('N'))
     try {
         [IO.Compression.ZipFile]::ExtractToDirectory($bundle,$temp)
-        $native = Join-Path $temp 'experimental\account-devices\windows'
+        $native = Join-Path $temp 'src\account-devices\windows'
         foreach ($tool in @('WorkspaceSnapshot','PeerHost','TaskHost','LoginProtection')) {
             $sources = @("$native\$tool.cs")
             if ($tool -eq 'WorkspaceSnapshot') { $sources += "$native\WorkspaceTree.cs" }
@@ -76,6 +76,6 @@ $fixture = Join-Path $project 'notes.txt'
 if (!(Test-Path -LiteralPath $fixture)) {
     [IO.File]::WriteAllText($fixture, 'WINDOWS_ONLY_' + [guid]::NewGuid().ToString('N') + [Environment]::NewLine)
 }
-$cmd = '@start "" "%~dp0runtime\electron-v45.3.3\electron.exe" "%~dp0runtime\app-' + $id + '\experimental\desktop" --lab-windows'
+$cmd = '@start "" "%~dp0runtime\electron-v45.3.3\electron.exe" "%~dp0runtime\app-' + $id + '\src\desktop" --lab-windows'
 [IO.File]::WriteAllText((Join-Path $root 'Start-Anywhere.cmd'), $cmd + [Environment]::NewLine, [Text.Encoding]::ASCII)
 Write-Output ('Windows lab release ' + $id)

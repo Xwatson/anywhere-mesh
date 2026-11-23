@@ -4,7 +4,7 @@ $ProgressPreference = 'SilentlyContinue'
 $root = Join-Path $env:LOCALAPPDATA 'AnywhereCodingLab'
 $release = [regex]::Match([IO.File]::ReadAllText((Join-Path $root 'Start-Anywhere.cmd')), 'app-[A-F0-9]{16}').Value
 if (!$release) { throw 'No installed desktop release' }
-$native = Join-Path $root ("runtime\$release\experimental\account-devices\windows")
+$native = Join-Path $root ("runtime\$release\src\account-devices\windows")
 $node = Join-Path $root 'runtime\node.exe'
 function RouteSummary {
     return @(Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' | ForEach-Object { "$($_.InterfaceIndex):$($_.NextHop)" } | Sort-Object) -join ','

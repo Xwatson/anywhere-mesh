@@ -9,7 +9,7 @@ import zipfile
 
 ws_archive, dc_archive, output = map(Path, sys.argv[1:])
 root = Path(__file__).resolve().parents[3]
-modules = root / "experimental"
+modules = root / "src"
 WS_INTEGRITY = "sha512-Ydggc987+RO0AnWtZ/7Wq9FtNvcrL1b/RO0ud9mWjUPgDrsAAwQSF51sm2hm1XofbU/4jkpGEsLFsZZxU+1DOg=="
 lock = root / "package-lock.json"
 ws_integrity = json.loads(lock.read_text())["packages"]["node_modules/ws"]["integrity"] if lock.exists() else WS_INTEGRITY
@@ -42,7 +42,7 @@ with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as bundle:
         for member in tar.getmembers():
             path = Path(member.name)
             if member.isfile() and path.parts[0] == "package" and ".." not in path.parts:
-                add("experimental/execution/node_modules/ws/" + path.relative_to("package").as_posix(), tar.extractfile(member).read())
+                add("src/execution/node_modules/ws/" + path.relative_to("package").as_posix(), tar.extractfile(member).read())
     with tarfile.open(dc_archive, "r:gz") as tar:
         for src, dest in [("dist/utils/files/text.js", "text.mjs"), ("LICENSE", "LICENSE")]:
-            add("experimental/account-devices/windows/vendor/" + dest, tar.extractfile("package/" + src).read())
+            add("src/account-devices/windows/vendor/" + dest, tar.extractfile("package/" + src).read())

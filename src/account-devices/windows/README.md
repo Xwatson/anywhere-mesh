@@ -41,8 +41,8 @@
 在仓库根目录运行 `bundle.py` 生成应用压缩包。在 Windows 上用 .NET Framework 的 C# 编译器将 `WorkspaceSnapshot.cs` 和 `WorkspaceTree.cs` 一同编译为 `WorkspaceSnapshot.exe`，引用 `System.Web.Extensions.dll`。将 `PeerHost.cs`、`TaskHost.cs` 和 `LoginProtection.cs` 分别编译为同名 EXE，登录保护程序引用 `System.Security.dll`。四个程序均使用 x64 并放入同一目录。构建机使用 Python 3.11+、Pillow 和 NSIS 3。将以下参数替换为构建机上的实际路径，`build/payload` 应为空缺目录。
 
 ```sh
-python3 experimental/account-devices/windows/bundle.py ws-8.22.0.tgz desktop-commander-0.3.3.tgz windows-app.zip
-python3 experimental/account-devices/windows/package-installer.py \
+python3 src/account-devices/windows/bundle.py ws-8.22.0.tgz desktop-commander-0.3.3.tgz windows-app.zip
+python3 src/account-devices/windows/package-installer.py \
   --archives images --native compiled-windows-helpers --app windows-app.zip \
   --ca ca.crt --dest build
 (cd build && makensis setup.nsi)
@@ -53,7 +53,7 @@ python3 experimental/account-devices/windows/package-installer.py \
 全新安装验收使用桌面快捷方式指向的已安装程序、独立空配置目录和测试账号 `lab-other` 启动，通过系统 UI Automation 操作登录、授权和聊天表单，从只读切换到完全访问，并在本机核对模型读取的随机内容及项目命令生成的文件。使用已登录图形桌面的 Windows 用户，从飞牛实验目录运行：
 
 ```sh
-python3 source/experimental/account-devices/windows/verify-installed.py --project-access \
+python3 source/src/account-devices/windows/verify-installed.py --project-access \
   xwatson@192.168.8.210 /home/xwatson/.ssh/id_rsa \
   secrets/wan-198.84.90.137/accounts.json artifacts/windows-installer/0.3.5
 ```
@@ -65,8 +65,8 @@ python3 source/experimental/account-devices/windows/verify-installed.py --projec
 从仓库根目录以 Python 3 运行下列命令。`ws` 来自根锁文件，Desktop Commander 来自仓库记录的 npm tarball，两者都在打包时校验。新装 Windows VM 时生成一次独立的 EasyTier 密钥和实例编号。已有安装沿用 `windows.toml`。
 
 ```sh
-python3 experimental/account-devices/windows/bundle.py ws-8.22.0.tgz desktop-commander-0.3.3.tgz windows-app.zip
-python3 experimental/account-devices/windows/prepare-peer.py client.toml windows.toml
+python3 src/account-devices/windows/bundle.py ws-8.22.0.tgz desktop-commander-0.3.3.tgz windows-app.zip
+python3 src/account-devices/windows/prepare-peer.py client.toml windows.toml
 ```
 
 将生成的两份文件、实验 CA 公共证书 `ca.crt`、`install.ps1` 及三个官方 x64 压缩包放入当前 Windows 用户的 `%LOCALAPPDATA%\AnywhereCodingLab\staging`。三个压缩包分别为 Node 24.21.0、Electron 45.3.3 和 EasyTier 2.6.4，文件名与 SHA-256 记录在安装脚本内。脚本使用 .NET Framework 4 的 C# 编译器生成本地辅助程序。EasyTier 在加载时需要同一压缩包内的 `Packet.dll`。运行安装脚本后，启动入口位于上一级目录。
@@ -78,7 +78,7 @@ python3 experimental/account-devices/windows/prepare-peer.py client.toml windows
 在飞牛实验根目录执行下面的复测。Windows 用户需已登录图形桌面并关闭实验客户端。飞牛 Ubuntu VM 中至少一个 Linux 实验客户端需已登录同一普通账号。测试在已登录的 Windows 桌面以普通权限运行 Electron，密码通过该用户专用的一次性命名管道交给表单。测试结束后会移除临时计划任务。
 
 ```sh
-python3 source/experimental/account-devices/windows/verify.py \
+python3 source/src/account-devices/windows/verify.py \
   xwatson@192.168.8.210 /home/xwatson/.ssh/id_rsa scripts/ssh-guest.sh \
   secrets/wan-198.84.90.137/accounts.json artifacts/windows-read
 ```

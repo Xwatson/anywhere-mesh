@@ -54,9 +54,9 @@ with zipfile.ZipFile(args.app) as z:
             z.extract(entry, app)
 release.update(args.app.read_bytes())
 (app / "package.json").write_text(json.dumps({"name":"anywhere-coding-lab","productName":"Anywhere Coding Lab",
-    "version":version,"main":"experimental/desktop/main.cjs"}))
+    "version":version,"main":"src/desktop/main.cjs"}))
 release.update((app / "package.json").read_bytes())
-native = app / "experimental/account-devices/windows"
+native = app / "src/account-devices/windows"
 for name in ("WorkspaceSnapshot.exe", "PeerHost.exe", "TaskHost.exe", "LoginProtection.exe"):
     binary = (args.native / name).read_bytes()
     if binary[:2] != b"MZ":

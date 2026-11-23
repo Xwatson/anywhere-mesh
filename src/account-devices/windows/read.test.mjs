@@ -13,7 +13,7 @@ async function installedWorkspace() {
   const nodeDir=dirname(process.execPath);
   const app=basename(nodeDir)==='tools' && basename(dirname(nodeDir))==='resources' ? join(dirname(nodeDir),'app') :
     join(base,'runtime',(await readFile(join(base,'Start-Anywhere.cmd'),'utf8')).match(/app-[A-F0-9]{16}/)[0]);
-  const native=join(app,'experimental','account-devices','windows');
+  const native=join(app,'src','account-devices','windows');
   const {windowsReader}=await import(pathToFileURL(join(native,'read.mjs')));
   return windowsReader(join(native,'WorkspaceSnapshot.exe'));
 }

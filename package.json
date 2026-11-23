@@ -7,12 +7,12 @@
     "node": ">=24.0.0"
   },
   "workspaces": [
-    "experimental/execution",
-    "experimental/workspace"
+    "src/execution",
+    "src/workspace"
   ],
   "scripts": {
-    "test": "node --test experimental/**/*.test.mjs",
-    "build:wan": "bash experimental/account-devices/wan/build.sh"
+    "test": "node --test src/**/*.test.mjs",
+    "build:wan": "bash src/account-devices/wan/build.sh"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",
