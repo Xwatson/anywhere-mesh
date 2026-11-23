@@ -70,8 +70,8 @@ test('delayed old-version invocation is durably rejected, and old history remain
 test('read/edit/execute advertise distinct capabilities and model fields cannot choose a target',t=>{
   const agent=new LocalAgent(store(t),identity,options);
   change(agent,'read');assert.equal(listTools(agent.grant).length,9);assert.ok(!listTools(agent.grant).some(t=>t.name==='workspace_run'));
-  change(agent,'edit');assert.equal(listTools(agent.grant).length,12);
-  change(agent,'execute');assert.equal(listTools(agent.grant).length,13);
+  change(agent,'edit');assert.equal(listTools(agent.grant).length,15);
+  change(agent,'execute');assert.equal(listTools(agent.grant).length,16);
   for(const args of [{path:'../secret'},{path:'x',workspaceId:'other'},{path:'x',isUrl:true}])assert.throws(()=>normalize('workspace_read_file',args));
   assert.throws(()=>normalize('workspace_write_file',{path:'x',content:'x'}),/MISSING_ARGUMENT/);
 });

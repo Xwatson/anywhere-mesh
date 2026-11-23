@@ -101,7 +101,12 @@ export class SessionHost extends EventEmitter {
     if (s.activeTurnId) throw Error('SESSION_BUSY');
     const w = this.workspace(s.workspaceId);
     const diagnostic = /^\s*\/(?:read|list|search|append|build|long|run|help)(?:\s|$)/.test(body.text);
-    const parsed = this.codex && !diagnostic ? { engine:'codex', text:body.text, attachments:resolvedAtts, calls:[] } :
+    const requestedAgent = s.options?.agent;
+    const chosenEngine = diagnostic ? null :
+      requestedAgent === 'antigravity' && this.antigravity ? 'antigravity' :
+      requestedAgent === 'codex' && this.codex ? 'codex' :
+      this.codex ? 'codex' : this.antigravity ? 'antigravity' : null;
+    const parsed = chosenEngine ? { engine: chosenEngine, text: body.text, attachments: resolvedAtts, calls: [] } :
       parseMock(body.text, path => this.store.get('revisions',hash({sessionId,workspaceId:w.id,path}))?.revision);
     let binding;
     if (!parsed.help) {
@@ -137,7 +142,7 @@ export class SessionHost extends EventEmitter {
     });
     this.emit('events',s.id);
     const turn=this.store.get('turns',result.turnId);
-    if(!turn.done)this.track(turn.engine==='codex' ? this.codex.run(turn) : this.dispatch(turn));return result;
+    if(!turn.done)this.track(turn.engine==='codex' ? this.codex.run(turn) : turn.engine==='antigravity' ? this.antigravity.run(turn) : this.dispatch(turn));return result;
   }
   track(p) { this.work.add(p);p.catch(e=>console.error('host background:',e.message)).finally(()=>this.work.delete(p));return p; }
   async host(t) {
@@ -166,6 +171,10 @@ export class SessionHost extends EventEmitter {
       let t=this.store.get('turns',id);if(t.consumed)return;
       if (t.engine==='codex') {
         if (this.codex && !this.codex.active.has(id)) await this.codex.reconcile(t);
+        return;
+      }
+      if (t.engine==='antigravity') {
+        if (this.antigravity && !this.antigravity.active.has(id)) await this.antigravity.reconcile(t);
         return;
       }
       const h=await this.host(t);
@@ -227,9 +236,10 @@ export class SessionHost extends EventEmitter {
     this.store.tx(()=>{if(!t.done)t.cancelRequested=true;this.store.put('turns',t.id,t);this.store.receipt(body.requestId,payload,result);});
     if(!t.done) {
       if (t.engine==='codex') await this.codex?.interrupt(t.id);
+      else if (t.engine==='antigravity') await this.antigravity?.interrupt(t.id);
       else await this.broker(this.workspace(t.workspaceId),'stopTurn',{sessionId,turnId:t.id,turnEpoch:1});
     }
     return result;
   }
-  async close(){this.closing=true;clearInterval(this.timer);await this.codex?.close();await Promise.allSettled([...this.work]);for(const id of [...this.hosts.keys()])await this.closeHost(id);this.store.close();}
+  async close(){this.closing=true;clearInterval(this.timer);await this.codex?.close();await this.antigravity?.close();await Promise.allSettled([...this.work]);for(const id of [...this.hosts.keys()])await this.closeHost(id);this.store.close();}
 }

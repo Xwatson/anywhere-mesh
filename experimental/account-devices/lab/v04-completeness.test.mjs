@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer as createNetServer } from 'node:net';
@@ -65,13 +65,15 @@ test('desktop contract validates all v0.4.0 routes and optional parameters stric
   const id = randomUUID();
   contract.validate('renameSession', { sessionId: id, title: '新标题' });
   contract.validate('deleteSession', { sessionId: id });
+  contract.validate('setSessionOptions', { sessionId: id, agent: 'antigravity', model: 'gemini-4-neon', effort: 'high' });
   contract.validate('setSessionOptions', { sessionId: id, model: 'gpt-5.4', effort: 'high' });
-  contract.validate('setSessionOptions', { sessionId: id, model: null });
+  contract.validate('setSessionOptions', { sessionId: id, model: null, agent: null });
+  assert.throws(() => contract.validate('setSessionOptions', { sessionId: id, agent: 'unknown-cli' }), /INVALID_FIELDS/);
   assert.throws(() => contract.validate('setSessionOptions', { sessionId: id, effort: 'turbo' }), /INVALID_FIELDS/);
   contract.validate('send', { sessionId: id, requestId: id, text: 'a'.repeat(40000) });
   contract.validate('send', { sessionId: id, requestId: id, text: '看附件', attachments: [id] });
   assert.throws(() => contract.validate('send', { sessionId: id, requestId: id, text: 'x', attachments: ['not-a-uuid'] }), /INVALID_ID/);
-  contract.validate('create', { workspaceId: id, requestId: id, title: 'T', options: { model: 'gpt-5.4', effort: 'medium' } });
+  contract.validate('create', { workspaceId: id, requestId: id, title: 'T', options: { agent: 'antigravity', model: 'gemini-4-neon', effort: 'medium' } });
   contract.validate('reviewList', { workspaceId: id });
   contract.validate('reviewSubmit', { workspaceId: id, requestId: id, operationId: id, expectedDigest: 'b'.repeat(64), note: '已检查本地文件' });
   contract.validate('subscribe', { sessionId: id, afterSeq: 0 });
@@ -159,6 +161,129 @@ test('end-to-end v0.4.0: streaming deltas, model/effort, attachments, session CR
   await new Promise(resolve => codexServer.listen(codexSocket, resolve));
   t.after(() => codexServer.close());
 
+  // Mock Antigravity ACP server over Unix socket that spawns the real agy-mcp-bridge.mjs,
+  // verifies strict built-in tool rejection, calls MCP workspace_read_file + session_read_attachment,
+  // and streams thought/message chunks.
+  const agySocket = join(dir, 'agy.sock');
+  const agyObserved = { configs: [], builtinDecision: null, mcpDecision: null, promptBlocks: null, discoverCode: null, wsReadOk: false, attReadText: '' };
+  const agyServer = createNetServer(sock => {
+    const rl = createInterface({ input: sock });
+    const send = obj => sock.write(JSON.stringify(obj) + '\n');
+    const pendingClient = new Map();
+    let clientReqId = 100;
+    const askClient = (method, params) => new Promise((resolve, reject) => {
+      const id = ++clientReqId;
+      pendingClient.set(id, { resolve, reject });
+      send({ jsonrpc: '2.0', id, method, params });
+    });
+    let mcpProc = null;
+    let mcpPending = new Map();
+    let mcpNextId = 1;
+    const mcpCall = (method, params) => new Promise((resolve, reject) => {
+      const id = ++mcpNextId;
+      mcpPending.set(id, { resolve, reject });
+      mcpProc.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
+    });
+    sock.on('close', () => { try { mcpProc?.kill(); } catch {} });
+    rl.on('line', async line => {
+      const m = JSON.parse(line);
+      if (m.id !== undefined && !m.method && pendingClient.has(m.id)) {
+        const w = pendingClient.get(m.id);
+        pendingClient.delete(m.id);
+        if (m.error) w.reject(Error(m.error.message)); else w.resolve(m.result);
+        return;
+      }
+      if (m.method === 'initialize') {
+        send({ jsonrpc: '2.0', id: m.id, result: { protocolVersion: 1, agentCapabilities: { promptCapabilities: { image: true } } } });
+        return;
+      }
+      if (m.method === 'session/new') {
+        const mcpDef = m.params?.mcpServers?.[0];
+        if (mcpDef) {
+          const env = { ...process.env };
+          for (const e of mcpDef.env ?? []) env[e.name] = e.value;
+          mcpProc = spawn(mcpDef.command, mcpDef.args, { env, stdio: ['pipe', 'pipe', 'pipe'] });
+          const mcpRl = createInterface({ input: mcpProc.stdout });
+          mcpRl.on('line', l => {
+            const msg = JSON.parse(l);
+            const w = mcpPending.get(msg.id);
+            if (!w) return;
+            mcpPending.delete(msg.id);
+            w.resolve(msg);
+          });
+        }
+        send({
+          jsonrpc: '2.0', id: m.id,
+          result: {
+            sessionId: 'agy-sess-' + randomUUID().slice(0, 8),
+            models: {
+              currentModelId: 'gemini-4-neon-high',
+              availableModels: [
+                { modelId: 'gemini-4-neon-low', name: 'Gemini 4 Neon (low)' },
+                { modelId: 'gemini-4-neon-high', name: 'Gemini 4 Neon (high)' },
+                { modelId: 'claude-sonnet-5-5-medium', name: 'Claude Sonnet 5.5 (medium)' },
+              ],
+            },
+            configOptions: [
+              { id: 'model', type: 'select', currentValue: 'gemini-4-neon', options: [{ value: 'gemini-4-neon', name: 'Gemini 4 Neon' }, { value: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5' }] },
+              { id: 'thought_level', type: 'select', currentValue: 'high', options: [{ value: 'low', name: 'Low' }, { value: 'high', name: 'High' }] },
+            ],
+          },
+        });
+        return;
+      }
+      if (m.method === 'session/set_config_option') {
+        agyObserved.configs.push({ configId: m.params.configId, value: m.params.value });
+        send({ jsonrpc: '2.0', id: m.id, result: { configOptions: [] } });
+        return;
+      }
+      if (m.method === 'session/prompt') {
+        agyObserved.promptBlocks = m.params.prompt;
+        const sid = m.params.sessionId;
+        try {
+          // 1. Verify server/discover returns -32601 on real agy-mcp-bridge.mjs
+          const disc = await mcpCall('server/discover', {});
+          agyObserved.discoverCode = disc.error?.code;
+          await mcpCall('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'mock-agy', version: '1.0' } });
+          mcpProc.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
+          const toolsResp = await mcpCall('tools/list', {});
+          assert.ok(toolsResp.result.tools.some(x => x.name === 'workspace_read_file'));
+          assert.ok(toolsResp.result.tools.some(x => x.name === 'session_read_attachment'));
+
+          // 2. Built-in local tool MUST be denied!
+          agyObserved.builtinDecision = await askClient('session/request_permission', {
+            sessionId: sid,
+            toolCall: { toolCallId: 'tc-deny', name: 'run_command', title: 'run_command' },
+            options: [{ optionId: 'allow', kind: 'allow_once' }, { optionId: 'deny', kind: 'reject_once' }],
+          });
+          // 3. MCP workspace tool MUST be allowed!
+          agyObserved.mcpDecision = await askClient('session/request_permission', {
+            sessionId: sid,
+            toolCall: { toolCallId: 'tc-read', name: 'mcp_anywhere_workspace_workspace_read_file', title: 'mcp_anywhere_workspace_workspace_read_file' },
+            options: [{ optionId: 'allow', kind: 'allow_once' }, { optionId: 'deny', kind: 'reject_once' }],
+          });
+
+          // 4. Execute real workspace_read_file & session_read_attachment via real agy-mcp-bridge.mjs
+          const wsRes = await mcpCall('tools/call', { name: 'workspace_read_file', arguments: { path: 'notes.txt', offset: 0, length: 5 } });
+          agyObserved.wsReadOk = !wsRes.result?.isError;
+          const attRes = await mcpCall('tools/call', { name: 'session_read_attachment', arguments: { attachment: 'spec.txt' } });
+          agyObserved.attReadText = attRes.result?.content?.[0]?.text ?? '';
+
+          // 5. Stream thinking + text + usage
+          send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: sid, update: { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: '正在通过 Antigravity 分析…' } } } });
+          send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: sid, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Antigravity ' } } } });
+          send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: sid, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '工作区验证成功！' } } } });
+          send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: sid, update: { sessionUpdate: 'usage_update', used: 230, size: 200000 } } });
+          send({ jsonrpc: '2.0', id: m.id, result: { stopReason: 'end_turn', usage: { inputTokens: 150, outputTokens: 80, cachedReadTokens: 20 } } });
+        } catch (err) {
+          send({ jsonrpc: '2.0', id: m.id, error: { code: -32000, message: err.message } });
+        }
+      }
+    });
+  });
+  await new Promise(resolve => agyServer.listen(agySocket, resolve));
+  t.after(() => agyServer.close());
+
   process.env.DATA_DIR = authDir;
   const { createUser } = await import('../../../server/dist/auth.js');
   const { db } = await import('../../../server/dist/db.js');
@@ -170,7 +295,9 @@ test('end-to-end v0.4.0: streaming deltas, model/effort, attachments, session CR
   const server = await startServer({
     host: '127.0.0.1', port: 0, cert: certPath, key: keyPath,
     stateDir: hostState, codexSocket, codexCwd: dir,
-    mcpPath: join(import.meta.dirname, '../../workspace/mcp.mjs'),
+    antigravitySocket: agySocket, antigravityCwd: dir,
+    antigravityMcpDir: dir,
+    mcpPath: join(import.meta.dirname, '../wan/mcp.mjs'),
   });
   t.after(async () => { await server.close(); db.close(); });
 
@@ -194,7 +321,9 @@ test('end-to-end v0.4.0: streaming deltas, model/effort, attachments, session CR
   }
   assert.equal(st.projects[0].ready, true);
   assert.equal(st.chatEngine, 'codex');
+  assert.deepEqual(st.engines, ['codex', 'antigravity']);
   assert.equal(st.models[0].id, 'gpt-5.4');
+  assert.ok(st.engineModels.antigravity.some(m => m.id === 'gemini-4-neon'));
 
   const wsId = st.projects[0].id;
   await client.control('permission', { workspaceId: wsId, mode: 'read' });
@@ -251,6 +380,34 @@ test('end-to-end v0.4.0: streaming deltas, model/effort, attachments, session CR
   const older = await client.control('historyBefore', { sessionId: created.id, beforeSeq: all.throughSeq });
   assert.ok(older.events.length >= 1);
   assert.equal(older.firstSeq, 1);
+
+  // Switch the same session to Antigravity CLI engine, verify ACP + real agy-mcp-bridge.mjs + strict built-in tool denial
+  const switched = await client.control('setSessionOptions', { sessionId: created.id, agent: 'antigravity', model: 'claude-sonnet-5-5', effort: 'low' });
+  assert.equal(switched.options.agent, 'antigravity');
+  const prevTurnEnds = streamEvents.filter(e => e.type === 'events' && e.payload.events.some(r => r.event.type === 'turn_end')).length;
+  await client.control('send', { sessionId: created.id, requestId: randomUUID(), text: '请用 Antigravity 读取 notes.txt 并查看附件', attachments: [txtAtt.id, imgAtt.id] });
+  for (let i = 0; i < 80; i++) {
+    const curEnds = streamEvents.filter(e => e.type === 'events' && e.payload.events.some(r => r.event.type === 'turn_end')).length;
+    if (curEnds > prevTurnEnds) break;
+    await new Promise(r => setTimeout(r, 80));
+  }
+  assert.equal(agyObserved.discoverCode, -32601);
+  assert.equal(agyObserved.builtinDecision?.outcome?.optionId, 'deny');
+  assert.equal(agyObserved.mcpDecision?.outcome?.optionId, 'allow');
+  assert.equal(agyObserved.wsReadOk, true);
+  assert.match(agyObserved.attReadText, /SPEC_CONTENT_42/);
+  assert.ok(agyObserved.promptBlocks?.some(b => b.type === 'image' && b.mimeType === 'image/png'));
+  assert.ok(agyObserved.configs.some(c => c.configId === 'model' && c.value === 'claude-sonnet-5-5'));
+  assert.ok(agyObserved.configs.some(c => c.configId === 'thought_level' && c.value === 'low'));
+  assert.ok(streamEvents.some(e => e.type === 'delta' && e.payload.delta.kind === 'thinking' && e.payload.delta.text.includes('Antigravity 分析')));
+  assert.ok(streamEvents.some(e => e.type === 'delta' && e.payload.delta.kind === 'text' && e.payload.delta.text.includes('工作区验证成功')));
+
+  const allAfterAgy = await client.control('history', { sessionId: created.id, afterSeq: all.throughSeq });
+  assert.ok(allAfterAgy.events.some(r => r.event.type === 'tool_call' && r.event.name === 'workspace_read_file' && r.event.status === 'completed'));
+  assert.ok(allAfterAgy.events.some(r => r.event.type === 'assistant_text' && r.event.engine === 'antigravity' && r.event.text.includes('工作区验证成功')));
+  const agyEnd = allAfterAgy.events.find(r => r.event.type === 'turn_end');
+  assert.equal(agyEnd?.event.ok, true);
+  assert.equal(agyEnd?.event.usage?.outputTokens, 80);
 
   // Test unknown task local review flow end-to-end
   const localProject = client.locals.get(wsId);

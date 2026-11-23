@@ -1,0 +1,13 @@
+[Unit]
+Description=Private Antigravity CLI ACP transport for the Anywhere lab host
+
+[Socket]
+ListenStream=/run/anywhere-wan-agy.sock
+Accept=yes
+SocketUser=anywhere-wan
+SocketMode=0600
+MaxConnections=8
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

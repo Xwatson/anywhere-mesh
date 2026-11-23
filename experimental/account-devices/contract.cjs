@@ -14,14 +14,16 @@ const routes = {
 const optional = {
   create: ['options'],
   send: ['attachments'],
-  setSessionOptions: ['model','effort'],
+  setSessionOptions: ['agent','model','effort'],
 };
+const AGENTS = new Set(['codex','antigravity']);
 const EFFORTS = new Set(['minimal','low','medium','high','xhigh','max']);
 const UUID_RE = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/;
 
 function validateOptionsObj(o) {
   if (!o || typeof o !== 'object' || Array.isArray(o)) throw Error('INVALID_FIELDS');
-  for (const k of Object.keys(o)) if (k !== 'model' && k !== 'effort') throw Error('INVALID_FIELDS');
+  for (const k of Object.keys(o)) if (k !== 'agent' && k !== 'model' && k !== 'effort') throw Error('INVALID_FIELDS');
+  if ('agent' in o && o.agent !== null && (typeof o.agent !== 'string' || !AGENTS.has(o.agent))) throw Error('INVALID_FIELDS');
   if ('model' in o && o.model !== null && (typeof o.model !== 'string' || !o.model.trim() || o.model.length > 100)) throw Error('INVALID_FIELDS');
   if ('effort' in o && o.effort !== null && (typeof o.effort !== 'string' || !EFFORTS.has(o.effort))) throw Error('INVALID_FIELDS');
 }
@@ -50,6 +52,7 @@ function validate(method, p = {}) {
   if ('options' in p && p.options !== undefined) validateOptionsObj(p.options);
   if (method === 'setSessionOptions') {
     const o = {};
+    if ('agent' in p) o.agent = p.agent;
     if ('model' in p) o.model = p.model;
     if ('effort' in p) o.effort = p.effort;
     validateOptionsObj(o);

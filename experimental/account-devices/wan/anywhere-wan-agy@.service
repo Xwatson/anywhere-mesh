@@ -1,0 +1,26 @@
+[Unit]
+Description=Anywhere lab Antigravity CLI conversation
+
+[Service]
+User=desktop
+Group=desktop
+Environment=HOME=/home/desktop
+Environment=PATH=/home/desktop/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/python3 /opt/anywhere-wan/bin/agy-service.py
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+WorkingDirectory=/var/lib/anywhere-wan-agy
+StateDirectory=anywhere-wan-agy
+StateDirectoryMode=0700
+ProtectSystem=strict
+ProtectHome=tmpfs
+BindPaths=/home/desktop/.gemini -/run/anywhere-wan-mcp
+BindReadOnlyPaths=/home/desktop/.local /opt/anywhere-wan
+PrivateTmp=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+UMask=0077
+KillMode=control-group
+RuntimeMaxSec=300
+TimeoutStopSec=10

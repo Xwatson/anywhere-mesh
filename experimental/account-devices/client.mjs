@@ -373,6 +373,7 @@ export class DeviceClient {
     if (method === 'deleteSession') return this.api('DELETE', base);
     if (method === 'setSessionOptions') {
       const options = {};
+      if ('agent' in p) options.agent = p.agent;
       if ('model' in p) options.model = p.model;
       if ('effort' in p) options.effort = p.effort;
       return this.api('PATCH', base, { options });

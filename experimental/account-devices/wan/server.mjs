@@ -26,7 +26,11 @@ if (process.argv[3] === '--bootstrap') {
   }
 } else {
   const { startServer } = await import('../host.mjs');
-  const app = await startServer({ ...config, mcpPath:fileURLToPath(new URL('./mcp.mjs',import.meta.url)) });
+  const app = await startServer({
+    ...config,
+    mcpPath: fileURLToPath(new URL('./mcp.mjs', import.meta.url)),
+    antigravityMcpBridge: config.antigravityMcpBridge || fileURLToPath(new URL('./agy-mcp-bridge.mjs', import.meta.url)),
+  });
   console.log('Remote test session host ready on '+config.host+':'+app.port);
   let closing = false;
   for (const sig of ['SIGINT','SIGTERM']) process.on(sig,async()=>{

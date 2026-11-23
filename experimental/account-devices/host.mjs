@@ -21,6 +21,7 @@ for (const c of ['workspace.grants.v1', 'history.archive.v1', 'review.v1']) if (
 export async function startServer(config) {
   const network = config.windowsNetwork ? new NetworkLeases(config.windowsNetwork) : null;
   const CodexTurns = config.codexSocket ? (await import('../session-host/codex-turns.mjs')).CodexTurns : null;
+  const AntigravityTurns = config.antigravitySocket ? (await import('../session-host/antigravity-turns.mjs')).AntigravityTurns : null;
   const accounts = new Map(), projects = new Map(), opening = new Map(), online = new Map(), streams = new Set();
   const socketServer = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 524288 });
   function account(id) {
@@ -28,6 +29,11 @@ export async function startServer(config) {
       const stateDir = join(config.stateDir, 'u' + id);
       const host = new SessionHost({ stateDir, accountId: String(id), requireDeviceBinding: true, workspaces: [], mcpPath: config.mcpPath });
       if (CodexTurns) host.codex = new CodexTurns(host, config.codexSocket, config.codexCwd);
+      if (AntigravityTurns) host.antigravity = new AntigravityTurns(host, config.antigravitySocket, config.antigravityCwd, {
+        bridgePath: config.antigravityMcpBridge,
+        nodePath: config.nodePath,
+        mcpDir: config.antigravityMcpDir,
+      });
       accounts.set(id, host);
     }
     return accounts.get(id);
@@ -187,9 +193,25 @@ export async function startServer(config) {
     }
     const host = account(user.id);
     if (req.method === 'GET' && path === '/api/state') {
-      const models = host.codex ? await host.codex.listModels().catch(() => null) : null;
-      json(res, 200, { user, deviceId, chatEngine: host.codex ? 'codex' : 'mock', ...(models ? { models: models.models } : {}),
-        devices: deviceRows(user.id), projects: workspaceRows(user.id, deviceId), sessions: host.sessions() }); return;
+      const engines = [];
+      if (host.codex) engines.push('codex');
+      if (host.antigravity) engines.push('antigravity');
+      const [codexModels, agyModels] = await Promise.all([
+        host.codex ? host.codex.listModels().catch(() => null) : null,
+        host.antigravity ? host.antigravity.listModels().catch(() => null) : null,
+      ]);
+      const engineModels = {};
+      if (codexModels?.models) engineModels.codex = codexModels.models;
+      if (agyModels?.models) engineModels.antigravity = agyModels.models;
+      const fallbackModels = codexModels?.models ?? agyModels?.models ?? null;
+      json(res, 200, {
+        user, deviceId,
+        chatEngine: engines[0] ?? 'mock',
+        engines,
+        ...(fallbackModels ? { models: fallbackModels } : {}),
+        ...(Object.keys(engineModels).length ? { engineModels } : {}),
+        devices: deviceRows(user.id), projects: workspaceRows(user.id, deviceId), sessions: host.sessions(),
+      }); return;
     }
     if (req.method === 'POST' && path === '/api/sessions') {
       const input = await body(req); fields(input, ['workspaceId', 'title', 'requestId'], ['options']);

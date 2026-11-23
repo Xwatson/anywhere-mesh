@@ -10,10 +10,15 @@ export function fields(value, keys, optional = []) {
 }
 export function text(value, max = 65536) { if (typeof value !== 'string' || !value.trim() || value.length > max) throw Error('INVALID_TEXT'); return value; }
 const EFFORTS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
+const AGENTS = new Set(['codex', 'antigravity']);
 export function validateOptions(options) {
   if (options === undefined) return {};
-  fields(options, [], ['model', 'effort']);
+  fields(options, [], ['agent', 'model', 'effort']);
   const out = {};
+  if ('agent' in options) {
+    if (options.agent !== null && (typeof options.agent !== 'string' || !AGENTS.has(options.agent))) throw Error('INVALID_FIELDS');
+    out.agent = options.agent ?? null;
+  }
   if ('model' in options) {
     if (options.model !== null && (typeof options.model !== 'string' || !options.model.trim() || options.model.length > 100)) throw Error('INVALID_FIELDS');
     out.model = options.model ? options.model.trim() : null;
@@ -47,7 +52,7 @@ export class SessionStore extends Journal {
     this.ensureCapacity(512 * 1024);
     if (this.all('sessions').length >= 500) throw Error('SESSION_LIMIT');
     return this.tx(() => {
-      const s = { id: randomUUID(), workspaceId, ...identity, title, options: { model: null, effort: null, ...cleanOptions },
+      const s = { id: randomUUID(), workspaceId, ...identity, title, options: { agent: null, model: null, effort: null, ...cleanOptions },
         createdAt: Date.now(), updatedAt: Date.now(), historyEpoch: randomUUID(), lastSeq: 0, activeTurnId: null };
       this.put('sessions', s.id, s); this.receipt(requestId, payload, s); return s;
     });
@@ -65,7 +70,7 @@ export class SessionStore extends Journal {
     const clean = validateOptions(options);
     return this.tx(() => {
       const s = this.session(sessionId);
-      const next = { ...s, options: { model: null, effort: null, ...(s.options ?? {}), ...clean }, updatedAt: Date.now() };
+      const next = { ...s, options: { agent: null, model: null, effort: null, ...(s.options ?? {}), ...clean }, updatedAt: Date.now() };
       this.put('sessions', s.id, next);
       return next;
     });

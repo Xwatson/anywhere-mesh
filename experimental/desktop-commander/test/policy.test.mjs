@@ -18,7 +18,7 @@ test('write and exec grants independently gate capabilities',()=>{
   assert.equal(typeof validateRequest(request('dc.tool',{tool:'read_file',arguments:{path:'a'}}),{...grant,capabilities:['dc.tool']}),'string');
 });
 test('scope identity and bounded arguments are enforced before execution',()=>{
-  const r=request('dc.tool',{tool:'read_file',arguments:{path:'a',length:201}});
+  const r=request('dc.tool',{tool:'read_file',arguments:{path:'a',length:501}});
   assert.throws(()=>validateRequest(r,grant),/INVALID_INTEGER/);
   r.args.arguments.length=100;r.scope.deviceId='another';
   assert.throws(()=>validateRequest(r,grant),/SCOPE_DENIED/);

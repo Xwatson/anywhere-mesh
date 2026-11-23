@@ -10,6 +10,7 @@ const modes = {
   execute: ['完全访问', '允许读取、创建和修改本项目的文件，并在隔离环境中运行项目命令。']
 };
 const EFFORT_LABELS = { minimal: '极简', low: '低', medium: '中', high: '高', xhigh: '极高', max: '最大' };
+const ENGINE_LABELS = { codex: 'Codex', antigravity: 'Antigravity', mock: '项目助手' };
 const errors = {
   LOGIN_STORAGE_UNAVAILABLE: '暂时无法读取或保存本机登录凭据。请稍后重试。',
   DEVICE_OFFLINE: '执行设备已离线，草稿已保留。', LOGIN_REQUIRED: '请重新登录。',
@@ -54,6 +55,7 @@ async function action(method, p = {}) {
     case 'setSessionOptions': {
       path = '/api/sessions/' + p.sessionId;
       const options = {};
+      if ('agent' in p) options.agent = p.agent;
       if ('model' in p) options.model = p.model;
       if ('effort' in p) options.effort = p.effort;
       body = { options }; httpMethod = 'PATCH'; break;
@@ -78,7 +80,7 @@ let state, selected, projectId, tab = 'chat', online = false, busy = false, gene
 let localConnectUntil = 0;
 let rows = [], seq = 0, firstSeq = 0, hasOlder = false, epoch, sidebarKey, searchKey, fleetKey, deviceKey, historyProblem = false, historyDirty = false;
 let fleet = [], consent, projectSource, restoring = false, reviewWorkspaceId = null;
-let pendingModel = null, pendingEffort = null;
+let pendingAgent = null, pendingModel = null, pendingEffort = null;
 // Pending attachments: either already uploaded ({ id, name, mime, size }) or staged locally before session creation ({ localFile, name, mime, size, dataBase64 }).
 let pendingAttachments = [];
 let live = { text: '', thinking: '', toolOutput: new Map() };
@@ -97,6 +99,24 @@ const status = d => !online ? '状态未知' : !d ? '未连接' : d.disabled ? '
 const deviceName = d => d ? d.name + ' · ' + d.id.slice(0, 6) : '未知设备';
 const lastSeen = d => d.lastSeen ? '最近在线 ' + new Date(d.lastSeen).toLocaleString('zh-CN', { hour12: false }) : '暂无在线记录';
 const activeDialog = () => document.querySelector('dialog[open]');
+function availableEngines() {
+  if (Array.isArray(state?.engines) && state.engines.length) return state.engines;
+  return state?.chatEngine && state.chatEngine !== 'mock' ? [state.chatEngine] : [];
+}
+function activeEngine() {
+  const list = availableEngines();
+  if (!list.length) return 'mock';
+  const chosen = thread()?.options?.agent ?? pendingAgent;
+  return chosen && list.includes(chosen) ? chosen : list[0];
+}
+function engineLabel(eng = activeEngine()) {
+  return ENGINE_LABELS[eng] ?? eng;
+}
+function modelsForEngine(eng = activeEngine()) {
+  if (state?.engineModels && Array.isArray(state.engineModels[eng])) return state.engineModels[eng];
+  if (eng === state?.chatEngine && Array.isArray(state?.models)) return state.models;
+  return [];
+}
 
 function notify(text = '') {
   const box = $('error');
@@ -152,7 +172,7 @@ function applyEventPage(page, target) {
   hasOlder = firstSeq > 1;
   $('load-older').hidden = !hasOlder;
   historyDirty = !drawHistory(rows, restart);
-  renderLive($('live'), live, state?.chatEngine === 'codex' ? 'Codex' : '助手');
+  renderLive($('live'), live, engineLabel());
   historyProblem = false;
   if (page.events.some(r => r.event.type === 'turn_end')) void refresh();
 }
@@ -169,10 +189,10 @@ function applyStreamMessage(msg) {
     const pinned = view.scrollHeight - view.clientHeight - view.scrollTop < 72;
     if (d.kind === 'text' && typeof d.text === 'string') {
       live.text += d.text;
-      renderLive($('live'), live, state?.chatEngine === 'codex' ? 'Codex' : '助手');
+      renderLive($('live'), live, engineLabel());
     } else if (d.kind === 'thinking' && typeof d.text === 'string') {
       live.thinking += d.text;
-      renderLive($('live'), live, state?.chatEngine === 'codex' ? 'Codex' : '助手');
+      renderLive($('live'), live, engineLabel());
     } else if (d.kind === 'tool_output' && d.id && typeof d.text === 'string') {
       const prev = live.toolOutput.get(d.id) ?? '';
       live.toolOutput.set(d.id, (prev + d.text).slice(-12000));
@@ -397,21 +417,33 @@ function renderFleet() {
 }
 
 function renderModelControls() {
-  const codex = state.chatEngine === 'codex';
-  const models = Array.isArray(state.models) ? state.models : [];
+  const engines = availableEngines();
+  const eng = activeEngine();
+  const hasAI = eng !== 'mock';
+  const multiEngine = engines.length > 1;
+  const models = modelsForEngine(eng);
   const s = thread();
   const curModel = (s ? s.options?.model : pendingModel) ?? '';
   const curEffort = (s ? s.options?.effort : pendingEffort) ?? '';
-  $('model-select').hidden = !codex || !models.length;
-  $('effort-select').hidden = !codex;
-  if (codex && models.length) {
+  $('engine').hidden = multiEngine;
+  $('engine-select').hidden = !multiEngine;
+  if (multiEngine) {
+    const engineOpts = engines.map(e => new Option(engineLabel(e), e));
+    const prevKey = [...$('engine-select').options].map(o => o.value).join('|');
+    const nextKey = engineOpts.map(o => o.value).join('|');
+    if (prevKey !== nextKey) $('engine-select').replaceChildren(...engineOpts);
+    $('engine-select').value = eng;
+  }
+  $('model-select').hidden = !hasAI || !models.length;
+  $('effort-select').hidden = !hasAI;
+  if (hasAI && models.length) {
     const modelOpts = [new Option('默认模型', ''), ...models.map(m => new Option(m.name || m.id, m.id))];
     const prevKey = [...$('model-select').options].map(o => o.value).join('|');
     const nextKey = modelOpts.map(o => o.value).join('|');
     if (prevKey !== nextKey) $('model-select').replaceChildren(...modelOpts);
     $('model-select').value = models.some(m => m.id === curModel) ? curModel : '';
   }
-  if (codex) {
+  if (hasAI) {
     const chosen = models.find(m => m.id === curModel) ?? models.find(m => m.isDefault) ?? models[0];
     const efforts = chosen?.efforts?.length ? chosen.efforts : ['low', 'medium', 'high', 'xhigh'];
     const effortOpts = [new Option('推理: 默认', ''), ...efforts.map(e => new Option('推理: ' + (EFFORT_LABELS[e] ?? e), e))];
@@ -421,6 +453,7 @@ function renderModelControls() {
     $('effort-select').value = efforts.includes(curEffort) ? curEffort : '';
   }
   const locked = busy || !online || Boolean(s?.activeTurn);
+  $('engine-select').disabled = locked;
   $('model-select').disabled = locked;
   $('effort-select').disabled = locked;
 }
@@ -473,7 +506,9 @@ function render() {
   if (!state?.user) return;
   const s = thread(), p = project(), d = p ? deviceById(p.deviceId) : deviceById(state.deviceId);
   const webEmpty = !s && !native, home = !s;
-  const engine = state.chatEngine === 'codex' ? 'Codex' : '项目助手';
+  const eng = activeEngine();
+  const hasAI = eng !== 'mock';
+  const engine = engineLabel(eng);
   $('signin').hidden = true; $('app').hidden = false;
   $('account').textContent = state.user.username;
   $('avatar').textContent = [...state.user.username][0] || 'A';
@@ -503,8 +538,8 @@ function render() {
   $('project-label').textContent = s && p ? modes[p.localMode ?? p.mode]?.[0] ?? '项目权限' : p?.label ?? '选择项目文件夹';
   $('context').querySelector('use').setAttribute('href', s ? '#i-lock' : '#i-folder');
   $('context').title = !s && state.workspacePicker ? '选择本机项目文件夹' : p ? '查看「' + p.label + '」项目与权限' : '暂无本机项目';
-  $('engine-name').textContent = engine; $('recipient').textContent = '发给' + (state.chatEngine === 'codex' ? ' Codex' : engine);
-  $('example-code').lastElementChild.textContent = state.chatEngine === 'codex' ? '解释代码' : '查看指令';
+  $('engine-name').textContent = engine; $('recipient').textContent = '发给' + (hasAI ? ' ' + engine : engine);
+  $('example-code').lastElementChild.textContent = hasAI ? '解释代码' : '查看指令';
   $('draft').placeholder = home ? '描述任务，或问问项目里的代码…' : '继续对话…';
   $('working').hidden = !s?.activeTurn;
   $('working').lastElementChild.textContent = s?.activeTurn?.cancelRequested ? '正在停止…' : engine + ' 正在处理…';
@@ -817,6 +852,7 @@ async function sendMessage() {
     const title = entry.title || newTitle(text), createId = entry.createId || crypto.randomUUID();
     saveDraft(originalKey, { text: rawText, requestId, title, createId });
     const options = {};
+    if (pendingAgent) options.agent = pendingAgent;
     if (pendingModel) options.model = pendingModel;
     if (pendingEffort) options.effort = pendingEffort;
     const s = await action('create', { requestId: createId, title, workspaceId: p.id, ...(Object.keys(options).length ? { options } : {}) });
@@ -1025,6 +1061,11 @@ $('delete-session').onclick = () => {
   });
 };
 
+$('engine-select').onchange = () => {
+  const val = $('engine-select').value || null;
+  if (selected) void perform(() => action('setSessionOptions', { sessionId: selected, agent: val, model: null, effort: null }));
+  else { pendingAgent = val; pendingModel = null; pendingEffort = null; render(); }
+};
 $('model-select').onchange = () => {
   const val = $('model-select').value || null;
   if (selected) void perform(() => action('setSessionOptions', { sessionId: selected, model: val }));
@@ -1089,8 +1130,8 @@ function example(text) {
   if (!$('draft').value.trim()) { $('draft').value = text; rememberInput(); }
   $('draft').focus();
 }
-$('example-read').onclick = () => example(state.chatEngine === 'codex' ? '请读取 notes.txt 的第一行。' : '/read notes.txt');
-$('example-code').onclick = () => example(state.chatEngine === 'codex' ? '请帮我解释下面这段代码：\n' : '/help');
+$('example-read').onclick = () => example(activeEngine() !== 'mock' ? '请读取 notes.txt 的第一行。' : '/read notes.txt');
+$('example-code').onclick = () => example(activeEngine() !== 'mock' ? '请帮我解释下面这段代码：\n' : '/help');
 for (const dialog of document.querySelectorAll('dialog')) {
   dialog.querySelector('.dialog-close').onclick = () => { if (!busy) dialog.close(); };
   dialog.addEventListener('cancel', e => { if (busy) e.preventDefault(); });

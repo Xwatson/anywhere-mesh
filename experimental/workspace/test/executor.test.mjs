@@ -83,7 +83,7 @@ test('real MCP SDK rejects calls without host tickets and does not expose author
   const {executor}=setup(t),server=createWorkspaceMcp(executor),client=new Client({name:'mock-host',version:'1'});
   const [left,right]=InMemoryTransport.createLinkedPair();await server.connect(left);await client.connect(right);
   t.after(async()=>{await client.close();await server.close();});
-  const tools=await client.listTools();assert.equal(tools.tools.length,13);assert.ok(!tools.tools.some(t=>/setMode|grant|consume|issue/.test(t.name)));
+  const tools=await client.listTools();assert.equal(tools.tools.length,16);assert.ok(!tools.tools.some(t=>/setMode|grant|consume|issue/.test(t.name)));
   const r=await client.callTool({name:'workspace_write_file',arguments:{path:'x',content:'x',mode:'append'}});
   assert.equal(r.isError,true);assert.match(r.content[0].text,/CALL_TICKET_REQUIRED/);
   const bad=await client.callTool({name:'workspace_task_status',arguments:{operationId:'foreign'}});assert.equal(bad.isError,true);assert.match(bad.content[0].text,/TASK_NOT_BOUND/);

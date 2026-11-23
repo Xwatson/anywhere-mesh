@@ -161,7 +161,7 @@ export function renderThread(container, rows, { sessionId, isWeb = false, liveTo
       const message = element('article', undefined, 'assistant-message');
       const author = element('div', undefined, 'author'), mark = element('span', undefined, 'brand-mark');
       mark.append(icon('terminal'));
-      author.append(mark, element('span', event.engine === 'codex' ? 'Codex' : '助手'));
+      author.append(mark, element('span', event.engine === 'antigravity' ? 'Antigravity' : event.engine === 'codex' ? 'Codex' : '助手'));
       message.append(author, formatted(text));
       output.append(message);
     } else if (event.type === 'tool_call' && latest.get(event.id) === seq) {
