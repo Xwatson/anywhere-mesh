@@ -102,4 +102,11 @@ test('LinuxClient negotiates direct HTTPS/WSS transport without starting EasyTie
   assert.equal(client.tunnelReady, true);
   assert.equal(client.cfg.url, 'https://awc.xbxbe.com');
   assert.ok(progress.some(e => e.type === 'connect_progress' && e.payload?.phase === 'tunnel_readiness' && e.payload?.status === 'done'));
+
+  // Transient HTTP failures in direct mode must never fall through to peer.ready()
+  client.tunnelReady = false;
+  peer.ready = async () => { throw Error('LINUX_NETWORK_EXITED'); };
+  await client.ensureNetwork({ token: 'tok-123', deviceId: '11111111-2222-3333-4444-555555555555' });
+  assert.equal(client.tunnelReady, true);
+  assert.equal(peerStarts, 0);
 });

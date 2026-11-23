@@ -48,7 +48,10 @@ export class Broker {
           const grant = validateGrant(info.grant, this.grant);
           if (grant.grantVersion < this.grant.grantVersion ||
               (grant.grantVersion === this.grant.grantVersion && hash(grant) !== hash(this.grant))) fail('GRANT_ROLLBACK');
-          this.journal.put('meta', 'remoteGrant', grant); this.grant = grant; this.workspaceStatus = info;
+          if (hash(grant) !== hash(this.grant)) {
+            this.journal.put('meta', 'remoteGrant', grant);
+          }
+          this.grant = grant; this.workspaceStatus = info;
         }
         // Durable stop intentions always precede status reconciliation/new work.
         for (const turn of this.journal.all('turns')) if (turn.stopped && !turn.stopConfirmed) {

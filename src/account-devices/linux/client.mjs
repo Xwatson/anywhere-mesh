@@ -175,6 +175,10 @@ export class LinuxClient extends DeviceClient {
       this.networkToken = signed.token;
       this.probeFailures = 0;
     }
+    if (this.directMode && this.networkToken === signed.token) {
+      this.tunnelReady = true;
+      return;
+    }
     if (this.tunnelReady) return;
     try {
       await phase('tunnel_readiness', 'LINUX_TUNNEL_NOT_READY', () => peer.ready(waitMs), true, notify);

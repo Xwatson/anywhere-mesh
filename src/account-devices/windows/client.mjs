@@ -164,6 +164,10 @@ export class WindowsClient extends DeviceClient {
       this.tunnelReady=false;
       await phase('peer_start','WINDOWS_TUNNEL_NOT_READY',()=>peer.start(),true,notify);
     }
+    if (this.directMode && this.networkToken === signed.token) {
+      this.tunnelReady = true;
+      return;
+    }
     if(this.tunnelReady) return;
     try {
       await phase('tunnel_readiness','WINDOWS_TUNNEL_NOT_READY',()=>peer.ready(waitMs),true,notify);

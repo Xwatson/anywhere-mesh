@@ -424,7 +424,7 @@ export async function startServer(config) {
           ws.on('pong', () => {
             if (online.get(deviceId) !== current) return;
             current.lastSeen = Date.now();
-            if (current.lastSeen - current.saved >= 10000) { directory.seen(deviceId, current.lastSeen); current.saved = current.lastSeen; }
+            if (current.lastSeen - current.saved >= 60000) { directory.seen(deviceId, current.lastSeen); current.saved = current.lastSeen; }
           });
           ws.on('message', () => ws.close(1008));
           ws.on('close', () => detach(deviceId, current)); ws.on('error', () => {});

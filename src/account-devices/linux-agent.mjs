@@ -121,6 +121,10 @@ class LinuxAgentClient extends DeviceClient {
       this.probeFailures = 0;
       console.log('[linux-agent] EasyTier tunnel peer started on 127.0.0.1:' + this.peer.port + ', waiting for TLS handshake...');
     }
+    if (this.directMode && this.networkToken === signed.token) {
+      this.tunnelReady = true;
+      return;
+    }
     if (this.tunnelReady) return;
     try {
       await this.peer.ready(25000);
