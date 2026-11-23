@@ -37,6 +37,11 @@ const errors = {
   DESKTOP_REQUEST_TIMEOUT: '连接超时，请重试。', SESSION_BUSY: '请等当前回复结束后再发送。',
   BODY_LIMIT: '文件或内容超出大小限制。', REVOKE_BEFORE_REVIEW: '请先撤销本项目权限再提交核对。',
   REVIEW_STALE: '核对证据已变化，请刷新后重试。',
+  USERNAME_TAKEN: '该用户名已存在，请换一个。',
+  INVALID_USERNAME: '用户名须为 2–32 个字符，以字母、数字或汉字开头，只能用字母、数字、汉字和 _ . @ -。',
+  LAST_ADMIN_PROTECTED: '至少需要保留一名超级管理员，无法执行此操作。',
+  CANNOT_DELETE_SELF: '不能删除当前正在登录的管理员账号。',
+  DEVICE_BUSY: '该设备或账号仍有运行中的任务，请等待任务结束后重试。',
 };
 const message = e => Object.entries(errors).find(([key]) => String(e.message).includes(key))?.[1] ?? String(e.message);
 
@@ -51,6 +56,13 @@ async function action(method, p = {}) {
     case 'create': path = '/api/sessions'; body = p; httpMethod = 'POST'; break;
     case 'admin': path = '/api/admin/devices'; break;
     case 'disable': path = '/api/admin/devices/' + p.id; body = { disabled: p.disabled }; httpMethod = 'POST'; break;
+    case 'deleteDevice': path = '/api/admin/devices/' + p.id; httpMethod = 'DELETE'; break;
+    case 'pruneDevices': path = '/api/admin/devices/prune'; body = {}; httpMethod = 'POST'; break;
+    case 'adminUsers': path = '/api/admin/users'; break;
+    case 'createUser': path = '/api/admin/users'; body = p; httpMethod = 'POST'; break;
+    case 'resetUserPassword': path = '/api/admin/users/' + p.userId + '/password'; body = { password: p.password }; httpMethod = 'POST'; break;
+    case 'setUserAdmin': path = '/api/admin/users/' + p.userId + '/role'; body = { isAdmin: p.isAdmin }; httpMethod = 'POST'; break;
+    case 'deleteUser': path = '/api/admin/users/' + p.userId; httpMethod = 'DELETE'; break;
     case 'renameSession': path = '/api/sessions/' + p.sessionId; body = { title: p.title }; httpMethod = 'PATCH'; break;
     case 'deleteSession': path = '/api/sessions/' + p.sessionId; httpMethod = 'DELETE'; break;
     case 'setSessionOptions': {
@@ -88,8 +100,8 @@ const CONNECT_STEPS = [
 ];
 let connectState = new Map();
 let localConnectUntil = 0;
-let rows = [], seq = 0, firstSeq = 0, hasOlder = false, epoch, sidebarKey, searchKey, fleetKey, deviceKey, historyProblem = false, historyDirty = false;
-let fleet = [], consent, projectSource, restoring = false, reviewWorkspaceId = null;
+let rows = [], seq = 0, firstSeq = 0, hasOlder = false, epoch, sidebarKey, searchKey, fleetKey, usersKey, deviceKey, historyProblem = false, historyDirty = false;
+let fleet = [], adminUsers = [], adminTab = 'users', resetTargetUser = null, consent, projectSource, restoring = false, reviewWorkspaceId = null;
 let pendingAgent = null, pendingModel = null, pendingEffort = null;
 // Pending attachments: either already uploaded ({ id, name, mime, size }) or staged locally before session creation ({ localFile, name, mime, size, dataBase64 }).
 let pendingAttachments = [];
@@ -365,7 +377,7 @@ function loginView(localName, restore = false, detail) {
     selected = projectId = consent = null;
     pendingAttachments = []; renderPendingAttachments();
     sidebarKey = searchKey = fleetKey = deviceKey = null;
-    groups.clear(); unfolded.clear(); fleet = [];
+    groups.clear(); unfolded.clear(); fleet = []; adminUsers = []; usersKey = null; fleetKey = null;
     for (const id of ['sessions', 'devices', 'fleet', 'search-results', 'signed-user', 'account', 'notice', 'session-title', 'project', 'mode', 'consent-copy']) $(id).replaceChildren();
     $('draft').value = '';
     $('password-form').reset();
@@ -477,19 +489,109 @@ function renderDevices() {
   });
   $('devices').replaceChildren(...(entries.length ? entries : [element('p', '还没有登录过的设备。', 'list-empty')]));
 }
+function showAdminFeedback(text = '') {
+  const box = $('admin-feedback');
+  box.textContent = text;
+  box.hidden = !text;
+}
+function formatDateTime(ts) {
+  return ts ? new Date(ts).toLocaleString('zh-CN', { hour12: false }) : '暂无记录';
+}
+function renderAdminTabs() {
+  const isUsers = adminTab === 'users';
+  $('admin-tab-users').classList.toggle('active', isUsers);
+  $('admin-tab-users').setAttribute('aria-selected', String(isUsers));
+  $('admin-tab-devices').classList.toggle('active', !isUsers);
+  $('admin-tab-devices').setAttribute('aria-selected', String(!isUsers));
+  $('admin-users-panel').hidden = !isUsers;
+  $('admin-devices-panel').hidden = isUsers;
+  $('new-user-btn').disabled = busy || !online;
+}
+function renderUsers() {
+  const adminTotal = adminUsers.filter(u => u.isAdmin).length;
+  $('users-summary').textContent = `共 ${adminUsers.length} 个账号（其中超级管理员 ${adminTotal} 名）`;
+  const key = JSON.stringify([online, busy, state?.user?.id, adminUsers]);
+  if (key === usersKey) return;
+  usersKey = key;
+  const table = element('table'), header = table.createTHead().insertRow(), body = table.createTBody();
+  for (const text of ['账号', '设备数', '创建时间', '最近登录', '操作']) header.append(element('th', text));
+  for (const u of adminUsers) {
+    const row = body.insertRow();
+    const isSelf = u.id === state?.user?.id;
+    const soleAdmin = u.isAdmin && adminTotal <= 1;
+    const nameCell = element('td');
+    nameCell.append(element('strong', u.username));
+    const roleBadge = element('span', u.isAdmin ? '超级管理员' : '普通用户', 'role-badge' + (u.isAdmin ? ' admin' : ''));
+    nameCell.append(roleBadge);
+    if (isSelf) nameCell.append(element('span', '当前账号', 'role-badge self'));
+    const devCell = element('td', `${u.onlineDevices ?? 0} 在线 / ${u.deviceCount ?? 0} 台`);
+    const ops = element('div', undefined, 'row-actions');
+    const resetBtn = element('button', '重置密码', 'secondary');
+    resetBtn.type = 'button';
+    resetBtn.disabled = busy || !online;
+    resetBtn.onclick = () => openResetPassword(u);
+    const roleBtn = element('button', u.isAdmin ? '取消管理员' : '设为管理员', 'secondary');
+    roleBtn.type = 'button';
+    roleBtn.disabled = busy || !online || soleAdmin;
+    if (soleAdmin) roleBtn.title = '至少需保留一名超级管理员';
+    roleBtn.onclick = () => {
+      const verb = u.isAdmin ? '取消超级管理员权限' : '授予超级管理员权限';
+      if (!confirm(`确定要为账号「${u.username}」${verb}？`)) return;
+      void perform(async () => {
+        await action('setUserAdmin', { userId: u.id, isAdmin: !u.isAdmin });
+        showAdminFeedback(`已更新「${u.username}」的管理员权限。`);
+      });
+    };
+    const delBtn = element('button', '删除', 'secondary danger-btn');
+    delBtn.type = 'button';
+    delBtn.disabled = busy || !online || isSelf || soleAdmin;
+    if (isSelf) delBtn.title = '不能删除当前登录账号';
+    else if (soleAdmin) delBtn.title = '至少需保留一名超级管理员';
+    delBtn.onclick = () => {
+      if (!confirm(`确定删除账号「${u.username}」？其登录会话与设备登记记录将被移除，此操作不可撤销。`)) return;
+      void perform(async () => {
+        await action('deleteUser', { userId: u.id });
+        showAdminFeedback(`已删除账号「${u.username}」。`);
+      });
+    };
+    ops.append(resetBtn, roleBtn, delBtn);
+    const opCell = element('td'); opCell.append(ops);
+    row.append(nameCell, devCell, element('td', formatDateTime(u.createdAt)), element('td', formatDateTime(u.lastLoginAt)), opCell);
+  }
+  $('users-table').replaceChildren(adminUsers.length ? table : element('p', '暂无账号记录。', 'list-empty'));
+}
 function renderFleet() {
+  const onlineCount = fleet.filter(d => d.online).length;
+  const prunableCount = fleet.filter(d => !d.online && !(d.sessions?.length)).length;
+  $('devices-summary').textContent = `共 ${fleet.length} 台设备（${onlineCount} 在线，${prunableCount} 台离线无会话可清理）`;
+  $('prune-devices-btn').disabled = busy || !online || prunableCount === 0;
+  $('prune-devices-btn').textContent = prunableCount ? `清理离线无会话设备 (${prunableCount})` : '清理离线无会话设备';
   const key = JSON.stringify([online, busy, fleet.map(d => [d.id, d.name, d.username, d.disabled, d.online, d.online ? null : d.lastSeen, d.sessions])]);
   if (key === fleetKey) return;
   fleetKey = key;
   const table = element('table'), header = table.createTHead().insertRow(), body = table.createTBody();
-  for (const text of ['账号', '设备', '状态', '绑定会话', '接入权限']) header.append(element('th', text));
+  for (const text of ['账号', '设备', '状态', '绑定会话', '操作']) header.append(element('th', text));
   for (const d of fleet) {
     const row = body.insertRow(), presence = element('td', status(d));
     presence.append(element('small', lastSeen(d)));
+    const ops = element('div', undefined, 'row-actions');
     const button = element('button', d.disabled ? '恢复接入' : '停用接入', 'secondary');
+    button.type = 'button';
     button.disabled = busy || !online;
     button.onclick = () => perform(() => action('disable', { id: d.id, disabled: !d.disabled }));
-    const op = element('td'); op.append(button);
+    const delBtn = element('button', '删除', 'secondary danger-btn');
+    delBtn.type = 'button';
+    delBtn.disabled = busy || !online;
+    delBtn.onclick = () => {
+      const warn = d.sessions?.length ? `该设备仍关联 ${d.sessions.length} 个历史会话，` : '';
+      if (!confirm(`确定删除设备「${deviceName(d)}」？${warn}删除后若需使用请在该设备重新登录。`)) return;
+      void perform(async () => {
+        await action('deleteDevice', { id: d.id });
+        showAdminFeedback(`已删除设备「${deviceName(d)}」。`);
+      });
+    };
+    ops.append(button, delBtn);
+    const op = element('td'); op.append(ops);
     row.append(element('td', d.username), element('td', deviceName(d)), presence, element('td', d.sessions.map(s => s.title).join('、') || '—'), op);
   }
   $('fleet').replaceChildren(fleet.length ? table : element('p', '暂无设备记录。', 'list-empty'));
@@ -599,7 +701,7 @@ function render() {
   $('new-chat').hidden = !canStart;
   $('chat').hidden = tab !== 'chat'; $('management').hidden = tab !== 'admin';
   $('crumb-project').textContent = tab === 'chat' && s && p ? p.label : '工作区';
-  $('session-title').textContent = tab === 'admin' ? '设备管理' : s?.title || (webEmpty ? '会话' : '新对话');
+  $('session-title').textContent = tab === 'admin' ? '系统管理' : s?.title || (webEmpty ? '会话' : '新对话');
   $('session-title').title = $('session-title').textContent;
   $('session-actions').hidden = tab !== 'chat' || !s;
   $('target').textContent = d ? d.id === state.deviceId ? '本机' : d.name : '我的设备';
@@ -612,7 +714,7 @@ function render() {
   $('welcome').hidden = !home; $('welcome-title').textContent = webEmpty ? '从桌面开启对话' : '从哪里开始？';
   $('timeline').hidden = home; $('compose').hidden = webEmpty;
   $('web-empty').hidden = !webEmpty;
-  $('web-devices').textContent = state.user.isAdmin ? '设备管理' : '查看设备';
+  $('web-devices').textContent = state.user.isAdmin ? '系统管理' : '查看设备';
   $('suggestions').hidden = !home || webEmpty;
   $('input-hint').hidden = home;
   $('project-label').textContent = s && p ? modes[p.localMode ?? p.mode]?.[0] ?? '项目权限' : p ? (isLocal(p) ? p.label : p.label + ' · ' + (deviceById(p.deviceId)?.name ?? '远程')) : '选择项目文件夹';
@@ -628,7 +730,7 @@ function render() {
   controls(); sidebar();
   if ($('devices-dialog').open) renderDevices();
   if ($('search-dialog').open) searchResults();
-  if (tab === 'admin') renderFleet();
+  if (tab === 'admin') { renderAdminTabs(); renderUsers(); renderFleet(); }
   ensureStream();
 }
 
@@ -737,11 +839,13 @@ async function sync() {
   if (first && native && !narrow.matches) $('draft').focus({ preventScroll: true });
   if (tab === 'chat') await syncHistory();
   else if (state.user.isAdmin) {
+    renderAdminTabs();
     const stamp = generation;
     try {
-      const list = await action('admin');
+      const [list, users] = await Promise.all([action('admin'), action('adminUsers')]);
       if (stamp !== generation || tab !== 'admin') return;
-      fleet = list; renderFleet(); $('fleet-error').hidden = true;
+      fleet = list; adminUsers = users;
+      renderUsers(); renderFleet(); $('fleet-error').hidden = true;
     } catch (error) {
       if (stamp !== generation || tab !== 'admin') return;
       if (error.message.includes('LOGIN_REQUIRED')) { loginView(); return; }
@@ -1045,9 +1149,53 @@ async function savePassword() {
   }
   if (state?.user.id === userId) showAccount('密码已更改。');
 }
-function showAdmin() {
+function showAdmin(initialSubTab) {
   if (!state?.user.isAdmin || busy) return;
-  activeDialog()?.close(); drawer(false); stopStream(); tab = 'admin'; sidebarKey = null; render(); void refresh(true);
+  if (initialSubTab) adminTab = initialSubTab;
+  showAdminFeedback();
+  activeDialog()?.close(); drawer(false); stopStream(); tab = 'admin'; sidebarKey = null; renderAdminTabs(); render(); void refresh(true);
+}
+function openCreateUser() {
+  if (busy || !state?.user.isAdmin) return;
+  $('create-user-form').reset();
+  $('create-user-error').textContent = '';
+  showDialog('create-user-dialog');
+  $('create-username').focus();
+}
+async function submitCreateUser() {
+  const username = $('create-username').value.trim();
+  const password = $('create-password').value;
+  const confirmPw = $('create-password-confirm').value;
+  const isAdmin = $('create-is-admin').checked;
+  if (password !== confirmPw) {
+    $('create-password-confirm').focus();
+    throw Error('两次输入的密码不一致。');
+  }
+  await action('createUser', { username, password, isAdmin });
+  $('create-user-dialog').close();
+  showAdminFeedback(`已创建账号「${username}」（${isAdmin ? '超级管理员' : '普通用户'}）。`);
+}
+function openResetPassword(userObj) {
+  if (busy || !state?.user.isAdmin || !userObj) return;
+  resetTargetUser = userObj;
+  $('reset-password-form').reset();
+  $('reset-password-error').textContent = '';
+  $('reset-password-note').textContent = `正在为「${userObj.username}」设置新密码。重置后该账号的所有设备和浏览器需要用新密码重新登录。`;
+  showDialog('reset-password-dialog');
+  $('reset-new-password').focus();
+}
+async function submitResetPassword() {
+  if (!resetTargetUser) return;
+  const password = $('reset-new-password').value;
+  const confirmPw = $('reset-confirm-password').value;
+  if (password !== confirmPw) {
+    $('reset-confirm-password').focus();
+    throw Error('两次输入的新密码不一致。');
+  }
+  const targetName = resetTargetUser.username;
+  await action('resetUserPassword', { userId: resetTargetUser.id, password });
+  $('reset-password-dialog').close();
+  showAdminFeedback(`已重置「${targetName}」的密码。`);
 }
 
 $('login').onsubmit = e => {
@@ -1084,7 +1232,29 @@ $('cancel-password').onclick = () => showAccount();
 $('password-dialog').addEventListener('close', () => {
   if (!$('password-dialog').open) $('password-form').reset();
 });
-$('admin-nav').onclick = showAdmin;
+$('admin-nav').onclick = () => showAdmin();
+$('admin-tab-users').onclick = () => { adminTab = 'users'; renderAdminTabs(); renderUsers(); };
+$('admin-tab-devices').onclick = () => { adminTab = 'devices'; renderAdminTabs(); renderFleet(); };
+$('new-user-btn').onclick = openCreateUser;
+$('cancel-create-user').onclick = () => $('create-user-dialog').close();
+$('create-user-form').oninput = () => { $('create-user-error').textContent = ''; };
+$('create-user-form').onsubmit = e => { e.preventDefault(); void perform(submitCreateUser); };
+$('create-user-dialog').addEventListener('close', () => { if (!$('create-user-dialog').open) $('create-user-form').reset(); });
+$('cancel-reset-password').onclick = () => $('reset-password-dialog').close();
+$('reset-password-form').oninput = () => { $('reset-password-error').textContent = ''; };
+$('reset-password-form').onsubmit = e => { e.preventDefault(); void perform(submitResetPassword); };
+$('reset-password-dialog').addEventListener('close', () => {
+  if (!$('reset-password-dialog').open) { $('reset-password-form').reset(); resetTargetUser = null; }
+});
+$('prune-devices-btn').onclick = () => {
+  const count = fleet.filter(d => !d.online && !(d.sessions?.length)).length;
+  if (!count || busy) return;
+  if (!confirm(`确定清理 ${count} 台离线且无绑定会话的历史设备记录？在线设备与已有会话的设备不会被影响。`)) return;
+  void perform(async () => {
+    const res = await action('pruneDevices');
+    showAdminFeedback(`已清理 ${res.removed ?? 0} 台离线无会话设备。`);
+  });
+};
 $('back-chat').onclick = () => openThread(selected);
 $('my-devices').onclick = $('device-status').onclick = showDevices;
 $('web-devices').onclick = () => state.user.isAdmin ? showAdmin() : showDevices();

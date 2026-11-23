@@ -383,6 +383,13 @@ export class DeviceClient {
     }
     if (method === 'admin') return this.api('GET', '/api/admin/devices');
     if (method === 'disable') return this.api('POST', '/api/admin/devices/' + p.id, { disabled: p.disabled });
+    if (method === 'deleteDevice') return this.api('DELETE', '/api/admin/devices/' + p.id);
+    if (method === 'pruneDevices') return this.api('POST', '/api/admin/devices/prune', {});
+    if (method === 'adminUsers') return this.api('GET', '/api/admin/users');
+    if (method === 'createUser') return this.api('POST', '/api/admin/users', p);
+    if (method === 'resetUserPassword') return this.api('POST', '/api/admin/users/' + p.userId + '/password', { password: p.password });
+    if (method === 'setUserAdmin') return this.api('POST', '/api/admin/users/' + p.userId + '/role', { isAdmin: p.isAdmin });
+    if (method === 'deleteUser') return this.api('DELETE', '/api/admin/users/' + p.userId);
     if (method === 'create') { if (this.locals.has(p.workspaceId)) this.local(p.workspaceId); return this.api('POST', '/api/sessions', p); }
     const base = '/api/sessions/' + p.sessionId;
     if (method === 'renameSession') return this.api('PATCH', base, { title: p.title });

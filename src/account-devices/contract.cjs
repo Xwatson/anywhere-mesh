@@ -1,6 +1,9 @@
 'use strict';
 const routes = {
   state: [], login: ['username','password'], changePassword: ['current','password'], logout: [], admin: [], disable: ['id','disabled'],
+  deleteDevice: ['id'], pruneDevices: [],
+  adminUsers: [], createUser: ['username','password','isAdmin'],
+  resetUserPassword: ['userId','password'], setUserAdmin: ['userId','isAdmin'], deleteUser: ['userId'],
   chooseWorkspace: [], removeWorkspace: ['workspaceId'], permission: ['workspaceId','mode'],
   create: ['workspaceId','requestId','title'],
   renameSession: ['sessionId','title'], deleteSession: ['sessionId'],
@@ -44,7 +47,9 @@ function validate(method, p = {}) {
   if ('dataBase64' in p && (typeof p.dataBase64 !== 'string' || !p.dataBase64.length || p.dataBase64.length > 14 * 1024 * 1024)) throw Error('BODY_LIMIT');
   if ('afterSeq' in p && (!Number.isSafeInteger(p.afterSeq) || p.afterSeq < 0)) throw Error('INVALID_CURSOR');
   if ('beforeSeq' in p && (!Number.isSafeInteger(p.beforeSeq) || p.beforeSeq < 1)) throw Error('INVALID_CURSOR');
+  if ('userId' in p && (!Number.isSafeInteger(p.userId) || p.userId < 1)) throw Error('INVALID_ID');
   if ('disabled' in p && typeof p.disabled !== 'boolean') throw Error('INVALID_FIELDS');
+  if ('isAdmin' in p && typeof p.isAdmin !== 'boolean') throw Error('INVALID_FIELDS');
   if ('mode' in p && !['revoked','read','edit','execute'].includes(p.mode)) throw Error('INVALID_PERMISSION');
   if ('attachments' in p) {
     if (!Array.isArray(p.attachments) || p.attachments.length > 8 || !p.attachments.every(x => typeof x === 'string' && UUID_RE.test(x))) throw Error('INVALID_ID');

@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { db } from './auth-db.mjs';
-import { checkCredentials, checkPassword, createAuthSession, destroyAuthSession, isThrottled, isThrottledKey,
-  passwordProblem, recordFailure, recordFailureKey, setPassword, userFromToken } from './auth.mjs';
+import { adminCount, checkCredentials, checkPassword, createAuthSession, createUser, deleteUser, destroyAuthSession,
+  getUser, isThrottled, isThrottledKey, passwordProblem, recordFailure, recordFailureKey, setAdmin, setPassword,
+  userFromToken, usernameProblem } from './auth.mjs';
 import { fields, text, uuid } from '../session-host/store.mjs';
 import contract from './contract.cjs';
 
@@ -154,3 +155,106 @@ export function workspaces(userId) {
     FROM mcp_workspaces w JOIN mcp_devices d ON d.id=w.device_id WHERE d.user_id=? ORDER BY w.label,w.id`).all(userId);
 }
 export function accountIds() { return db.prepare('SELECT DISTINCT user_id AS id FROM mcp_devices').all().map(r=>r.id); }
+
+function requireUserId(id) {
+  if (!Number.isSafeInteger(id) || id < 1) throw Error('INVALID_ID');
+  return id;
+}
+
+export function listUsers() {
+  return db.prepare(`
+    SELECT u.id, u.username, u.is_admin AS isAdmin, u.created_at AS createdAt, u.last_login_at AS lastLoginAt,
+      (SELECT COUNT(*) FROM mcp_devices d WHERE d.user_id = u.id) AS deviceCount
+    FROM users u ORDER BY u.is_admin DESC, u.id ASC
+  `).all().map(r => ({
+    id: Number(r.id),
+    username: r.username,
+    isAdmin: Boolean(r.isAdmin),
+    createdAt: r.createdAt ? Number(r.createdAt) : null,
+    lastLoginAt: r.lastLoginAt ? Number(r.lastLoginAt) : null,
+    deviceCount: Number(r.deviceCount ?? 0),
+  }));
+}
+
+export function createUserAccount(input) {
+  fields(input, ['username', 'password', 'isAdmin']);
+  if (typeof input.username !== 'string' || typeof input.password !== 'string' || typeof input.isAdmin !== 'boolean') {
+    throw Error('INVALID_FIELDS');
+  }
+  const username = input.username.trim();
+  if (!input.password.trim() || passwordProblem(input.password)) throw Error('INVALID_NEW_PASSWORD');
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const problem = usernameProblem(username);
+    if (problem) throw Error(problem.includes('已经存在') ? 'USERNAME_TAKEN' : 'INVALID_USERNAME');
+    const created = createUser(username, input.password, input.isAdmin);
+    const row = db.prepare('SELECT created_at AS createdAt FROM users WHERE id=?').get(created.id);
+    db.exec('COMMIT');
+    return { ...created, createdAt: row?.createdAt ? Number(row.createdAt) : Date.now(), lastLoginAt: null, deviceCount: 0 };
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+}
+
+export function resetUserPassword(userId, password) {
+  requireUserId(userId);
+  if (typeof password !== 'string' || !password.trim() || passwordProblem(password)) throw Error('INVALID_NEW_PASSWORD');
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    if (!getUser(userId)) throw Error('NOT_FOUND');
+    setPassword(userId, password);
+    db.exec('COMMIT');
+    return { ok: true, userId };
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+}
+
+export function setUserAdmin(actorUserId, userId, isAdmin) {
+  requireUserId(userId);
+  if (typeof isAdmin !== 'boolean') throw Error('INVALID_FIELDS');
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const target = getUser(userId);
+    if (!target) throw Error('NOT_FOUND');
+    if (!isAdmin && target.isAdmin && adminCount() <= 1) throw Error('LAST_ADMIN_PROTECTED');
+    setAdmin(userId, isAdmin);
+    const updated = getUser(userId);
+    db.exec('COMMIT');
+    return updated;
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+}
+
+export function deleteUserAccount(actorUserId, userId) {
+  requireUserId(userId);
+  if (actorUserId === userId) throw Error('CANNOT_DELETE_SELF');
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const target = getUser(userId);
+    if (!target) throw Error('NOT_FOUND');
+    if (target.isAdmin && adminCount() <= 1) throw Error('LAST_ADMIN_PROTECTED');
+    const deviceIds = db.prepare('SELECT id FROM mcp_devices WHERE user_id=?').all(userId).map(r => r.id);
+    const workspaceIds = db.prepare('SELECT w.id FROM mcp_workspaces w JOIN mcp_devices d ON d.id=w.device_id WHERE d.user_id=?').all(userId).map(r => r.id);
+    deleteUser(userId);
+    db.exec('COMMIT');
+    return { ok: true, userId, deviceIds, workspaceIds };
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+}
+
+export function deviceInfo(id) {
+  uuid(id);
+  const row = db.prepare('SELECT id, user_id AS userId, name, disabled FROM mcp_devices WHERE id=?').get(id);
+  if (!row) throw Error('NOT_FOUND');
+  const workspaceIds = db.prepare('SELECT id FROM mcp_workspaces WHERE device_id=?').all(id).map(r => r.id);
+  return { id: row.id, userId: Number(row.userId), name: row.name, disabled: Boolean(row.disabled), workspaceIds };
+}
+
+export function deleteDevice(id) {
+  uuid(id);
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const row = db.prepare('SELECT id, user_id AS userId FROM mcp_devices WHERE id=?').get(id);
+    if (!row) throw Error('NOT_FOUND');
+    const workspaceIds = db.prepare('SELECT id FROM mcp_workspaces WHERE device_id=?').all(id).map(r => r.id);
+    invalidateDevice(id);
+    db.prepare('DELETE FROM mcp_devices WHERE id=?').run(id);
+    db.exec('COMMIT');
+    return { ok: true, id, userId: Number(row.userId), workspaceIds };
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+}

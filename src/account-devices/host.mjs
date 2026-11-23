@@ -58,10 +58,10 @@ export async function startServer(config) {
     opening.set(w.id, task);
     try { await task; } finally { opening.delete(w.id); }
   }
-  function closeProject(userId, workspaceId) {
+  function closeProject(userId, workspaceId, { force = false } = {}) {
     const entry = projects.get(workspaceId);
     if (entry) {
-      if (entry.broker.journal.all('ops').some(o => !TERMINAL.has(o.state))) throw Error('WORKSPACE_NOT_READY');
+      if (!force && entry.broker.journal.all('ops').some(o => !TERMINAL.has(o.state))) throw Error('WORKSPACE_NOT_READY');
       entry.broker.close(); entry.control.close(); entry.store.close();
       projects.delete(workspaceId);
     }
@@ -192,10 +192,68 @@ export async function startServer(config) {
           .map(s => ({ id: s.id, title: s.title })) }));
         json(res, 200, rows); return;
       }
+      if (req.method === 'POST' && path === '/api/admin/devices/prune') {
+        fields(await body(req), []);
+        const candidates = deviceRows().filter(d => !d.online && account(d.userId).sessions().every(s => s.deviceId !== d.id));
+        let removed = 0;
+        for (const d of candidates) {
+          try {
+            const deleted = directory.deleteDevice(d.id);
+            for (const wid of deleted.workspaceIds) closeProject(deleted.userId, wid, { force: true });
+            removed++;
+          } catch {}
+        }
+        json(res, 200, { ok: true, removed }); return;
+      }
       const target = path.match(/^\/api\/admin\/devices\/([a-f0-9-]{36})$/);
       if (target && req.method === 'POST') {
         const b = await body(req); fields(b, ['disabled']); directory.setDisabled(target[1], b.disabled);
         if (b.disabled) detach(target[1]); json(res, 200, { ok: true }); return;
+      }
+      if (target && req.method === 'DELETE') {
+        const info = directory.deviceInfo(target[1]);
+        if (account(info.userId).sessions().some(s => s.deviceId === info.id && s.activeTurn)) throw Error('DEVICE_BUSY');
+        detach(info.id);
+        const deleted = directory.deleteDevice(info.id);
+        for (const wid of deleted.workspaceIds) closeProject(deleted.userId, wid, { force: true });
+        json(res, 200, { ok: true, id: info.id }); return;
+      }
+      if (req.method === 'GET' && path === '/api/admin/users') {
+        const onlineByUser = new Map();
+        for (const p of online.values()) onlineByUser.set(p.userId, (onlineByUser.get(p.userId) ?? 0) + 1);
+        const users = directory.listUsers().map(u => ({ ...u, onlineDevices: onlineByUser.get(u.id) ?? 0 }));
+        json(res, 200, users); return;
+      }
+      if (req.method === 'POST' && path === '/api/admin/users') {
+        const created = directory.createUserAccount(await body(req));
+        json(res, 200, { ...created, onlineDevices: 0 }); return;
+      }
+      const userPass = path.match(/^\/api\/admin\/users\/(\d+)\/password$/);
+      if (userPass && req.method === 'POST') {
+        const b = await body(req); fields(b, ['password']);
+        const uid = Number(userPass[1]);
+        directory.resetUserPassword(uid, b.password);
+        for (const [id, peer] of online) {
+          if (peer.userId === uid) detach(id, peer);
+        }
+        json(res, 200, { ok: true }); return;
+      }
+      const userRole = path.match(/^\/api\/admin\/users\/(\d+)\/role$/);
+      if (userRole && req.method === 'POST') {
+        const b = await body(req); fields(b, ['isAdmin']);
+        const updated = directory.setUserAdmin(user.id, Number(userRole[1]), b.isAdmin);
+        json(res, 200, updated); return;
+      }
+      const userDel = path.match(/^\/api\/admin\/users\/(\d+)$/);
+      if (userDel && req.method === 'DELETE') {
+        const uid = Number(userDel[1]);
+        if (accounts.get(uid)?.sessions().some(s => s.activeTurn)) throw Error('DEVICE_BUSY');
+        const deleted = directory.deleteUserAccount(user.id, uid);
+        for (const devId of deleted.deviceIds) detach(devId);
+        for (const wid of deleted.workspaceIds) closeProject(uid, wid, { force: true });
+        const accHost = accounts.get(uid);
+        if (accHost) { accounts.delete(uid); await accHost.close(); }
+        json(res, 200, { ok: true, id: uid }); return;
       }
       throw Error('NOT_FOUND');
     }
@@ -342,7 +400,8 @@ export async function startServer(config) {
       const message = e.code ?? e.message;
       const status = { LOGIN_REQUIRED: 401, INVALID_CREDENTIALS: 401, FORBIDDEN: 403, DEVICE_DISABLED: 403, CREATE_ON_THIS_DEVICE: 403,
         NETWORK_ENROLLMENT_UNAVAILABLE: 503, NETWORK_ADDRESS_LIMIT: 503, NOT_FOUND: 404, SESSION_NOT_FOUND: 404, ATTACHMENT_NOT_FOUND: 404,
-        LOGIN_THROTTLED: 429, PASSWORD_THROTTLED: 429, INVALID_FIELDS: 400, INVALID_TEXT: 400, INVALID_ATTACHMENT: 400, BODY_LIMIT: 413,
+        LOGIN_THROTTLED: 429, PASSWORD_THROTTLED: 429, INVALID_FIELDS: 400, INVALID_ID: 400, INVALID_TEXT: 400, INVALID_USERNAME: 400,
+        INVALID_ATTACHMENT: 400, BODY_LIMIT: 413, USERNAME_TAKEN: 409, LAST_ADMIN_PROTECTED: 400, CANNOT_DELETE_SELF: 400, DEVICE_BUSY: 409,
         INCORRECT_CURRENT_PASSWORD: 400, INVALID_NEW_PASSWORD: 400, PASSWORD_UNCHANGED: 400 }[message] ?? 409;
       if (!res.headersSent) json(res, status, { error: /^[A-Z0-9_]+$/.test(message) ? message : 'REQUEST_FAILED' });
     });

@@ -136,9 +136,32 @@
       </section>
     </section>
     <section id="management" hidden>
-      <div class="management-head"><h1>设备管理</h1><button id="back-chat" class="secondary">返回对话</button></div>
-      <p id="fleet-error" class="error-banner" role="status" hidden>暂时无法同步设备管理列表，稍后会自动重试。</p>
-      <div id="fleet"></div>
+      <div class="management-head">
+        <div class="management-title-group">
+          <h1>系统管理</h1>
+          <div class="admin-tabs" role="tablist" aria-label="管理分类">
+            <button id="admin-tab-users" class="admin-tab active" type="button" role="tab" aria-selected="true">账号管理</button>
+            <button id="admin-tab-devices" class="admin-tab" type="button" role="tab" aria-selected="false">设备管理</button>
+          </div>
+        </div>
+        <button id="back-chat" class="secondary">返回对话</button>
+      </div>
+      <p id="admin-feedback" class="admin-feedback" role="status" hidden></p>
+      <p id="fleet-error" class="error-banner" role="status" hidden>暂时无法同步管理数据，稍后会自动重试。</p>
+      <div id="admin-users-panel">
+        <div class="admin-toolbar">
+          <span id="users-summary" class="muted"></span>
+          <button id="new-user-btn" class="primary" type="button">新建账号</button>
+        </div>
+        <div id="users-table"></div>
+      </div>
+      <div id="admin-devices-panel" hidden>
+        <div class="admin-toolbar">
+          <span id="devices-summary" class="muted"></span>
+          <button id="prune-devices-btn" class="secondary" type="button">清理离线无会话设备</button>
+        </div>
+        <div id="fleet"></div>
+      </div>
     </section>
   </section>
 </main>
@@ -157,7 +180,7 @@
   <p id="account-feedback" role="status"></p>
   <button class="menu-row" id="settings-project"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-lock"></use></svg><span>本机项目权限</span><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-right"></use></svg></button>
   <button class="menu-row" id="change-password" aria-haspopup="dialog"><svg class="icon" aria-hidden="true"><use href="#i-key"></use></svg><span>更改密码</span><svg class="icon" aria-hidden="true"><use href="#i-right"></use></svg></button>
-  <button class="menu-row" id="admin-nav" hidden><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-sliders"></use></svg><span>设备管理</span><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-right"></use></svg></button>
+  <button class="menu-row" id="admin-nav" hidden><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-sliders"></use></svg><span>系统管理</span><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-right"></use></svg></button>
   <button class="menu-row" id="logout"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-logout"></use></svg><span>退出登录</span></button>
 </dialog>
 <dialog id="password-dialog" aria-labelledby="password-heading" aria-describedby="password-note">
@@ -228,5 +251,35 @@
     <p class="dialog-error inline-error" role="alert"></p>
   </div>
   <div class="dialog-actions"><button id="close-review" class="secondary" type="button">关闭</button></div>
+</dialog>
+<dialog id="create-user-dialog" aria-labelledby="create-user-heading">
+  <div class="dialog-head"><h2 id="create-user-heading">新建账号</h2><button class="icon-button dialog-close" type="button" aria-label="关闭"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-close"></use></svg></button></div>
+  <form id="create-user-form">
+    <div class="dialog-body">
+      <label for="create-username">用户名</label>
+      <input id="create-username" type="text" autocomplete="off" minlength="2" maxlength="32" required placeholder="2–32 位字母、数字、汉字或 _ . @ -">
+      <label for="create-password">初始密码</label>
+      <input id="create-password" type="password" autocomplete="new-password" minlength="8" maxlength="200" required placeholder="8–200 个字符">
+      <label for="create-password-confirm">确认密码</label>
+      <input id="create-password-confirm" type="password" autocomplete="new-password" maxlength="200" required>
+      <label class="checkbox-row"><input id="create-is-admin" type="checkbox"><span>授予超级管理员权限</span></label>
+      <p id="create-user-error" class="dialog-error inline-error" role="alert"></p>
+    </div>
+    <div class="dialog-actions"><button id="cancel-create-user" class="secondary" type="button">取消</button><button id="save-create-user" class="primary" type="submit">创建账号</button></div>
+  </form>
+</dialog>
+<dialog id="reset-password-dialog" aria-labelledby="reset-password-heading">
+  <div class="dialog-head"><h2 id="reset-password-heading">重置账号密码</h2><button class="icon-button dialog-close" type="button" aria-label="关闭"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-close"></use></svg></button></div>
+  <form id="reset-password-form">
+    <div class="dialog-body">
+      <p id="reset-password-note"></p>
+      <label for="reset-new-password">新密码</label>
+      <input id="reset-new-password" type="password" autocomplete="new-password" minlength="8" maxlength="200" required placeholder="8–200 个字符">
+      <label for="reset-confirm-password">确认新密码</label>
+      <input id="reset-confirm-password" type="password" autocomplete="new-password" maxlength="200" required>
+      <p id="reset-password-error" class="dialog-error inline-error" role="alert"></p>
+    </div>
+    <div class="dialog-actions"><button id="cancel-reset-password" class="secondary" type="button">取消</button><button id="save-reset-password" class="primary" type="submit">确认重置</button></div>
+  </form>
 </dialog>
 </body></html>
