@@ -20,7 +20,7 @@ if args.project_access or args.remember_login: args.fresh=True
 run=str(uuid.uuid4())
 opts=["-o","BatchMode=yes","-o","IdentitiesOnly=yes","-o","StrictHostKeyChecking=yes","-o","ConnectTimeout=10","-i",args.identity]
 args.reports.mkdir(parents=True,exist_ok=True)
-stage="AppData/Local/AnywhereCodingLab/staging"
+stage="AppData/Local/AnywhereMesh/staging"
 with tempfile.TemporaryDirectory() as staging:
     inputfile=Path(staging) / ("installed-ui-"+run+".ps1")
     inputfile.write_text(Path(__file__).with_name("installed-ui.ps1").read_text(),encoding="utf-8-sig")
@@ -32,7 +32,7 @@ result=subprocess.run(["ssh","-T",*opts,args.windows,"powershell.exe -NoProfile 
                       stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=940)
 def collect(name):
     target=args.reports/name
-    r=subprocess.run(["scp","-q",*opts,args.windows+":AppData/Local/AnywhereCodingLab/artifacts/"+name,str(target)],capture_output=True)
+    r=subprocess.run(["scp","-q",*opts,args.windows+":AppData/Local/AnywhereMesh/artifacts/"+name,str(target)],capture_output=True)
     return target if r.returncode==0 else None
 name="installed-"+run
 report=collect(name+".json")

@@ -1,7 +1,7 @@
 # Verify cleanup on this VM while its test desktop is closed.
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
-$root = Join-Path $env:LOCALAPPDATA 'AnywhereCodingLab'
+$root = Join-Path $env:LOCALAPPDATA 'AnywhereMesh'
 $release = [regex]::Match([IO.File]::ReadAllText((Join-Path $root 'Start-Anywhere.cmd')), 'app-[A-F0-9]{16}').Value
 if (!$release) { throw 'No installed desktop release' }
 $native = Join-Path $root ("runtime\$release\src\account-devices\windows")

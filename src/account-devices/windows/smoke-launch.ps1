@@ -1,7 +1,7 @@
 # Run once through the VM's OpenSSH service. The test itself runs on the signed-in user's desktop.
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
-$root = Join-Path $env:LOCALAPPDATA 'AnywhereCodingLab'
+$root = Join-Path $env:LOCALAPPDATA 'AnywhereMesh'
 $payload = [Console]::In.ReadToEnd()
 $inputData = $payload | ConvertFrom-Json
 $id = [guid]::ParseExact($inputData.runId, 'D').ToString()

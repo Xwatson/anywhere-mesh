@@ -29,7 +29,7 @@ function singleRequest(url, tls, method, path, raw, token, { idleMs, totalMs, fr
     const req = https.request(new URL(path, url), {
       ...tls, ...(freshSocket ? { agent: false } : {}), method, timeout: idleMs, signal: deadline,
       headers: {
-        'User-Agent': 'AnywhereCodingLab/1',
+        'User-Agent': 'AnywhereMesh/1',
         ...(token ? { Authorization: 'Bearer ' + token } : {}),
         ...(raw ? { 'Content-Type': 'application/json' } : {}),
       },
@@ -58,7 +58,7 @@ export function uploadBinary(url, tls, path, bytes, filename, mime, token, { tot
   const deadline = AbortSignal.timeout(totalMs);
   return new Promise((resolve, reject) => {
     const req = https.request(new URL(path, url), { ...tls, method: 'POST', timeout: totalMs, signal: deadline, headers: {
-      'User-Agent': 'AnywhereCodingLab/1',
+      'User-Agent': 'AnywhereMesh/1',
       ...(token ? { Authorization: 'Bearer ' + token } : {}),
       'Content-Type': mime || 'application/octet-stream',
       'Content-Length': bytes.length,
@@ -170,7 +170,7 @@ export class DeviceClient {
     if (!this.signed || !this.onStream) return { ok: false };
     const req = https.request(new URL(`/api/sessions/${sessionId}/stream?afterSeq=${afterSeq}`, this.cfg.url), {
       ...this.tls, method: 'GET', headers: {
-        'User-Agent': 'AnywhereCodingLab/1',
+        'User-Agent': 'AnywhereMesh/1',
         'Accept': 'text/event-stream',
         Authorization: 'Bearer ' + this.signed.token,
       },

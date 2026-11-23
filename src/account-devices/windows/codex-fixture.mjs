@@ -7,7 +7,7 @@ import { createInterface } from 'node:readline';
 import { setTimeout as delay } from 'node:timers/promises';
 
 // The controller is the same one used by the installed Electron desktop.
-const base = join(process.env.LOCALAPPDATA, 'AnywhereCodingLab');
+const base = join(process.env.LOCALAPPDATA, 'AnywhereMesh');
 const launch = await readFile(join(base, 'Start-Anywhere.cmd'), 'utf8');
 const appDir = launch.match(/runtime\\(app-[A-F0-9]+)\\src\\desktop/i)?.[1];
 if (!appDir) throw Error('WINDOWS_RUNTIME_NOT_FOUND');

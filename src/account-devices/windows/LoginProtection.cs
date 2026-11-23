@@ -15,7 +15,7 @@ internal static class LoginProtection {
                     if (count + data.Length > 16384) return 1;
                     data.Write(buffer, 0, count);
                 }
-                var purpose = Encoding.UTF8.GetBytes("Anywhere Coding Lab device login v1");
+                var purpose = Encoding.UTF8.GetBytes("AnywhereMesh device login v1");
                 var bytes = data.ToArray();
                 var result = args[0] == "seal"
                     ? ProtectedData.Protect(bytes, purpose, DataProtectionScope.CurrentUser)

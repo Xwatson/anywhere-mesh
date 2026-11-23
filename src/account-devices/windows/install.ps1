@@ -1,6 +1,6 @@
 param([switch]$RuntimeOnly)
 $ErrorActionPreference = 'Stop'
-$root = Join-Path $env:LOCALAPPDATA 'AnywhereCodingLab'
+$root = Join-Path $env:LOCALAPPDATA 'AnywhereMesh'
 $runtime = Join-Path $root 'runtime'
 $staging = Join-Path $root 'staging'
 if ((Get-Item -LiteralPath $root).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Expected a local lab directory' }

@@ -38,7 +38,7 @@ internal static class PeerHost {
             var job = CreateJobObject(IntPtr.Zero, null);
             if (job == IntPtr.Zero || !SetInformationJobObject(job,9,ref limits,Marshal.SizeOf(limits)) ||
                 !AssignProcessToJobObject(job,Process.GetCurrentProcess().Handle)) return 1;
-            string root = Path.Combine(Environment.GetEnvironmentVariable("LOCALAPPDATA"), "AnywhereCodingLab");
+            string root = Path.Combine(Environment.GetEnvironmentVariable("LOCALAPPDATA"), "AnywhereMesh");
             string executable = args.Length == 0 ? Path.Combine(root,@"runtime\easytier-core.exe") : args[0];
             bool managed = args.Length == 2 && args[1] == "session";
             if ((args.Length > 1 && !managed) || !Path.IsPathRooted(executable) || Path.GetFileName(executable) != "easytier-core.exe") return 1;

@@ -380,7 +380,7 @@ function loginView(localName, restore = false, detail) {
   $('forget-login').hidden = restore !== 'waiting' && !(restore === 'connecting' && detail);
   renderConnectProgress();
   $('app').hidden = true; $('signin').hidden = false;
-  $('entry').textContent = localName ? '连接设备 · ' + localName : native ? '登录后继续本机项目的对话。' : '使用你的 Anywhere 账号继续。';
+  $('entry').textContent = localName ? '连接设备 · ' + localName : native ? '登录后继续本机项目的对话。' : '使用你的 AnywhereMesh 账号继续。';
 }
 
 function sidebar() {

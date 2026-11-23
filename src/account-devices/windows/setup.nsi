@@ -3,22 +3,22 @@ Unicode true
 !include "LogicLib.nsh"
 !include "x64.nsh"
 !include "release.nsh"
-!define NAME "Anywhere Coding Lab"
-!define REGKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\AnywhereCodingLab"
+!define NAME "AnywhereMesh"
+!define REGKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\AnywhereMesh"
 !define RELDIR "app-${RELEASE}"
-Name "Anywhere Coding Lab"
-OutFile "Anywhere-Coding-Lab-${VERSION}-win-x64-Setup.exe"
+Name "AnywhereMesh"
+OutFile "AnywhereMesh-${VERSION}-win-x64-Setup.exe"
 RequestExecutionLevel user
-InstallDir "$LOCALAPPDATA\Programs\Anywhere Coding Lab"
+InstallDir "$LOCALAPPDATA\Programs\AnywhereMesh"
 SetCompressor zlib
-Icon "payload/resources/Anywhere.ico"
-UninstallIcon "payload/resources/Anywhere.ico"
+Icon "payload/resources/AnywhereMesh.ico"
+UninstallIcon "payload/resources/AnywhereMesh.ico"
 VIProductVersion "${VERSION}.0"
-VIAddVersionKey "ProductName" "Anywhere Coding Lab"
+VIAddVersionKey "ProductName" "AnywhereMesh"
 VIAddVersionKey "ProductVersion" "${VERSION}"
-VIAddVersionKey "FileDescription" "Anywhere Coding Lab Windows x64 Setup"
+VIAddVersionKey "FileDescription" "AnywhereMesh Windows x64 Setup"
 VIAddVersionKey "FileVersion" "${VERSION}.0"
-VIAddVersionKey "LegalCopyright" "Anywhere Coding Lab"
+VIAddVersionKey "LegalCopyright" "AnywhereMesh"
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_UNPAGE_CONFIRM
 !insertmacro MUI_UNPAGE_INSTFILES
@@ -33,7 +33,7 @@ Function .onInit
   SetShellVarContext current
 FunctionEnd
 
-Section "Anywhere Coding Lab"
+Section "AnywhereMesh"
   SetOutPath "$INSTDIR\${RELDIR}"
   ClearErrors
   File /r "payload/*"
@@ -49,13 +49,13 @@ Section "Anywhere Coding Lab"
   FileClose $0
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   SetOutPath "$INSTDIR\${RELDIR}"
-  CreateShortcut "$DESKTOP\Anywhere Coding Lab.lnk" "$INSTDIR\${RELDIR}\Anywhere Coding Lab.exe" "" "$INSTDIR\${RELDIR}\resources\Anywhere.ico"
-  CreateShortcut "$SMPROGRAMS\Anywhere Coding Lab.lnk" "$INSTDIR\${RELDIR}\Anywhere Coding Lab.exe" "" "$INSTDIR\${RELDIR}\resources\Anywhere.ico"
-  WriteRegStr HKCU "${REGKEY}" "DisplayName" "Anywhere Coding Lab"
+  CreateShortcut "$DESKTOP\AnywhereMesh.lnk" "$INSTDIR\${RELDIR}\AnywhereMesh.exe" "" "$INSTDIR\${RELDIR}\resources\AnywhereMesh.ico"
+  CreateShortcut "$SMPROGRAMS\AnywhereMesh.lnk" "$INSTDIR\${RELDIR}\AnywhereMesh.exe" "" "$INSTDIR\${RELDIR}\resources\AnywhereMesh.ico"
+  WriteRegStr HKCU "${REGKEY}" "DisplayName" "AnywhereMesh"
   WriteRegStr HKCU "${REGKEY}" "DisplayVersion" "${VERSION}"
-  WriteRegStr HKCU "${REGKEY}" "Publisher" "Anywhere Coding Lab"
+  WriteRegStr HKCU "${REGKEY}" "Publisher" "AnywhereMesh"
   WriteRegStr HKCU "${REGKEY}" "InstallLocation" "$INSTDIR"
-  WriteRegStr HKCU "${REGKEY}" "DisplayIcon" "$INSTDIR\${RELDIR}\resources\Anywhere.ico"
+  WriteRegStr HKCU "${REGKEY}" "DisplayIcon" "$INSTDIR\${RELDIR}\resources\AnywhereMesh.ico"
   WriteRegStr HKCU "${REGKEY}" "UninstallString" '"$INSTDIR\Uninstall.exe"'
   WriteRegStr HKCU "${REGKEY}" "QuietUninstallString" '"$INSTDIR\Uninstall.exe" /S'
   WriteRegDWORD HKCU "${REGKEY}" "NoModify" 1
@@ -64,7 +64,7 @@ Section "Anywhere Coding Lab"
   Goto done
   failed:
     SetErrorLevel 1
-    Abort "安装未完成。请关闭正在运行的实验客户端后重试。"
+    Abort "安装未完成。请关闭正在运行的 AnywhereMesh 后重试。"
   done:
 SectionEnd
 
@@ -72,7 +72,7 @@ Section "Uninstall"
   SetShellVarContext current
   SetRegView 64
   ; The program directory is fixed per user. Projects and device credentials live elsewhere.
-  StrCpy $INSTDIR "$LOCALAPPDATA\Programs\Anywhere Coding Lab"
+  StrCpy $INSTDIR "$LOCALAPPDATA\Programs\AnywhereMesh"
   SetOutPath "$TEMP"
   FindFirst $0 $1 "$INSTDIR\app-????????????????"
   loop:
@@ -87,12 +87,12 @@ Section "Uninstall"
   locked:
     FindClose $0
     SetErrorLevel 1
-    Abort "请先关闭 Anywhere Coding Lab，然后重试卸载。"
+    Abort "请先关闭 AnywhereMesh，然后重试卸载。"
   done:
     FindClose $0
-    Delete "$DESKTOP\Anywhere Coding Lab.lnk"
-    Delete "$SMPROGRAMS\Anywhere Coding Lab.lnk"
-    DeleteRegKey HKCU "${REGKEY}"
+    Delete "$DESKTOP\AnywhereMesh.lnk"
+    Delete "$SMPROGRAMS\AnywhereMesh.lnk"
     Delete "$INSTDIR\Uninstall.exe"
     RMDir "$INSTDIR"
+    DeleteRegKey HKCU "${REGKEY}"
 SectionEnd

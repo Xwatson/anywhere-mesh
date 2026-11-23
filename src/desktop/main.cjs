@@ -10,7 +10,7 @@ const sessionsProfile = process.argv.includes('--lab-sessions');
 const deviceSlot = process.argv.find(arg => /^--lab-device=[ab]$/.test(arg))?.at(-1);
 const installedWindows = process.platform === 'win32' && existsSync(resolve(process.resourcesPath, 'tools/node.exe'));
 const windowsDevice = installedWindows || (process.platform === 'win32' && process.argv.includes('--lab-windows'));
-const windowsRoot = windowsDevice ? resolve(process.env.LOCALAPPDATA, 'AnywhereCodingLab') : null;
+const windowsRoot = windowsDevice ? resolve(process.env.LOCALAPPDATA, 'AnywhereMesh') : null;
 const wanProfile = deviceSlot && process.argv.includes('--lab-wan');
 const appDir = deviceSlot || windowsDevice ? resolve(__dirname,'../account-devices') : sessionsProfile ? resolve(__dirname, '../desktop-sessions') : __dirname;
 const contract = require(resolve(appDir, 'contract.cjs'));
@@ -26,7 +26,7 @@ const profile = windowsDevice ? resolve(windowsRoot,'profile') : deviceSlot ? '/
   sessionsProfile ? '/srv/anywhere-lab/desktop-d2/shell-profile' : '/srv/anywhere-lab/desktop-d/shell-profile';
 mkdirSync(profile, { recursive: true, mode: 0o700 });
 app.setPath('userData', profile);
-app.setName('Anywhere Desktop · 实验版');
+app.setName('AnywhereMesh');
 app.disableHardwareAcceleration();
 app.enableSandbox();
 protocol.registerSchemesAsPrivileged([{ scheme: 'anywhere-desktop', privileges: { standard: true, secure: true, supportFetchAPI: false, corsEnabled: false } }]);
@@ -58,7 +58,7 @@ async function stop() {
 }
 if (single) app.whenReady().then(async () => {
   if (installedWindows) {
-    app.setAppUserModelId('AnywhereCoding.Lab');
+    app.setAppUserModelId('AnywhereMesh.Desktop');
     mkdirSync(resolve(windowsRoot,'project'), {recursive:true});
     if (!existsSync(resolve(windowsRoot,'ca.crt'))) {
       copyFileSync(resolve(process.resourcesPath,'tools/ca.crt'),resolve(windowsRoot,'ca.crt'),constants.COPYFILE_EXCL);
@@ -107,8 +107,8 @@ if (single) app.whenReady().then(async () => {
   const area = screen.getPrimaryDisplay().workAreaSize;
   win = new BrowserWindow({ width: Math.min(area.width, 1280), height: Math.min(area.height, 900), minWidth: 900, minHeight: 680,
     show: false, backgroundColor: windowsDevice || deviceSlot ? (nativeTheme.shouldUseDarkColors ? '#1c201d' : '#fdfdfa') : '#09090b',
-    title: 'Anywhere', autoHideMenuBar: true,
-    ...(installedWindows ? {icon:resolve(process.resourcesPath,'Anywhere.ico')} : {}),
+    title: 'AnywhereMesh', autoHideMenuBar: true,
+    ...(installedWindows ? {icon:resolve(process.resourcesPath,'AnywhereMesh.ico')} : {}),
     webPreferences: { preload: resolve(appDir, 'preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false,
       webSecurity: true, allowRunningInsecureContent: false, webviewTag: false, devTools: false, spellcheck: false },
   });

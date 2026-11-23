@@ -8,7 +8,7 @@ function expandHome(p) {
 }
 
 export const SESSION_TTL_MS = 30 * 24 * 3600 * 1000;
-const dataDir = expandHome(process.env.DATA_DIR || '~/.anywhere-coding');
+const dataDir = expandHome(process.env.DATA_DIR || '~/.anywhere-mesh');
 mkdirSync(dataDir, { recursive: true, mode: 0o700 });
 
 export const db = new DatabaseSync(resolve(dataDir, 'data.db'));

@@ -8,7 +8,7 @@ import { DeviceClient } from '../client.mjs';
 import contract from '../contract.cjs';
 import { WindowsClient } from './client.mjs';
 
-const defaultPath=String.raw`C:\AnywhereCodingLab\project`;
+const defaultPath=String.raw`C:\AnywhereMesh\project`;
 const addedPath=String.raw`C:\开发\第二个项目`;
 const credentials={username:'member',password:'initial password'};
 
@@ -72,7 +72,7 @@ function fixture(t) {
   t.mock.method(DeviceClient.prototype,'connectProject',()=>{});
   class Client extends WindowsClient {
     constructor(){
-      super(cfg,workspace,{peer,privatePaths:[String.raw`C:\AnywhereCodingLab`],bootstrap});
+      super(cfg,workspace,{peer,privatePaths:[String.raw`C:\AnywhereMesh`],bootstrap});
       clients.push(this);
     }
     async api(method,route,input) {
@@ -154,7 +154,7 @@ test('selected folders reserve stable IDs across dropped responses and restarts'
   await client.control('login',credentials);
   const initial=(await client.control('state')).projects[0];
   const choose=path=>client.control('registerWorkspace',{path});
-  await assert.rejects(choose(String.raw`C:\AnywhereCodingLab\state`),/WORKSPACE_PATH_RESERVED/);
+  await assert.rejects(choose(String.raw`C:\AnywhereMesh\state`),/WORKSPACE_PATH_RESERVED/);
   remote.dropRegistration=true;
   await assert.rejects(choose(addedPath),/NETWORK_TIMEOUT/);
   const persisted=JSON.parse(readFileSync(join(stateDir,'installation.json'),'utf8')).projects[1];

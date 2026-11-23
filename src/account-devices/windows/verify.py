@@ -17,12 +17,12 @@ member = next(a for a in json.loads(Path(accounts).read_text()) if a["username"]
 opts = ["-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=yes",
         "-o", "ConnectTimeout=7", "-i", identity]
 ssh = ["ssh", "-T", *opts, target]
-win_dir = "AppData/Local/AnywhereCodingLab/artifacts"
+win_dir = "AppData/Local/AnywhereMesh/artifacts"
 report = "smoke-" + run_id + ".json"
 print("Windows desktop check", run_id, flush=True)
 launcher = Path(__file__).with_name("smoke-launch.ps1")
-subprocess.run(["scp", "-q", *opts, str(launcher), target + ":AppData/Local/AnywhereCodingLab/staging/"], check=True)
-launch = "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File AppData/Local/AnywhereCodingLab/staging/smoke-launch.ps1"
+subprocess.run(["scp", "-q", *opts, str(launcher), target + ":AppData/Local/AnywhereMesh/staging/"], check=True)
+launch = "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File AppData/Local/AnywhereMesh/staging/smoke-launch.ps1"
 
 def download(name, path):
     result = subprocess.run(["scp", "-q", *opts, target + ":" + win_dir + "/" + name, str(path)],

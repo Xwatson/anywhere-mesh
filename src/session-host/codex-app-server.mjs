@@ -93,7 +93,7 @@ export class CodexAppServer {
     proc?.once('exit', ended);
 
     this.ready = this.request('initialize', {
-      clientInfo: { name: 'anywhere-coding-crossborder', title: 'Anywhere Coding Crossborder', version: '0.4.2' },
+      clientInfo: { name: 'anywhere-mesh', title: 'AnywhereMesh', version: '0.4.2' },
       capabilities: this.opts.experimentalApi ? { experimentalApi: true } : null,
     }).then(() => {
       this.write({ jsonrpc: '2.0', method: 'initialized' });

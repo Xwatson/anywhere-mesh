@@ -228,7 +228,7 @@ export class AntigravityTurns {
         socket = createConnection(this.socketPath);
         await Promise.race([once(socket, 'connect'), delay(4000).then(() => { throw Error('TIMEOUT'); })]);
         acp = new AcpConnection(socket, () => {});
-        const init = await acp.call('initialize', { protocolVersion: 1, clientInfo: { name: 'anywhere-lab', version: '0.4.0' }, clientCapabilities: {} }, 8000);
+        const init = await acp.call('initialize', { protocolVersion: 1, clientInfo: { name: 'anywhere-mesh', title: 'AnywhereMesh', version: '0.4.2' }, clientCapabilities: {} }, 8000);
         if (init.protocolVersion !== 1) throw Error('ACP_VERSION');
         const session = await acp.call('session/new', { cwd: this.cwd, mcpServers: [] }, 10000);
         const models = groupAvailableModels(session);
@@ -527,7 +527,7 @@ export class AntigravityTurns {
 
       const init = await acp.call('initialize', {
         protocolVersion: 1,
-        clientInfo: { name: 'anywhere-coding-lab', title: 'Anywhere Coding Lab', version: '0.4.0' },
+        clientInfo: { name: 'anywhere-mesh', title: 'AnywhereMesh', version: '0.4.2' },
         clientCapabilities: {},
       });
       if (init.protocolVersion !== 1) throw Error('ANTIGRAVITY_PROTOCOL_UNSUPPORTED');

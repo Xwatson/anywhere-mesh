@@ -1,8 +1,8 @@
-param([string]$RunId, [switch]$Interactive)
+﻿param([string]$RunId, [switch]$Interactive)
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 Add-Type -AssemblyName System.Core
-$base = Join-Path $env:LOCALAPPDATA 'AnywhereCodingLab'
+$base = Join-Path $env:LOCALAPPDATA 'AnywhereMesh'
 $art = Join-Path $base 'artifacts'
 [void][IO.Directory]::CreateDirectory($art)
 if (!$Interactive) {
@@ -141,7 +141,7 @@ if ($fresh) {
     $freshData=Join-Path $env:TEMP ("Anywhere-FirstRun-"+$RunId)
     if (Test-Path $freshData) {throw 'Test app data already exists'}
     [void][IO.Directory]::CreateDirectory($freshData)
-    $base=Join-Path $freshData 'AnywhereCodingLab'
+    $base=Join-Path $freshData 'AnywhereMesh'
 }
 function Launch-Fresh {
     $start=[Diagnostics.ProcessStartInfo]::new($target)
@@ -158,12 +158,12 @@ $file='笔记-'+$RunId.Substring(0,8)+'.txt';$fixture=Join-Path (Join-Path $base
 $marker='GUI_'+[guid]::NewGuid().ToString('N')
 $created=$false;$signed=$false
 try {
-    $shortcut=Join-Path ([Environment]::GetFolderPath('DesktopDirectory')) 'Anywhere Coding Lab.lnk'
+    $shortcut=Join-Path ([Environment]::GetFolderPath('DesktopDirectory')) 'AnywhereMesh.lnk'
     $target=(New-Object -ComObject WScript.Shell).CreateShortcut($shortcut).TargetPath
-    if ($target -notlike "$env:LOCALAPPDATA\Programs\Anywhere Coding Lab\app-*\Anywhere Coding Lab.exe") {throw 'Expected installed shortcut'}
+    if ($target -notlike "$env:LOCALAPPDATA\Programs\AnywhereMesh\app-*\AnywhereMesh.exe") {throw 'Expected installed shortcut'}
     if ($fresh) { $proc=Launch-Fresh } else {
     Start-Process -FilePath $shortcut
-    $proc=Wait-For 'installed desktop window' { Get-Process -Name 'Anywhere Coding Lab' -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $target -and $_.MainWindowHandle -ne 0 } | Select-Object -First 1 }
+    $proc=Wait-For 'installed desktop window' { Get-Process -Name 'AnywhereMesh' -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $target -and $_.MainWindowHandle -ne 0 } | Select-Object -First 1 }
     }
     $window=[System.Windows.Automation.AutomationElement]::FromHandle($proc.MainWindowHandle)
     $state.shortcut=$shortcut;$state.target=$target;$state.windowPid=$proc.Id
@@ -250,7 +250,7 @@ try {
         $vault=Join-Path $base 'state\login.dpapi'
         $sealed=[IO.File]::ReadAllBytes($vault)
         Add-Type -AssemblyName System.Security
-        $plain=[Security.Cryptography.ProtectedData]::Unprotect($sealed,$utf8.GetBytes('Anywhere Coding Lab device login v1'),'CurrentUser')
+        $plain=[Security.Cryptography.ProtectedData]::Unprotect($sealed,$utf8.GetBytes('AnywhereMesh device login v1'),'CurrentUser')
         $record=$utf8.GetString($plain)|ConvertFrom-Json
         if($record.token -notmatch '^[a-zA-Z0-9_-]{43}$' -or $record.deviceId -ne $instance -or $utf8.GetString($sealed).Contains($record.token) -or $utf8.GetString($plain).Contains($auth.password)){throw 'Unexpected credential storage'}
         $state.deviceId=$instance

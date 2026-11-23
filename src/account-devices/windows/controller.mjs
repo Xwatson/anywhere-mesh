@@ -9,7 +9,7 @@ import { WindowsPeer } from './network.mjs';
 import { windowsWorkspace } from './read.mjs';
 
 if (process.platform !== 'win32') throw Error('WINDOWS_REQUIRED');
-const root = join(process.env.LOCALAPPDATA,'AnywhereCodingLab');
+const root = join(process.env.LOCALAPPDATA,'AnywhereMesh');
 const cfg = {stateDir:join(root,'state'), name:'Windows · '+hostname(), url:'https://127.0.0.1:31844',
   ca:join(root,'ca.crt'), projects:[{label:'Windows 本地项目', path:join(root,'project')}]};
 const input = createInterface({input:process.stdin});

@@ -30,7 +30,7 @@ def pinned(name, expected):
 
 with pinned("electron-v45.3.3-win32-x64.zip", "49dd2d3875944f08de03d34595cd30093c588b9edcabb41a0ac481028a3a5a8a") as z:
     z.extractall(payload)
-(payload / "electron.exe").rename(payload / "Anywhere Coding Lab.exe")
+(payload / "electron.exe").rename(payload / "AnywhereMesh.exe")
 resources = payload / "resources"
 tools = resources / "tools"
 tools.mkdir()
@@ -53,7 +53,7 @@ with zipfile.ZipFile(args.app) as z:
         if not entry.filename.endswith((".cs", "/smoke.mjs")):
             z.extract(entry, app)
 release.update(args.app.read_bytes())
-(app / "package.json").write_text(json.dumps({"name":"anywhere-coding-lab","productName":"Anywhere Coding Lab",
+(app / "package.json").write_text(json.dumps({"name":"anywhere-mesh","productName":"AnywhereMesh",
     "version":version,"main":"src/desktop/main.cjs"}))
 release.update((app / "package.json").read_bytes())
 native = app / "src/account-devices/windows"
@@ -69,7 +69,7 @@ if ca.count(b"-----BEGIN CERTIFICATE-----") != 1 or b"PRIVATE KEY" in ca:
 (tools / "ca.crt").write_bytes(ca)
 release.update(ca)
 with Image.open(Path(__file__).with_name("icon-512.png")) as im:
-    im.convert("RGBA").save(resources / "Anywhere.ico", sizes=[(16,16),(32,32),(48,48),(128,128),(256,256)], bitmap_format="bmp")
-release.update((resources / "Anywhere.ico").read_bytes())
+    im.convert("RGBA").save(resources / "AnywhereMesh.ico", sizes=[(16,16),(32,32),(48,48),(128,128),(256,256)], bitmap_format="bmp")
+release.update((resources / "AnywhereMesh.ico").read_bytes())
 shutil.copyfile(Path(__file__).with_name("setup.nsi"),dest / "setup.nsi")
 (dest / "release.nsh").write_text(f'!define RELEASE "{release.hexdigest()[:16]}"\n!define VERSION "{version}"\n')

@@ -1,20 +1,30 @@
-# Anywhere Crossborder
+# AnywhereMesh
 
-跨国 AI 编程代理与受控远程工作区系统：海外会话主机托管 AI CLI（**Codex CLI** / **Antigravity CLI**），通过加密 EasyTier 隧道与受控 Workspace MCP 协议安全读写并执行国内设备上的本地项目，支持 Web 端与 Windows 桌面客户端同步操作。
+**One AI host, every machine you own.**
 
-## 核心架构
+在一台主机（家庭小主机、NAS 或云端 VPS）上登录一次 AI 编程订阅（**Codex CLI** / **Antigravity CLI**），通过 **EasyTier 加密组网（P2P 打洞 + WSS 中继）** 与受控 **Workspace MCP** 协议，随时随地安全指挥你的任意电脑执行本地代码任务。
 
-- **海外会话宿主（`src/account-devices/` + `src/session-host/`）**
-  - `host.mjs` / `wan/server.mjs`：HTTPS / WSS 服务端，多账号认证（`auth.mjs` / `auth-db.mjs`，Node 24 内置 `node:sqlite`）、设备绑定、SSE 实时流（`GET /api/sessions/:id/stream`）、会话管理与附件存储。
-  - `codex-turns.mjs` + `codex-app-server.mjs`：Codex CLI 引擎（dynamicTools + 实时流式推送）。
-  - `antigravity-turns.mjs` + `wan/agy-mcp-bridge.mjs`：Antigravity CLI (`agy acp`) 引擎，跨用户 Unix Socket MCP 桥接（256-bit 随机 Bearer Token 鉴权），仅放行绑定工作区 `mcp_anywhere_workspace_*` 工具并拦截所有主机本地工具。
-  - `ui/`：零框架轻量前端（Web 与 Electron 共用），支持引擎/模型/推理强度切换、流式思考与回复、图片/文件附件、会话重命名/删除、分页回溯与本地未知任务核对。
-- **执行隔离与可靠协议（`src/execution/` + `src/workspace/` + `src/reliability/` + `src/desktop-commander/`）**
-  - 本地授权状态机（未授权 / 只读 / 编辑 / 完全访问）、调用票据绑定（`callTicket`）、内容哈希版本乐观锁（`expectedRevision`）、多文件补丁（`workspace_apply_patch`）、日志压缩与中断未知任务本地核对。
-- **Windows 桌面客户端（`src/desktop/` + `src/account-devices/windows/`）**
-  - Electron 沙箱外壳（`desktop/main.cjs`）、DPAPI 设备登录凭据保护（`LoginProtection.cs`）、零配置 EasyTier 用户态加密隧道（`PeerHost.cs` + `network.mjs`）、安全文件快照（`WorkspaceSnapshot.cs`）与离线 AppContainer 命令执行（`TaskHost.cs`）。
+## 为什么做 AnywhereMesh
 
-## 运行测试
+- **订阅只登一台设备**：不需要在每一台开发机上重复配置代理或登录 AI 账号，一台常开主机作为 AI 大脑。
+- **任意电脑随时接入**：无论是家里台式机、公司电脑还是笔记本，打开客户端自动领取加密组网凭据，无需公网 IP 或开放入站防火墙端口。
+- **严格本地权限边界**：每台设备的每个项目由本机独立授权（未授权 / 只读 / 编辑 / 完全访问），随时可一键撤销；服务端 AI 内置本地文件/命令工具一律拦截，只能通过受控 MCP 票据操作已授权目录。
+- **Web + 桌面端同步控制**：在桌面客户端发起并授权项目后，用浏览器也能跨设备继续对话与查看进度。
+
+## 目录结构
+
+```text
+src/
+├── account-devices/   # 会话宿主、多账号鉴权、Web/桌面共用前端、WAN 部署与 Windows 打包
+├── session-host/      # 会话存储、运行时调度、Codex CLI 与 Antigravity CLI (ACP) 引擎
+├── desktop/           # Electron 沙箱桌面外壳
+├── execution/         # 本地授权状态机、RPC 通道与可靠执行内核
+├── workspace/         # Workspace MCP 工具目录、调用票据执行器与多文件补丁引擎
+├── reliability/       # 文件内容哈希乐观锁与历史归档核对
+└── desktop-commander/ # 本地读写/搜索适配与路径边界策略
+```
+
+## 快速测试
 
 需要 Node.js 24+（使用内置 `node:sqlite` 与 `node:test`）：
 
@@ -25,7 +35,7 @@ npm test
 
 ## 构建发布
 
-- **服务端打包**：
+- **服务端打包（Linux）**：
   ```bash
   bash src/account-devices/wan/build.sh /tmp/wan-stage
   ```

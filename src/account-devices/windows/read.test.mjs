@@ -9,7 +9,7 @@ import { basename, dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 async function installedWorkspace() {
-  const base=join(process.env.LOCALAPPDATA,'AnywhereCodingLab');
+  const base=join(process.env.LOCALAPPDATA,'AnywhereMesh');
   const nodeDir=dirname(process.execPath);
   const app=basename(nodeDir)==='tools' && basename(dirname(nodeDir))==='resources' ? join(dirname(nodeDir),'app') :
     join(base,'runtime',(await readFile(join(base,'Start-Anywhere.cmd'),'utf8')).match(/app-[A-F0-9]{16}/)[0]);
