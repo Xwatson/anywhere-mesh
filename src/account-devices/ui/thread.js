@@ -17,27 +17,184 @@ export function icon(name) {
 }
 
 // Construct text nodes even when model output or a file contains HTML.
-function inline(parent, text) {
-  const tokens = /(`[^`\n]+`|\*\*[^*\n]+\*\*)/g;
-  let cursor = 0;
-  for (const match of text.matchAll(tokens)) {
-    parent.append(text.slice(cursor, match.index));
-    const bold = match[0].startsWith('**');
-    parent.append(element(bold ? 'strong' : 'code', match[0].slice(bold ? 2 : 1, bold ? -2 : -1)));
-    cursor = match.index + match[0].length;
+const ALERT_LABELS = { NOTE: '说明', TIP: '提示', IMPORTANT: '重要', WARNING: '注意', CAUTION: '警告' };
+
+function parseFileUrl(rawUrl) {
+  try {
+    const u = new URL(rawUrl);
+    if (u.protocol !== 'file:') return null;
+    let path = decodeURIComponent(u.pathname || '');
+    if (/^\/[A-Za-z]:\//.test(path)) path = path.slice(1);
+    const hashMatch = (u.hash || '').match(/^#L(\d+)(?:-L?(\d+))?$/i);
+    const lineRange = hashMatch ? (hashMatch[2] ? `${hashMatch[1]}-${hashMatch[2]}` : hashMatch[1]) : '';
+    return { path: path || rawUrl, lineRange };
+  } catch {
+    return null;
   }
-  parent.append(text.slice(cursor));
+}
+
+function makeFileChip(label, copyPath, lineRange = '', rawUrl = '') {
+  const btn = element('button', undefined, 'md-file');
+  btn.type = 'button';
+  btn.dataset.copyText = copyPath;
+  if (rawUrl && rawUrl !== copyPath) btn.dataset.rawUrl = rawUrl;
+  if (lineRange) btn.dataset.lineRange = lineRange;
+  const showRange = lineRange && !label.includes(lineRange) && !/#L\d+/i.test(label);
+  btn.append(icon('file'), element('span', label));
+  if (showRange) btn.append(element('small', ':' + lineRange));
+  return btn;
+}
+
+function unwrapCodeLabel(rawLabel) {
+  const trimmed = rawLabel.trim();
+  if (trimmed.length >= 2 && trimmed.startsWith('`') && trimmed.endsWith('`') && !trimmed.slice(1, -1).includes('`')) {
+    return trimmed.slice(1, -1);
+  }
+  return rawLabel;
+}
+
+function findMarkdownLink(text, startIdx) {
+  let i = startIdx + 1;
+  let inCode = false;
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === '\n') return null;
+    if (ch === '`') inCode = !inCode;
+    else if (!inCode && ch === ']') break;
+    i++;
+  }
+  if (i >= text.length || text[i] !== ']' || text[i + 1] !== '(') return null;
+  const rawLabel = text.slice(startIdx + 1, i);
+  if (!rawLabel.trim()) return null;
+  let j = i + 2;
+  let depth = 0;
+  while (j < text.length) {
+    const ch = text[j];
+    if (ch === '\n' || (depth === 0 && /\s/.test(ch))) return null;
+    if (ch === '(') depth++;
+    else if (ch === ')') {
+      if (depth === 0) break;
+      depth--;
+    }
+    j++;
+  }
+  if (j >= text.length || text[j] !== ')') return null;
+  const rawTarget = text.slice(i + 2, j).trim();
+  if (!rawTarget) return null;
+  return { rawLabel, rawTarget, endIdx: j + 1 };
+}
+
+function renderLinkNode(rawLabel, rawTarget) {
+  const cleanLabel = unwrapCodeLabel(rawLabel);
+  if (/^file:\/\//i.test(rawTarget)) {
+    const info = parseFileUrl(rawTarget);
+    const filePath = info?.path || rawTarget.replace(/^file:\/\//i, '');
+    return makeFileChip(cleanLabel, filePath, info?.lineRange || '', rawTarget);
+  }
+  if (/^https?:\/\//i.test(rawTarget)) {
+    try {
+      const u = new URL(rawTarget);
+      if (u.protocol === 'http:' || u.protocol === 'https:') {
+        const a = element('a', undefined, 'md-link');
+        a.href = u.href;
+        a.target = '_blank';
+        a.rel = 'noopener noreferrer';
+        inline(a, cleanLabel, false);
+        return a;
+      }
+    } catch {}
+  }
+  if (/^conversation:\/\//i.test(rawTarget) || !/^[a-z][a-z0-9+.-]*:/i.test(rawTarget)) {
+    return makeFileChip(cleanLabel, rawTarget, '', rawTarget);
+  }
+  return document.createTextNode(cleanLabel);
+}
+
+function inline(parent, text, allowLinks = true) {
+  let cursor = 0;
+  let plainStart = 0;
+  const flushPlain = end => {
+    if (end > plainStart) parent.append(text.slice(plainStart, end));
+  };
+  while (cursor < text.length) {
+    const ch = text[cursor];
+    if (ch === '`') {
+      const close = text.indexOf('`', cursor + 1);
+      if (close > cursor + 1 && !text.slice(cursor + 1, close).includes('\n')) {
+        flushPlain(cursor);
+        parent.append(element('code', text.slice(cursor + 1, close)));
+        cursor = plainStart = close + 1;
+        continue;
+      }
+    }
+    if (ch === '*' && text[cursor + 1] === '*') {
+      const close = text.indexOf('**', cursor + 2);
+      if (close > cursor + 2 && !text.slice(cursor + 2, close).includes('\n')) {
+        flushPlain(cursor);
+        const strong = element('strong');
+        inline(strong, text.slice(cursor + 2, close), allowLinks);
+        parent.append(strong);
+        cursor = plainStart = close + 2;
+        continue;
+      }
+    }
+    if (allowLinks && ch === '[') {
+      const link = findMarkdownLink(text, cursor);
+      if (link) {
+        flushPlain(cursor);
+        parent.append(renderLinkNode(link.rawLabel, link.rawTarget));
+        cursor = plainStart = link.endIdx;
+        continue;
+      }
+    }
+    if (allowLinks && ch === 'f' && text.startsWith('file:///', cursor)) {
+      const m = text.slice(cursor).match(/^file:\/\/\/[^\s<>()`"'\]]+/);
+      if (m) {
+        const rawUrl = m[0].replace(/[.,;:!?。，；：！？]+$/, '');
+        const info = parseFileUrl(rawUrl);
+        if (info?.path) {
+          flushPlain(cursor);
+          const base = info.path.split('/').filter(Boolean).at(-1) || info.path;
+          parent.append(makeFileChip(base, info.path, info.lineRange, rawUrl));
+          cursor = plainStart = cursor + rawUrl.length;
+          continue;
+        }
+      }
+    }
+    cursor++;
+  }
+  flushPlain(text.length);
 }
 
 function formatted(text) {
   const body = element('div', undefined, 'answer');
-  let paragraph = [], list, code, fence;
+  let paragraph = [], quote = [], list, code, fence;
   function flush() {
     if (paragraph.length) {
       const block = element('p');
       inline(block, paragraph.join('\n'));
       body.append(block);
       paragraph = [];
+    }
+    if (quote.length) {
+      let kind = '';
+      const lines = [...quote];
+      const alertMatch = lines[0].match(/^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*(.*)$/i);
+      if (alertMatch) {
+        kind = alertMatch[1].toUpperCase();
+        if (alertMatch[2]) lines[0] = alertMatch[2];
+        else lines.shift();
+      }
+      const warn = kind === 'WARNING' || kind === 'CAUTION';
+      const q = element('blockquote', undefined, 'md-quote' + (kind ? ' md-alert' + (warn ? ' warn' : '') : ''));
+      if (kind && ALERT_LABELS[kind]) q.append(element('span', ALERT_LABELS[kind], 'md-alert-title'));
+      if (lines.length) {
+        const content = element('div');
+        inline(content, lines.join('\n'));
+        q.append(content);
+      }
+      body.append(q);
+      quote = [];
     }
   }
   for (const line of text.split(/\r?\n/)) {
@@ -51,11 +208,20 @@ function formatted(text) {
       continue;
     }
     const start = line.match(/^\s*(`{3,}|~{3,})[^\s]*\s*$/);
+    const hr = line.match(/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/);
     const heading = line.match(/^#{1,6}\s+(.+)$/);
+    const quoteLine = line.match(/^\s*>\s?(.*)$/);
     const item = line.match(/^\s*([-*+] |\d+[.)] )(.+)$/);
-    if (!line.trim() || start || heading || item) flush();
+    if (quoteLine) {
+      if (paragraph.length) flush();
+      list = null;
+      quote.push(quoteLine[1]);
+      continue;
+    }
+    if (!line.trim() || start || hr || heading || item || quote.length) flush();
     if (!item) list = null;
     if (start) { code = []; fence = start[1]; }
+    else if (hr) body.append(element('hr', undefined, 'md-hr'));
     else if (heading) {
       const h = element('h3');
       inline(h, heading[1]);

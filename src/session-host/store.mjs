@@ -121,17 +121,35 @@ export class SessionStore extends Journal {
     const throughSeq = events.at(-1)?.seq ?? afterSeq;
     return { sessionId, workspaceId: s.workspaceId, historyEpoch: s.historyEpoch, events, throughSeq, more: throughSeq < s.lastSeq };
   }
-  pageBefore(sessionId, beforeSeq) {
+  pageBefore(sessionId, beforeSeq, { maxMessages = 16 } = {}) {
     const s = this.session(sessionId);
-    if (!Number.isSafeInteger(beforeSeq) || beforeSeq < 1 || beforeSeq > s.lastSeq + 1) throw Error('INVALID_CURSOR');
-    const rev = []; let bytes = 0;
-    for (const row of this.db.prepare('SELECT seq,ts,event FROM chat_events WHERE session_id=? AND seq<? ORDER BY seq DESC LIMIT 50').all(sessionId, beforeSeq)) {
-      const next = { seq: Number(row.seq), ts: Number(row.ts), event: JSON.parse(row.event) }, size = Buffer.byteLength(JSON.stringify(next));
-      if (rev.length && bytes + size > 96000) break;
+    if (!Number.isSafeInteger(beforeSeq) || beforeSeq < 1) throw Error('INVALID_CURSOR');
+    const upper = Math.min(beforeSeq, s.lastSeq + 1);
+    const rev = [];
+    let bytes = 0, messages = 0, lastAssistantGroup = null;
+    for (const row of this.db.prepare('SELECT seq,ts,event FROM chat_events WHERE session_id=? AND seq<? ORDER BY seq DESC LIMIT 240').all(sessionId, upper)) {
+      const parsed = JSON.parse(row.event);
+      const next = { seq: Number(row.seq), ts: Number(row.ts), event: parsed };
+      const size = Buffer.byteLength(JSON.stringify(next));
+      if (rev.length && bytes + size > 128000) break;
       rev.push(next); bytes += size;
+      if (parsed.type === 'user_message') {
+        messages++;
+        lastAssistantGroup = null;
+        if (messages >= maxMessages) break;
+      } else if (parsed.type === 'assistant_text') {
+        const grp = String(parsed.id ?? row.seq).replace(/-\d+$/, '');
+        if (grp !== lastAssistantGroup) {
+          messages++;
+          lastAssistantGroup = grp;
+        }
+      } else {
+        lastAssistantGroup = null;
+      }
     }
     const events = rev.reverse();
-    const firstSeq = events[0]?.seq ?? beforeSeq;
-    return { sessionId, workspaceId: s.workspaceId, historyEpoch: s.historyEpoch, events, firstSeq, hasMore: firstSeq > 1 };
+    const firstSeq = events[0]?.seq ?? upper;
+    const throughSeq = events.at(-1)?.seq ?? Math.max(0, upper - 1);
+    return { sessionId, workspaceId: s.workspaceId, historyEpoch: s.historyEpoch, events, firstSeq, throughSeq, hasMore: firstSeq > 1 };
   }
 }

@@ -107,7 +107,7 @@ const CONNECT_STEPS = [
 ];
 let connectState = new Map();
 let localConnectUntil = 0;
-let rows = [], seq = 0, firstSeq = 0, hasOlder = false, epoch, sidebarKey, searchKey, fleetKey, usersKey, deviceKey, historyProblem = false, historyDirty = false;
+let rows = [], seq = 0, firstSeq = 0, hasOlder = false, loadingOlder = false, epoch, sidebarKey, searchKey, fleetKey, usersKey, deviceKey, historyProblem = false, historyDirty = false;
 let fleet = [], adminUsers = [], adminTab = 'users', resetTargetUser = null, consent, projectSource, restoring = false, reviewWorkspaceId = null;
 let pendingAgent = null, pendingModel = null, pendingEffort = null;
 let quotaData = null, quotaLoading = false, quotaError = '', quotaAutoLoaded = false;
@@ -263,7 +263,7 @@ function stopStream() {
 }
 function ensureStream() {
   const target = thread();
-  if (!state || tab !== 'chat' || !target || !online) { stopStream(); return; }
+  if (!state || tab !== 'chat' || !target || !online || (target.lastSeq > 0 && epoch !== target.historyEpoch)) { stopStream(); return; }
   if (subscribedSessionId === target.id) return;
   stopStream();
   subscribedSessionId = target.id;
@@ -299,7 +299,7 @@ function applyEventPage(page, target) {
   seq = Math.max(seq, page.throughSeq);
   if (!firstSeq || restart) firstSeq = rows[0]?.seq ?? 0;
   hasOlder = firstSeq > 1;
-  $('load-older').hidden = !hasOlder;
+  updateOlderUI();
   historyDirty = !drawHistory(rows, restart);
   renderLive($('live'), live, engineLabel());
   historyProblem = false;
@@ -410,14 +410,20 @@ function saveDraft(key, entry) {
   if (entry.text || entry.createId) sessionStorage.setItem(key, JSON.stringify(entry));
   else sessionStorage.removeItem(key);
 }
+function updateOlderUI() {
+  const btn = $('load-older');
+  btn.hidden = !hasOlder;
+  btn.disabled = loadingOlder || !online;
+  btn.textContent = loadingOlder ? '正在加载更早消息…' : '↑ 向上滚动或点击加载更早记录';
+}
 function resetHistory() {
   generation++;
   stopStream();
   clearLive();
-  rows = []; seq = 0; firstSeq = 0; hasOlder = false; epoch = null;
+  rows = []; seq = 0; firstSeq = 0; hasOlder = false; loadingOlder = false; epoch = null;
   historyProblem = historyDirty = false;
   $('events').replaceChildren();
-  $('load-older').hidden = true;
+  updateOlderUI();
 }
 function renderPendingAttachments() {
   const strip = $('pending-attachments');
@@ -569,6 +575,29 @@ function openThread(id) {
   if (!narrow.matches && (id || native)) $('draft').focus({ preventScroll: true });
   void refresh(true);
 }
+function startNewChatInProject(targetProjectId) {
+  if (busy) return;
+  const p = projectById(targetProjectId);
+  if (!p || !(canUseProject(p) || isRemoteAuthorized(p))) return;
+  activeDialog()?.close();
+  drawer(false);
+  tab = 'chat';
+  const changedProject = projectId !== p.id;
+  projectId = p.id;
+  groups.set(p.id, true);
+  if (selected !== null) {
+    resetHistory();
+    clearPendingAttachments();
+    selected = null;
+  } else if (changedProject) {
+    clearPendingAttachments();
+  }
+  $('draft').value = draftAt(keyFor(null, p.id)).text ?? '';
+  notify();
+  render();
+  if (!narrow.matches) $('draft').focus({ preventScroll: true });
+  void refresh(true);
+}
 function showDialog(id) {
   activeDialog()?.close();
   drawer(false);
@@ -609,8 +638,10 @@ function loginView(localName, restore = false, detail) {
 }
 
 function sidebar() {
-  const fingerprint = JSON.stringify([selected, projectId, state.sessions.map(s => [s.id, s.title, s.workspaceId, Boolean(s.activeTurn)]),
-    state.projects.map(p => [p.id, p.label, p.deviceId]), state.devices.map(d => [d.id, d.name]), [...groups], [...unfolded]]);
+  const fingerprint = JSON.stringify([selected, projectId, tab, busy, online,
+    state.sessions.map(s => [s.id, s.title, s.workspaceId, Boolean(s.activeTurn)]),
+    state.projects.map(p => [p.id, p.label, p.deviceId, canUseProject(p) || isRemoteAuthorized(p)]),
+    state.devices.map(d => [d.id, d.name, d.online]), [...groups], [...unfolded]]);
   if (fingerprint === sidebarKey) return;
   sidebarKey = fingerprint;
   const focus = document.activeElement?.closest('#sessions button')?.dataset;
@@ -619,8 +650,10 @@ function sidebar() {
   const labels = projects.map(p => p.label);
   for (const p of projects) {
     const sessions = state.sessions.filter(s => s.workspaceId === p.id);
-    if (!sessions.length && !isLocal(p) && !isRemoteAuthorized(p)) continue;
+    const canCreateHere = canUseProject(p) || isRemoteAuthorized(p);
+    if (!sessions.length && !isLocal(p) && !canCreateHere) continue;
     const group = element('section', undefined, 'project-group');
+    const head = element('div', undefined, 'group-head' + (!selected && tab === 'chat' && projectId === p.id ? ' target' : ''));
     const toggle = element('button', undefined, 'group-toggle');
     const open = groups.get(p.id) ?? (isLocal(p) || p.id === thread()?.workspaceId);
     toggle.dataset.group = p.id;
@@ -630,7 +663,22 @@ function sidebar() {
     if (labels.filter(l => l === p.label).length > 1) toggle.append(element('span', deviceById(p.deviceId)?.name, 'group-host'));
     toggle.append(icon('down'));
     toggle.onclick = () => { groups.set(p.id, !open); sidebar(); };
-    group.append(toggle);
+    const addBtn = element('button', undefined, 'icon-button group-add');
+    addBtn.type = 'button';
+    addBtn.dataset.newProject = p.id;
+    addBtn.disabled = !canCreateHere || busy;
+    addBtn.title = canCreateHere
+      ? `在「${p.label}」下新建会话`
+      : isLocal(p)
+        ? '本机项目目录暂不可用'
+        : !deviceById(p.deviceId)?.online
+          ? '设备已离线，暂无法新建会话'
+          : '请先在该设备上授权此项目';
+    addBtn.setAttribute('aria-label', `在 ${p.label} 下新建会话`);
+    addBtn.append(icon('plus'));
+    addBtn.onclick = e => { e.stopPropagation(); startNewChatInProject(p.id); };
+    head.append(toggle, addBtn);
+    group.append(head);
     if (open) {
       const list = element('div', undefined, 'thread-list');
       const visible = unfolded.has(p.id) ? sessions : sessions.slice(0, 4);
@@ -656,8 +704,8 @@ function sidebar() {
   }
   if (!parts.childNodes.length) parts.append(element('p', '暂无项目会话', 'list-empty'));
   $('sessions').replaceChildren(parts);
-  if (focus) for (const key of ['group', 'session', 'more']) {
-    if (focus[key]) $('sessions').querySelector('[data-' + key + '="' + CSS.escape(focus[key]) + '"]')?.focus({ preventScroll: true });
+  if (focus) for (const [key, attr] of [['group', 'group'], ['newProject', 'new-project'], ['session', 'session'], ['more', 'more']]) {
+    if (focus[key]) $('sessions').querySelector('[data-' + attr + '="' + CSS.escape(focus[key]) + '"]')?.focus({ preventScroll: true });
   }
 }
 
@@ -1059,7 +1107,7 @@ function render() {
   $('admin-nav').hidden = !state.user.isAdmin;
   $('new-chat').hidden = !canStart;
   $('chat').hidden = tab !== 'chat'; $('management').hidden = tab !== 'admin';
-  $('crumb-project').textContent = tab === 'chat' && s && p ? p.label : '工作区';
+  $('crumb-project').textContent = tab === 'chat' && p && !webEmpty ? p.label : '工作区';
   $('session-title').textContent = tab === 'admin' ? '系统管理' : s?.title || (webEmpty ? '会话' : '新对话');
   $('session-title').title = $('session-title').textContent;
   $('session-actions').hidden = tab !== 'chat' || !s;
@@ -1117,20 +1165,45 @@ async function syncHistory() {
   const target = thread(), stamp = generation;
   if (!target || (target.lastSeq === seq && target.historyEpoch === epoch && !historyProblem)) return;
   const restart = epoch !== target.historyEpoch || target.lastSeq < seq;
-  const afterSeq = restart ? 0 : seq;
   try {
-    const page = await action('history', { sessionId: target.id, afterSeq });
-    if (generation !== stamp || tab !== 'chat') return;
-    if (page.sessionId !== target.id || page.workspaceId !== target.workspaceId || page.historyEpoch !== target.historyEpoch ||
-        !Array.isArray(page.events) || page.throughSeq !== afterSeq + page.events.length ||
-        !page.events.every((r, i) => r?.seq === afterSeq + i + 1 && typeof r.event?.type === 'string' &&
-          (r.event.type !== 'assistant_text' || typeof r.event.text === 'string'))) throw Error('INVALID_HISTORY_PAGE');
-    const next = restart ? page.events : rows.concat(page.events);
-    historyDirty = !drawHistory(next, !afterSeq);
-    rows = next; epoch = page.historyEpoch; seq = page.throughSeq;
-    firstSeq = rows[0]?.seq ?? 0;
-    hasOlder = firstSeq > 1;
-    $('load-older').hidden = !hasOlder;
+    if (restart) {
+      if (target.lastSeq === 0) {
+        rows = []; epoch = target.historyEpoch; seq = 0; firstSeq = 0; hasOlder = false;
+        updateOlderUI();
+        historyDirty = !drawHistory([], true);
+        historyProblem = false;
+        ensureStream();
+      } else {
+        const page = await action('historyBefore', { sessionId: target.id, beforeSeq: target.lastSeq + 1 });
+        if (generation !== stamp || tab !== 'chat') return;
+        if (page.sessionId !== target.id || page.workspaceId !== target.workspaceId || page.historyEpoch !== target.historyEpoch ||
+            !Array.isArray(page.events) || !page.events.every(r => Number.isSafeInteger(r?.seq) && typeof r.event?.type === 'string' &&
+              (r.event.type !== 'assistant_text' || typeof r.event.text === 'string'))) throw Error('INVALID_HISTORY_PAGE');
+        rows = page.events;
+        epoch = page.historyEpoch;
+        seq = page.throughSeq ?? (rows.at(-1)?.seq ?? target.lastSeq);
+        firstSeq = page.firstSeq ?? (rows[0]?.seq ?? 0);
+        hasOlder = Boolean(page.hasMore);
+        updateOlderUI();
+        historyDirty = !drawHistory(rows, true);
+        ensureStream();
+      }
+    } else {
+      const afterSeq = seq;
+      const page = await action('history', { sessionId: target.id, afterSeq });
+      if (generation !== stamp || tab !== 'chat') return;
+      if (page.sessionId !== target.id || page.workspaceId !== target.workspaceId || page.historyEpoch !== target.historyEpoch ||
+          !Array.isArray(page.events) || page.throughSeq !== afterSeq + page.events.length ||
+          !page.events.every((r, i) => r?.seq === afterSeq + i + 1 && typeof r.event?.type === 'string' &&
+            (r.event.type !== 'assistant_text' || typeof r.event.text === 'string'))) throw Error('INVALID_HISTORY_PAGE');
+      const next = rows.concat(page.events);
+      historyDirty = !drawHistory(next, false);
+      rows = next; epoch = page.historyEpoch; seq = page.throughSeq;
+      if (!firstSeq) firstSeq = rows[0]?.seq ?? 0;
+      hasOlder = firstSeq > 1;
+      updateOlderUI();
+      ensureStream();
+    }
     historyProblem = false;
   } catch (error) {
     if (generation !== stamp || tab !== 'chat') return;
@@ -1144,17 +1217,33 @@ async function syncHistory() {
 
 async function loadOlderHistory() {
   const target = thread(), stamp = generation;
-  if (!target || !hasOlder || firstSeq <= 1) return;
-  const view = $('timeline'), prevHeight = view.scrollHeight;
-  const page = await action('historyBefore', { sessionId: target.id, beforeSeq: firstSeq });
-  if (generation !== stamp || tab !== 'chat') return;
-  if (page.historyEpoch !== epoch) { resetHistory(); await syncHistory(); return; }
-  rows = page.events.concat(rows);
-  firstSeq = page.firstSeq;
-  hasOlder = page.hasMore;
-  $('load-older').hidden = !hasOlder;
-  renderThread($('events'), rows, { sessionId: selected, isWeb: !native, liveToolOutput: live.toolOutput });
-  view.scrollTop += view.scrollHeight - prevHeight;
+  if (!target || !hasOlder || firstSeq <= 1 || loadingOlder || !online) return;
+  loadingOlder = true;
+  updateOlderUI();
+  try {
+    const page = await action('historyBefore', { sessionId: target.id, beforeSeq: firstSeq });
+    if (generation !== stamp || tab !== 'chat') return;
+    if (page.historyEpoch !== epoch) { resetHistory(); await syncHistory(); return; }
+    if (Array.isArray(page.events) && page.events.length) {
+      const view = $('timeline');
+      const prevHeight = view.scrollHeight;
+      const prevTop = view.scrollTop;
+      rows = page.events.concat(rows);
+      firstSeq = page.firstSeq;
+      hasOlder = Boolean(page.hasMore);
+      renderThread($('events'), rows, { sessionId: selected, isWeb: !native, liveToolOutput: live.toolOutput });
+      view.scrollTop = prevTop + (view.scrollHeight - prevHeight);
+    } else {
+      hasOlder = false;
+    }
+  } catch (error) {
+    if (generation === stamp && String(error.message).includes('LOGIN_REQUIRED')) { loginView(); return; }
+  } finally {
+    if (generation === stamp) {
+      loadingOlder = false;
+      updateOlderUI();
+    }
+  }
 }
 
 async function sync() {
@@ -1809,7 +1898,21 @@ $('review-revoke-btn').onclick = () => perform(async () => {
 $('close-review').onclick = () => $('review-dialog').close();
 $('mode').onchange = updateMode;
 $('apply').onclick = () => perform(saveProject);
-$('load-older').onclick = () => perform(loadOlderHistory, { refreshState: false });
+$('load-older').onclick = () => void loadOlderHistory();
+let lastTimelineScrollTop = 0;
+$('timeline').addEventListener('scroll', () => {
+  const view = $('timeline');
+  const scrollingUp = view.scrollTop < lastTimelineScrollTop;
+  lastTimelineScrollTop = view.scrollTop;
+  if (scrollingUp && view.scrollTop <= 72 && hasOlder && !loadingOlder && online && tab === 'chat') {
+    void loadOlderHistory();
+  }
+}, { passive: true });
+$('timeline').addEventListener('wheel', e => {
+  if (e.deltaY < 0 && $('timeline').scrollTop <= 16 && hasOlder && !loadingOlder && online && tab === 'chat') {
+    void loadOlderHistory();
+  }
+}, { passive: true });
 
 $('rename-session').onclick = () => {
   const s = thread();
@@ -1884,14 +1987,197 @@ $('draft').addEventListener('paste', e => {
     attachLocalFiles(files, { pasted: true });
   }
 });
-$('events').addEventListener('click', e => {
-  const btn = e.target.closest('.msg-att-img-btn');
-  if (!btn) return;
-  openImagePreview({
-    url: btn.dataset.previewUrl,
-    name: btn.dataset.previewName,
-    size: Number(btn.dataset.previewSize || 0),
-  });
+function flashCopied(el) {
+  el.classList.add('copied');
+  clearTimeout(el._copyTimer);
+  el._copyTimer = setTimeout(() => el.classList.remove('copied'), 1500);
+}
+async function writeClipboard(text) {
+  if (!text) return false;
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {}
+  try {
+    const ta = element('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.append(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    ta.remove();
+    return ok;
+  } catch {
+    return false;
+  }
+}
+let hoverTarget = null, hoverShowTimer = null, hoverHideTimer = null;
+function positionFloatingBox(box, x, y, preferAboveRect = null) {
+  box.style.left = '8px';
+  box.style.top = '8px';
+  const bw = box.offsetWidth || 220;
+  const bh = box.offsetHeight || 40;
+  const vw = window.innerWidth, vh = window.innerHeight;
+  let left = Math.max(8, Math.min(vw - bw - 8, x));
+  let top = y;
+  if (preferAboveRect) {
+    left = Math.max(8, Math.min(vw - bw - 8, preferAboveRect.left));
+    top = preferAboveRect.top - bh - 6;
+    if (top < 8) top = Math.min(vh - bh - 8, preferAboveRect.bottom + 6);
+  } else if (top + bh > vh - 8) {
+    top = Math.max(8, vh - bh - 8);
+  }
+  box.style.left = Math.round(left) + 'px';
+  box.style.top = Math.round(top) + 'px';
+}
+function hideLinkHover() {
+  clearTimeout(hoverShowTimer);
+  clearTimeout(hoverHideTimer);
+  hoverTarget = null;
+  $('link-hover-card').hidden = true;
+}
+function hideLinkMenu() {
+  $('link-context-menu').hidden = true;
+}
+function showLinkHoverFor(target) {
+  if (!target || !$('link-context-menu').hidden) return;
+  const isFile = target.classList.contains('md-file');
+  const text = isFile ? target.dataset.copyText : target.href;
+  if (!text) return;
+  hoverTarget = target;
+  const lineInfo = isFile && target.dataset.lineRange ? `:${target.dataset.lineRange}` : '';
+  $('link-hover-path').textContent = text + lineInfo;
+  $('link-hover-copy').classList.remove('copied');
+  $('link-hover-copy-label').textContent = isFile ? '复制路径' : '复制链接';
+  const card = $('link-hover-card');
+  card.hidden = false;
+  positionFloatingBox(card, 0, 0, target.getBoundingClientRect());
+}
+function scheduleHoverOut() {
+  clearTimeout(hoverShowTimer);
+  clearTimeout(hoverHideTimer);
+  hoverHideTimer = setTimeout(() => {
+    hoverTarget = null;
+    $('link-hover-card').hidden = true;
+  }, 180);
+}
+$('link-hover-card').addEventListener('pointerenter', () => clearTimeout(hoverHideTimer));
+$('link-hover-card').addEventListener('pointerleave', scheduleHoverOut);
+$('link-hover-copy').onclick = async () => {
+  if (!hoverTarget) return;
+  const isFile = hoverTarget.classList.contains('md-file');
+  const text = isFile ? hoverTarget.dataset.copyText : hoverTarget.href;
+  if (await writeClipboard(text)) {
+    flashCopied(hoverTarget);
+    $('link-hover-copy').classList.add('copied');
+    $('link-hover-copy-label').textContent = '已复制';
+  }
+};
+function handleRichPointerOver(e) {
+  if (e.pointerType && e.pointerType !== 'mouse') return;
+  const target = e.target.closest('.md-file, a.md-link');
+  if (!target) return;
+  clearTimeout(hoverHideTimer);
+  if (hoverTarget === target && !$('link-hover-card').hidden) return;
+  clearTimeout(hoverShowTimer);
+  hoverShowTimer = setTimeout(() => showLinkHoverFor(target), 120);
+}
+function handleRichPointerOut(e) {
+  const target = e.target.closest('.md-file, a.md-link');
+  if (!target) return;
+  if (target.contains(e.relatedTarget) || $('link-hover-card').contains(e.relatedTarget)) return;
+  scheduleHoverOut();
+}
+function handleRichContextMenu(e) {
+  if (window.getSelection?.()?.toString().trim()) return;
+  const target = e.target.closest('.md-file, a.md-link');
+  if (!target) return;
+  e.preventDefault();
+  e.stopPropagation();
+  hideLinkHover();
+  const menu = $('link-context-menu');
+  const items = [];
+  const addItem = (label, iconName, onPick) => {
+    const btn = element('button', undefined, 'link-menu-item');
+    btn.type = 'button';
+    btn.setAttribute('role', 'menuitem');
+    btn.append(icon(iconName), element('span', label));
+    btn.onclick = async () => {
+      hideLinkMenu();
+      await onPick();
+    };
+    items.push(btn);
+  };
+  if (target.classList.contains('md-file')) {
+    const copyPath = target.dataset.copyText;
+    const rawUrl = target.dataset.rawUrl;
+    if (copyPath) {
+      addItem('复制文件路径', 'copy', async () => {
+        if (await writeClipboard(copyPath)) flashCopied(target);
+      });
+    }
+    if (rawUrl && rawUrl !== copyPath) {
+      addItem('复制原始链接 (file://)', 'copy', async () => {
+        if (await writeClipboard(rawUrl)) flashCopied(target);
+      });
+    }
+  } else {
+    const href = target.href;
+    if (href) {
+      addItem('复制链接地址', 'copy', async () => {
+        if (await writeClipboard(href)) flashCopied(target);
+      });
+      if (!native) {
+        addItem('在新标签页打开', 'arrow', () => {
+          window.open(href, '_blank', 'noopener,noreferrer');
+        });
+      }
+    }
+  }
+  if (!items.length) return;
+  menu.replaceChildren(...items);
+  menu.hidden = false;
+  positionFloatingBox(menu, e.clientX, e.clientY);
+}
+function handleRichContentClick(e) {
+  hideLinkMenu();
+  const imgBtn = e.target.closest('.msg-att-img-btn');
+  if (imgBtn) {
+    openImagePreview({
+      url: imgBtn.dataset.previewUrl,
+      name: imgBtn.dataset.previewName,
+      size: Number(imgBtn.dataset.previewSize || 0),
+    });
+    return;
+  }
+  const fileChip = e.target.closest('.md-file');
+  if (fileChip && fileChip.dataset.copyText) {
+    void writeClipboard(fileChip.dataset.copyText).then(ok => { if (ok) flashCopied(fileChip); });
+    return;
+  }
+  const mdLink = e.target.closest('a.md-link');
+  if (mdLink && native) {
+    e.preventDefault();
+    void writeClipboard(mdLink.href).then(ok => { if (ok) flashCopied(mdLink); });
+  }
+}
+for (const area of [$('events'), $('live')]) {
+  area.addEventListener('click', handleRichContentClick);
+  area.addEventListener('pointerover', handleRichPointerOver);
+  area.addEventListener('pointerout', handleRichPointerOut);
+  area.addEventListener('contextmenu', handleRichContextMenu);
+}
+$('timeline').addEventListener('scroll', () => { hideLinkHover(); hideLinkMenu(); }, { passive: true });
+document.addEventListener('pointerdown', e => {
+  if (!$('link-context-menu').hidden && !e.target.closest('#link-context-menu')) hideLinkMenu();
+  if (!$('link-hover-card').hidden && !e.target.closest('#link-hover-card, .md-file, a.md-link')) hideLinkHover();
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') { hideLinkMenu(); hideLinkHover(); }
 });
 $('image-preview-dialog').addEventListener('close', () => {
   $('image-preview-img').removeAttribute('src');

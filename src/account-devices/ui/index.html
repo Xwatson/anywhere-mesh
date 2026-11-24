@@ -51,6 +51,8 @@
   <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11m-4.5-4.5L12 15l4.5-4.5M5 19h14"/></symbol>
   <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0 2 5.3M20 4v7h-7"/></symbol>
   <symbol id="i-gauge" viewBox="0 0 24 24"><path d="M4.5 16.5a8.5 8.5 0 1 1 15 0M12 13l4-4"/><circle cx="12" cy="13" r="1.5" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
 </defs></svg>
 <main id="signin">
   <div class="wordmark login-brand"><span class="brand-mark" aria-hidden="true"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-terminal"></use></svg></span><span>AnywhereMesh</span></div>
@@ -346,4 +348,9 @@
   </div>
   <div class="dialog-actions"><button id="close-install-pwa" class="primary" type="button">知道了</button></div>
 </dialog>
+<div id="link-hover-card" class="link-hover-card" role="tooltip" hidden>
+  <code id="link-hover-path" class="link-hover-path"></code>
+  <button id="link-hover-copy" type="button" class="link-hover-copy"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-copy"></use></svg><span id="link-hover-copy-label">复制路径</span></button>
+</div>
+<div id="link-context-menu" class="link-context-menu" role="menu" hidden></div>
 </body></html>
