@@ -66,6 +66,99 @@ const workspaceNames = new Set(CATALOG.map(tool => tool.name));
 const failure = text => ({ success: false, contentItems: [{ type: 'inputText', text }] });
 const turnScope = t => ({ sessionId: t.sessionId, turnId: t.binding.turnId, turnEpoch: t.binding.turnEpoch });
 
+function parseEpochMs(value) {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+    return value < 1e12 ? Math.round(value * 1000) : Math.round(value);
+  }
+  if (typeof value === 'string' && value.trim()) {
+    const num = Number(value);
+    if (Number.isFinite(num) && num > 0) return num < 1e12 ? Math.round(num * 1000) : Math.round(num);
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return null;
+}
+function formatWindowMinutes(mins, fallback) {
+  if (!Number.isFinite(mins) || mins <= 0) return fallback;
+  if (mins % 10080 === 0) return `${(mins / 10080) * 7} 天窗口`;
+  if (mins % 1440 === 0) return `${mins / 1440} 天窗口`;
+  if (mins % 60 === 0) return `${mins / 60} 小时窗口`;
+  return `${Math.round(mins)} 分钟窗口`;
+}
+function formatPlanLabel(plan) {
+  if (!plan || typeof plan !== 'string') return null;
+  const map = { plus: 'Plus', pro: 'Pro', prolite: 'Pro Lite', team: 'Team', enterprise: 'Enterprise', free: 'Free', edu: 'Edu' };
+  return map[plan.toLowerCase()] ?? plan;
+}
+function normalizeCodexWindow(win, id, fallbackLabel) {
+  if (!win || typeof win !== 'object') return null;
+  const rawUsed = typeof win.usedPercent === 'number' ? win.usedPercent
+    : typeof win.used_percent === 'number' ? win.used_percent
+    : typeof win.remainingPercent === 'number' ? 100 - win.remainingPercent
+    : typeof win.remaining_percent === 'number' ? 100 - win.remaining_percent
+    : null;
+  if (rawUsed === null || !Number.isFinite(rawUsed)) return null;
+  const usedPercent = Math.max(0, Math.min(100, Math.round(rawUsed * 10) / 10));
+  const remainingPercent = Math.max(0, Math.min(100, Math.round((100 - usedPercent) * 10) / 10));
+  const windowMinutes = Number(win.windowDurationMins ?? win.window_duration_mins ?? win.windowMinutes) || null;
+  const resetsAt = parseEpochMs(win.resetsAt ?? win.resets_at ?? win.resetTime);
+  return {
+    id,
+    label: formatWindowMinutes(windowMinutes, fallbackLabel),
+    usedPercent,
+    remainingPercent,
+    ...(windowMinutes ? { windowMinutes } : {}),
+    ...(resetsAt ? { resetsAt } : {}),
+  };
+}
+export function normalizeCodexQuota(raw, acct = null) {
+  const root = raw?.rateLimits ?? raw ?? {};
+  const byId = raw?.rateLimitsByLimitId && typeof raw.rateLimitsByLimitId === 'object' ? raw.rateLimitsByLimitId : null;
+  const groups = [];
+  const pushEntry = (id, name, entry) => {
+    if (!entry || typeof entry !== 'object') return;
+    const windows = [];
+    const primary = normalizeCodexWindow(entry.primary, `${id}:primary`, '5 小时窗口');
+    const secondary = normalizeCodexWindow(entry.secondary, `${id}:secondary`, '7 天窗口');
+    if (primary) windows.push(primary);
+    if (secondary) windows.push(secondary);
+    if (!windows.length) {
+      const direct = normalizeCodexWindow(entry, `${id}:main`, '周期窗口');
+      if (direct) windows.push(direct);
+    }
+    if (windows.length) groups.push({ id, name, windows });
+  };
+  if (byId && Object.keys(byId).length) {
+    for (const [limitId, entry] of Object.entries(byId)) {
+      const label = entry?.limitName || (limitId === 'codex' ? 'Codex 通用额度' : limitId);
+      pushEntry(limitId, label, entry);
+    }
+  }
+  if (!groups.length) {
+    const limitId = root.limitId || 'codex';
+    const label = root.limitName || 'Codex 通用额度';
+    pushEntry(limitId, label, root);
+  }
+  const plan = formatPlanLabel(raw?.planType ?? root?.planType ?? acct?.planType ?? acct?.account?.planType);
+  const rawCredits = raw?.credits ?? root?.credits ?? null;
+  const credits = rawCredits && typeof rawCredits === 'object' && (rawCredits.hasCredits || rawCredits.unlimited || rawCredits.balance != null)
+    ? {
+        hasCredits: Boolean(rawCredits.hasCredits),
+        unlimited: Boolean(rawCredits.unlimited),
+        ...(rawCredits.balance != null ? { balance: formatCreditBalance(rawCredits.balance) } : {}),
+      }
+    : null;
+  return {
+    engine: 'codex',
+    label: 'Codex',
+    status: groups.length || credits ? 'ok' : 'unavailable',
+    ...(plan ? { plan } : {}),
+    ...(credits ? { credits } : {}),
+    groups,
+    fetchedAt: Date.now(),
+  };
+}
+
 export class CodexTurns {
   constructor(host, socketPath, cwd) {
     this.host = host;
@@ -76,6 +169,7 @@ export class CodexTurns {
     this.modelCache = null;
     this.modelCacheAt = 0;
     this.modelRefresh = null;
+    this.lastRateLimits = null;
   }
 
   turn(id) { return this.db.get('turns', id); }
@@ -123,6 +217,43 @@ export class CodexTurns {
     const pending = this.refreshModels();
     if (this.modelCache) return this.modelCache;
     return Promise.race([pending, delay(1500).then(() => this.modelCache ?? DEFAULT_MODELS)]);
+  }
+
+  async readQuota() {
+    let socket, app;
+    const ac = new AbortController();
+    const timeout = ms => delay(ms, undefined, { signal: ac.signal }).then(() => { throw Error('TIMEOUT'); });
+    try {
+      socket = createConnection(this.socketPath);
+      await Promise.race([once(socket, 'connect'), timeout(4000)]);
+      app = new CodexAppServer({ experimentalApi: true, initializeTimeoutMs: 6000, transport: { input: socket, output: socket } });
+      const [limits, acct] = await Promise.all([
+        Promise.race([app.call('account/rateLimits/read', {}), timeout(8000)]),
+        Promise.race([app.call('account/read', {}), timeout(4000)]).catch(() => null),
+      ]);
+      const parsed = normalizeCodexQuota(limits, acct);
+      if (parsed.status === 'ok') this.lastRateLimits = parsed;
+      return parsed;
+    } catch (error) {
+      if (this.lastRateLimits && Date.now() - this.lastRateLimits.fetchedAt < 10 * 60 * 1000) {
+        return this.lastRateLimits;
+      }
+      const msg = String(error?.message || 'QUOTA_UNAVAILABLE');
+      return {
+        engine: 'codex',
+        label: 'Codex',
+        status: 'error',
+        error: /TIMEOUT/i.test(msg) ? '查询 Codex 额度超时，请稍后重试。'
+          : /auth|login/i.test(msg) ? 'Codex 尚未登录，请在服务器登录 Codex CLI。'
+          : '暂时无法获取 Codex 额度信息。',
+        groups: [],
+        fetchedAt: Date.now(),
+      };
+    } finally {
+      ac.abort();
+      try { app?.stop(); } catch {}
+      try { socket?.destroy(); } catch {}
+    }
   }
 
   async workspaceTools(t) {
@@ -349,6 +480,10 @@ export class CodexTurns {
         run.usage = p.tokenUsage.last;
         this.host.delta(t.sessionId, { kind: 'context', used: p.tokenUsage.last.totalTokens, window: p.tokenUsage.modelContextWindow ?? undefined });
       }
+      if (method === 'account/rateLimits/updated' && p.rateLimits) {
+        const parsed = normalizeCodexQuota({ rateLimits: p.rateLimits });
+        if (parsed.status === 'ok') this.lastRateLimits = parsed;
+      }
       if (method === 'item/completed' && p.item?.type === 'reasoning') {
         const text = Array.isArray(p.item.summary) ? p.item.summary.map(s => (typeof s === 'string' ? s : s.text ?? '')).join('\n').trim() :
           typeof p.item.text === 'string' ? p.item.text.trim() : '';
@@ -509,4 +644,12 @@ export class CodexTurns {
       run.socket.destroy();
     }
   }
+}
+function formatCreditBalance(val) {
+  if (val == null) return null;
+  const num = Number(val);
+  if (Number.isFinite(num)) {
+    return Number.isInteger(num) ? String(num) : num.toFixed(2).replace(/\.?0+$/, '');
+  }
+  return String(val);
 }

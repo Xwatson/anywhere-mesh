@@ -50,6 +50,7 @@
   <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3 2 20h20zM12 9v5m0 3.5v.5"/></symbol>
   <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11m-4.5-4.5L12 15l4.5-4.5M5 19h14"/></symbol>
   <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0 2 5.3M20 4v7h-7"/></symbol>
+  <symbol id="i-gauge" viewBox="0 0 24 24"><path d="M4.5 16.5a8.5 8.5 0 1 1 15 0M12 13l4-4"/><circle cx="12" cy="13" r="1.5" fill="currentColor" stroke="none"/></symbol>
 </defs></svg>
 <main id="signin">
   <div class="wordmark login-brand"><span class="brand-mark" aria-hidden="true"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-terminal"></use></svg></span><span>AnywhereMesh</span></div>
@@ -92,6 +93,7 @@
     </nav>
     <div class="rail-scroll"><h2 class="rail-label">项目会话</h2><nav id="sessions" aria-label="按项目浏览会话"></nav></div>
     <footer class="rail-foot">
+      <button id="usage-quota" class="nav-action" aria-haspopup="dialog" hidden><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-gauge"></use></svg><span>使用额度</span><span id="quota-summary" class="foot-state"></span></button>
       <button id="my-devices" class="nav-action"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-devices"></use></svg><span>我的设备</span><span id="device-count" class="foot-state"></span></button>
       <button id="account-menu" class="account-button" aria-haspopup="dialog"><span id="avatar" class="avatar" aria-hidden="true"></span><span id="account"></span><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-more"></use></svg></button>
     </footer>
@@ -309,6 +311,20 @@
     </div>
     <div class="dialog-actions"><button id="cancel-reset-password" class="secondary" type="button">取消</button><button id="save-reset-password" class="primary" type="submit">确认重置</button></div>
   </form>
+</dialog>
+<dialog id="quota-dialog" class="quota-dialog" aria-labelledby="quota-heading">
+  <div class="dialog-head">
+    <h2 id="quota-heading">使用额度</h2>
+    <div class="quota-head-actions">
+      <button id="refresh-quota" class="icon-button" type="button" title="刷新额度" aria-label="刷新额度"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-refresh"></use></svg></button>
+      <button class="icon-button dialog-close" type="button" aria-label="关闭"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-close"></use></svg></button>
+    </div>
+  </div>
+  <div id="quota-body" class="dialog-body quota-body"></div>
+  <div class="quota-foot">
+    <span id="quota-updated" class="muted"></span>
+    <button id="close-quota" class="secondary" type="button">关闭</button>
+  </div>
 </dialog>
 <dialog id="image-preview-dialog" class="image-dialog" aria-labelledby="image-preview-title">
   <div class="dialog-head">

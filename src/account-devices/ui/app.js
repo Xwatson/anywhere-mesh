@@ -59,6 +59,7 @@ async function action(method, p = {}) {
     case 'logout': path = '/api/auth/logout'; body = {}; httpMethod = 'POST'; break;
     case 'changePassword': path = '/api/auth/password'; body = p; httpMethod = 'POST'; break;
     case 'state': path = '/api/state'; break;
+    case 'quota': path = '/api/quota' + (p.refresh ? '?refresh=1' : ''); break;
     case 'create': path = '/api/sessions'; body = p; httpMethod = 'POST'; break;
     case 'admin': path = '/api/admin/devices'; break;
     case 'disable': path = '/api/admin/devices/' + p.id; body = { disabled: p.disabled }; httpMethod = 'POST'; break;
@@ -109,6 +110,7 @@ let localConnectUntil = 0;
 let rows = [], seq = 0, firstSeq = 0, hasOlder = false, epoch, sidebarKey, searchKey, fleetKey, usersKey, deviceKey, historyProblem = false, historyDirty = false;
 let fleet = [], adminUsers = [], adminTab = 'users', resetTargetUser = null, consent, projectSource, restoring = false, reviewWorkspaceId = null;
 let pendingAgent = null, pendingModel = null, pendingEffort = null;
+let quotaData = null, quotaLoading = false, quotaError = '', quotaAutoLoaded = false;
 // Pending attachments with local preview, upload status & progress.
 let pendingAttachments = [];
 let pasteCounter = 0;
@@ -584,6 +586,7 @@ function loginView(localName, restore = false, detail) {
     clearPendingAttachments();
     sidebarKey = searchKey = fleetKey = deviceKey = null;
     groups.clear(); unfolded.clear(); fleet = []; adminUsers = []; usersKey = null; fleetKey = null;
+    quotaData = null; quotaLoading = false; quotaError = ''; quotaAutoLoaded = false;
     for (const id of ['sessions', 'devices', 'fleet', 'search-results', 'signed-user', 'account', 'notice', 'session-title', 'project', 'mode', 'consent-copy']) $(id).replaceChildren();
     $('draft').value = '';
     $('password-form').reset();
@@ -695,6 +698,152 @@ function renderDevices() {
     return box;
   });
   $('devices').replaceChildren(...(entries.length ? entries : [element('p', '还没有登录过的设备。', 'list-empty')]));
+}
+function formatResetTime(ts) {
+  if (!ts) return '';
+  const diff = ts - Date.now();
+  const abs = new Date(ts).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
+  if (diff <= 0) return `即将重置（${abs}）`;
+  const mins = Math.ceil(diff / 60000);
+  if (mins < 60) return `${mins} 分钟后重置（${abs}）`;
+  const hours = Math.floor(mins / 60);
+  const remMins = mins % 60;
+  if (hours < 24) return `${hours} 小时${remMins ? ` ${remMins} 分钟` : ''}后重置（${abs}）`;
+  const days = Math.floor(hours / 24);
+  const remHours = hours % 24;
+  return `${days} 天${remHours ? ` ${remHours} 小时` : ''}后重置（${abs}）`;
+}
+function quotaTone(remainingPercent) {
+  if (remainingPercent <= 10) return 'danger';
+  if (remainingPercent <= 25) return 'warn';
+  return '';
+}
+function formatPercent(val) {
+  const rounded = Math.round(val * 10) / 10;
+  return Number.isInteger(rounded) ? `${rounded}%` : `${rounded.toFixed(1)}%`;
+}
+function renderQuotaSummary() {
+  const btn = $('usage-quota');
+  const badge = $('quota-summary');
+  const engines = availableEngines();
+  btn.hidden = !engines.length;
+  if (!engines.length) return;
+  const list = quotaData?.engines ?? [];
+  const active = list.find(e => e.engine === activeEngine() && e.status === 'ok' && e.groups?.length);
+  const pool = active ? [active] : list.filter(e => e.status === 'ok' && e.groups?.length);
+  const remaining = pool.flatMap(e => e.groups.flatMap(g => g.windows.map(w => w.remainingPercent))).filter(n => typeof n === 'number');
+  if (!remaining.length) {
+    badge.textContent = quotaLoading ? '…' : '';
+    badge.className = 'foot-state';
+    return;
+  }
+  const minRemain = Math.min(...remaining);
+  const tone = quotaTone(minRemain);
+  badge.textContent = '余 ' + formatPercent(minRemain);
+  badge.className = 'foot-state' + (tone ? ' ' + tone : '');
+}
+function renderQuotaDialog() {
+  const body = $('quota-body');
+  const refreshBtn = $('refresh-quota');
+  refreshBtn.disabled = quotaLoading || !online;
+  refreshBtn.classList.toggle('spinning', quotaLoading);
+  $('quota-updated').textContent = quotaLoading
+    ? '正在查询使用额度…'
+    : quotaData?.fetchedAt
+      ? '更新于 ' + new Date(quotaData.fetchedAt).toLocaleTimeString('zh-CN', { hour12: false })
+      : '';
+  if (quotaLoading && !quotaData) {
+    body.replaceChildren(element('p', '正在向服务端查询 Codex 与 Antigravity 的使用额度…', 'list-empty'));
+    return;
+  }
+  if (quotaError && !quotaData) {
+    body.replaceChildren(element('p', quotaError, 'inline-error'));
+    return;
+  }
+  const engines = quotaData?.engines ?? [];
+  if (!engines.length) {
+    body.replaceChildren(element('p', '当前服务端未启用 Codex 或 Antigravity 引擎。', 'list-empty'));
+    return;
+  }
+  const cards = engines.map(item => {
+    const card = element('section', undefined, 'quota-card');
+    const head = element('div', undefined, 'quota-card-head');
+    const title = element('div', undefined, 'quota-engine-title');
+    title.append(icon('spark'), element('span', item.label || engineLabel(item.engine)));
+    const badges = element('div', undefined, 'quota-badges');
+    if (item.plan) badges.append(element('span', item.plan, 'quota-badge'));
+    if (item.credits) {
+      const creditText = item.credits.unlimited ? '无限额度'
+        : item.credits.balance != null ? `余额 ${item.credits.balance}`
+        : '含积分额度';
+      badges.append(element('span', creditText, 'quota-badge subtle'));
+    }
+    head.append(title, badges);
+    card.append(head);
+    if (item.status === 'error') {
+      card.append(element('p', item.error || '暂时无法获取该引擎的额度信息。', 'quota-status-msg error'));
+      return card;
+    }
+    if (item.rawSummary) {
+      card.append(element('pre', item.rawSummary, 'quota-raw'));
+      return card;
+    }
+    const groups = item.groups ?? [];
+    if (!groups.length) {
+      card.append(element('p', '当前账号暂无可展示的窗口额度数据。', 'quota-status-msg'));
+      return card;
+    }
+    for (const g of groups) {
+      const groupEl = element('div', undefined, 'quota-group');
+      if (groups.length > 1 || (g.name && g.name !== 'Codex 通用额度')) {
+        groupEl.append(element('div', g.name, 'quota-group-name'));
+      }
+      for (const w of g.windows ?? []) {
+        const tone = quotaTone(w.remainingPercent);
+        const winEl = element('div', undefined, 'quota-window');
+        const row = element('div', undefined, 'quota-window-head');
+        row.append(element('span', w.label, 'quota-window-label'));
+        const pctEl = element('span', undefined, 'quota-window-pct' + (tone ? ' ' + tone : ''));
+        pctEl.append(document.createTextNode('剩余 ' + formatPercent(w.remainingPercent)), element('small', '已用 ' + formatPercent(w.usedPercent)));
+        row.append(pctEl);
+        const bar = element('div', undefined, 'quota-bar');
+        const fill = element('div', undefined, 'quota-bar-fill' + (tone ? ' ' + tone : ''));
+        fill.style.width = Math.max(0, Math.min(100, w.remainingPercent)) + '%';
+        bar.append(fill);
+        winEl.append(row, bar);
+        if (w.resetsAt) winEl.append(element('span', formatResetTime(w.resetsAt), 'quota-reset'));
+        groupEl.append(winEl);
+      }
+      card.append(groupEl);
+    }
+    return card;
+  });
+  body.replaceChildren(...cards);
+}
+async function fetchQuota(force = false) {
+  if (quotaLoading || !state?.user || !availableEngines().length) return;
+  quotaLoading = true;
+  quotaError = '';
+  renderQuotaSummary();
+  if ($('quota-dialog').open) renderQuotaDialog();
+  try {
+    quotaData = await action('quota', force ? { refresh: true } : {});
+    quotaError = '';
+  } catch (err) {
+    if (String(err.message).includes('LOGIN_REQUIRED')) { loginView(); return; }
+    quotaError = message(err);
+  } finally {
+    quotaLoading = false;
+    renderQuotaSummary();
+    if ($('quota-dialog').open) renderQuotaDialog();
+  }
+}
+function openQuota() {
+  if (!state || !availableEngines().length) return;
+  showDialog('quota-dialog');
+  renderQuotaDialog();
+  const stale = !quotaData || Date.now() - (quotaData.fetchedAt ?? 0) > 60000;
+  if (stale && online) void fetchQuota(false);
 }
 function showAdminFeedback(text = '') {
   const box = $('admin-feedback');
@@ -939,9 +1088,15 @@ function render() {
   if (!s?.activeTurn && (live.text || live.thinking)) clearLive();
   renderModelControls();
   controls(); sidebar();
+  renderQuotaSummary();
   updatePwaInstallUI();
   if ($('devices-dialog').open) renderDevices();
   if ($('search-dialog').open) searchResults();
+  if ($('quota-dialog').open) renderQuotaDialog();
+  if (online && !quotaAutoLoaded && availableEngines().length) {
+    quotaAutoLoaded = true;
+    void fetchQuota(false);
+  }
   if (tab === 'admin') { renderAdminTabs(); renderUsers(); renderFleet(); }
   ensureStream();
 }
@@ -1610,6 +1765,9 @@ $('prune-devices-btn').onclick = () => {
   });
 };
 $('back-chat').onclick = () => openThread(selected);
+$('usage-quota').onclick = openQuota;
+$('refresh-quota').onclick = () => void fetchQuota(true);
+$('close-quota').onclick = () => $('quota-dialog').close();
 $('my-devices').onclick = $('device-status').onclick = showDevices;
 $('web-devices').onclick = () => state.user.isAdmin ? showAdmin() : showDevices();
 $('hide-rail').onclick = () => {

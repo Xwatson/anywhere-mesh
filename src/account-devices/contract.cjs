@@ -1,6 +1,7 @@
 'use strict';
 const routes = {
   state: [], login: ['username','password'], changePassword: ['current','password'], logout: [], admin: [], disable: ['id','disabled'],
+  quota: [],
   deleteDevice: ['id'], pruneDevices: [],
   adminUsers: [], createUser: ['username','password','isAdmin'],
   resetUserPassword: ['userId','password'], setUserAdmin: ['userId','isAdmin'], deleteUser: ['userId'],
@@ -15,6 +16,7 @@ const routes = {
   chooseAttachment: ['sessionId'], uploadAttachment: ['sessionId','name','mime','dataBase64'],
 };
 const optional = {
+  quota: ['refresh'],
   create: ['options'],
   send: ['attachments'],
   setSessionOptions: ['agent','model','effort'],
@@ -50,6 +52,7 @@ function validate(method, p = {}) {
   if ('userId' in p && (!Number.isSafeInteger(p.userId) || p.userId < 1)) throw Error('INVALID_ID');
   if ('disabled' in p && typeof p.disabled !== 'boolean') throw Error('INVALID_FIELDS');
   if ('isAdmin' in p && typeof p.isAdmin !== 'boolean') throw Error('INVALID_FIELDS');
+  if ('refresh' in p && typeof p.refresh !== 'boolean') throw Error('INVALID_FIELDS');
   if ('mode' in p && !['revoked','read','edit','execute'].includes(p.mode)) throw Error('INVALID_PERMISSION');
   if ('attachments' in p) {
     if (!Array.isArray(p.attachments) || p.attachments.length > 8 || !p.attachments.every(x => typeof x === 'string' && UUID_RE.test(x))) throw Error('INVALID_ID');

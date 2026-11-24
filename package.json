@@ -1,6 +1,6 @@
 {
   "name": "anywhere-mesh",
-  "version": "0.4.7",
+  "version": "0.4.8",
   "description": "One AI host, every machine you own — control local codebases across devices over an encrypted EasyTier mesh.",
   "private": true,
   "type": "module",

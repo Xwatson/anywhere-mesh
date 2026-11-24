@@ -129,6 +129,40 @@ input:focus-visible, select:focus-visible { border-color: var(--accent); box-sha
 .list-empty { color: var(--subtle); font-size: 13px; padding: 8px; }
 .rail-foot { padding: 8px 12px 12px; border-top: 1px solid var(--line); }
 .foot-state { font-size: 11px; color: var(--muted); margin-left: auto; }
+.foot-state.warn { color: var(--warning); font-weight: 600; }
+.foot-state.danger { color: var(--error); font-weight: 600; }
+.quota-dialog { width: min(500px, calc(100vw - 28px)); }
+.quota-head-actions { display: inline-flex; align-items: center; gap: 4px; }
+#refresh-quota.spinning .icon { animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.quota-body { display: grid; gap: 12px; }
+.quota-card { border: 1px solid var(--line); border-radius: 12px; padding: 13px 14px; background: var(--rail); display: grid; gap: 11px; }
+.quota-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.quota-engine-title { display: inline-flex; align-items: center; gap: 7px; font-size: 14px; font-weight: 620; color: var(--ink); }
+.quota-engine-title .icon { width: 15px; height: 15px; color: var(--accent); }
+.quota-badges { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.quota-badge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 560; background: var(--accent-fill); color: var(--accent); }
+.quota-badge.subtle { background: var(--bubble); color: var(--muted); }
+.quota-group { display: grid; gap: 9px; }
+.quota-group + .quota-group { padding-top: 9px; border-top: 1px solid var(--soft-line); }
+.quota-group-name { font-size: 12px; font-weight: 600; color: var(--text); }
+.quota-window { display: grid; gap: 5px; }
+.quota-window-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-size: 12.5px; }
+.quota-window-label { color: var(--text); font-weight: 520; }
+.quota-window-pct { font-variant-numeric: tabular-nums; font-weight: 620; color: var(--online); }
+.quota-window-pct.warn { color: var(--warning); }
+.quota-window-pct.danger { color: var(--error); }
+.quota-window-pct small { font-weight: 400; color: var(--muted); margin-left: 5px; font-size: 11px; }
+.quota-bar { height: 7px; border-radius: 999px; background: var(--bubble); border: 1px solid var(--soft-line); overflow: hidden; }
+.quota-bar-fill { height: 100%; width: 0%; border-radius: 999px; background: var(--online); transition: width .25s ease; }
+.quota-bar-fill.warn { background: var(--warning); }
+.quota-bar-fill.danger { background: var(--error); }
+.quota-reset { font-size: 11.5px; color: var(--muted); }
+.quota-status-msg { font-size: 12.5px; color: var(--muted); padding: 2px 0; }
+.quota-status-msg.error { color: var(--warning); }
+.quota-raw { margin: 0; font: 11.5px/1.55 "IBM Plex Mono", Consolas, monospace; background: var(--surface); border: 1px solid var(--soft-line); border-radius: 8px; padding: 8px 10px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 160px; overflow: auto; color: var(--text); }
+.quota-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 16px; font-size: 11.5px; }
+.quota-foot .secondary { min-height: 32px; padding: 4px 14px; font-size: 12.5px; }
 .account-button { margin-top: 4px; font-size: 13px; font-weight: 570; }
 .account-button > .icon { margin-left: auto; }
 .avatar { display: inline-grid; place-items: center; min-width: 26px; height: 26px; border-radius: 50%; background: var(--picked); color: var(--accent); font: 600 12px/1 Inter, sans-serif; text-transform: uppercase; }

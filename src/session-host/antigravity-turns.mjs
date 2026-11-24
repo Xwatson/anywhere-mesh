@@ -108,6 +108,131 @@ function extractPdfText(filePath) {
 const workspaceNames = new Set(CATALOG.map(tool => tool.name));
 const turnScope = t => ({ sessionId: t.sessionId, turnId: t.binding.turnId, turnEpoch: t.binding.turnEpoch });
 
+function parseEpochMs(value) {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+    return value < 1e12 ? Math.round(value * 1000) : Math.round(value);
+  }
+  if (typeof value === 'string' && value.trim()) {
+    const num = Number(value);
+    if (Number.isFinite(num) && num > 0) return num < 1e12 ? Math.round(num * 1000) : Math.round(num);
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return null;
+}
+function agyGroupLabel(name) {
+  const s = String(name ?? '').trim();
+  if (!s) return '模型额度';
+  if (/^gemini\s*models?$/i.test(s)) return 'Gemini 模型';
+  if (/^claude\s*(?:and|\/|&)\s*gpt/i.test(s)) return 'Claude / GPT 模型';
+  return s;
+}
+function agyWindowLabel(bucket) {
+  const raw = String(bucket.displayName ?? bucket.window ?? bucket.bucketType ?? bucket.bucketId ?? '').trim();
+  const low = raw.toLowerCase();
+  if (/5.?hour|five.?hour|short.?term|\b5h\b/.test(low)) return '5 小时窗口';
+  if (/week|7.?day/.test(low)) return '7 天窗口';
+  if (/daily|24.?hour|\b24h\b|\b1d\b/.test(low)) return '24 小时窗口';
+  return raw || '额度窗口';
+}
+function normalizeAgyBucket(bucket, idx) {
+  if (!bucket || typeof bucket !== 'object') return null;
+  const resetsAt = parseEpochMs(bucket.resetTime ?? bucket.resetsAt ?? bucket.reset_time);
+  let remainingPercent = null;
+  if (typeof bucket.remainingFraction === 'number' && Number.isFinite(bucket.remainingFraction)) {
+    remainingPercent = bucket.remainingFraction <= 1 ? bucket.remainingFraction * 100 : bucket.remainingFraction;
+  } else if (typeof bucket.remaining_fraction === 'number' && Number.isFinite(bucket.remaining_fraction)) {
+    remainingPercent = bucket.remaining_fraction <= 1 ? bucket.remaining_fraction * 100 : bucket.remaining_fraction;
+  } else if (typeof bucket.remainingPercent === 'number' && Number.isFinite(bucket.remainingPercent)) {
+    remainingPercent = bucket.remainingPercent;
+  } else if (typeof bucket.usedPercent === 'number' && Number.isFinite(bucket.usedPercent)) {
+    remainingPercent = 100 - bucket.usedPercent;
+  } else if (typeof bucket.usedFraction === 'number' && Number.isFinite(bucket.usedFraction)) {
+    remainingPercent = (1 - bucket.usedFraction) * 100;
+  } else if (resetsAt) {
+    // Proto3 JSON omits 0.0 remainingFraction when a bucket is depleted.
+    remainingPercent = 0;
+  }
+  if (remainingPercent === null) return null;
+  remainingPercent = Math.max(0, Math.min(100, Math.round(remainingPercent * 10) / 10));
+  const usedPercent = Math.max(0, Math.min(100, Math.round((100 - remainingPercent) * 10) / 10));
+  return {
+    id: String(bucket.id ?? bucket.bucketId ?? bucket.bucketType ?? bucket.window ?? idx),
+    label: agyWindowLabel(bucket),
+    usedPercent,
+    remainingPercent,
+    ...(resetsAt ? { resetsAt } : {}),
+  };
+}
+function agyWindowRank(w) {
+  const key = `${w.id} ${w.label}`.toLowerCase();
+  if (/5h|5.?小时|five|short/.test(key)) return 0;
+  if (/24h|24.?小时|daily|1d/.test(key)) return 1;
+  if (/week|7.?天/.test(key)) return 2;
+  return 3;
+}
+export function normalizeAntigravityQuota(raw) {
+  const container = raw?.command?.data ?? raw?.response ?? raw?.data ?? raw?.result ?? raw ?? {};
+  const groups = [];
+  const rawGroups = Array.isArray(container.groups) ? container.groups
+    : Array.isArray(container.quotaGroups) ? container.quotaGroups
+    : null;
+  if (rawGroups) {
+    for (let i = 0; i < rawGroups.length; i++) {
+      const g = rawGroups[i];
+      if (!g || typeof g !== 'object') continue;
+      const rawBuckets = Array.isArray(g.buckets) ? g.buckets
+        : Array.isArray(g.windows) ? g.windows
+        : Array.isArray(g.limits) ? g.limits
+        : [];
+      const windows = rawBuckets.map((b, idx) => normalizeAgyBucket(b, idx)).filter(Boolean).sort((a, b) => agyWindowRank(a) - agyWindowRank(b));
+      if (windows.length) {
+        groups.push({
+          id: String(g.groupId ?? g.id ?? i),
+          name: agyGroupLabel(g.groupName ?? g.displayName ?? g.name ?? g.label),
+          windows,
+        });
+      }
+    }
+  }
+  if (!groups.length) {
+    const rawModels = Array.isArray(container.models) ? container.models
+      : Array.isArray(container.modelConfigs) ? container.modelConfigs
+      : null;
+    if (rawModels) {
+      const windows = rawModels
+        .map((m, idx) => {
+          const info = m?.quotaInfo ?? m;
+          const w = normalizeAgyBucket(info, idx);
+          if (!w) return null;
+          return { ...w, label: m?.displayName ?? m?.label ?? m?.name ?? m?.modelId ?? w.label };
+        })
+        .filter(Boolean);
+      if (windows.length) groups.push({ id: 'models', name: '模型额度', windows });
+    }
+  }
+  const plan = container.planType ?? container.subscriptionTier ?? container.tier ?? raw?.planType ?? null;
+  const rawCredits = container.credits ?? raw?.credits ?? null;
+  const credits = rawCredits && typeof rawCredits === 'object' && (rawCredits.hasCredits || rawCredits.unlimited || rawCredits.balance != null || rawCredits.remaining != null)
+    ? {
+        hasCredits: Boolean(rawCredits.hasCredits ?? true),
+        unlimited: Boolean(rawCredits.unlimited),
+        ...(rawCredits.balance != null ? { balance: String(rawCredits.balance) } : rawCredits.remaining != null ? { balance: String(rawCredits.remaining) } : {}),
+      }
+    : null;
+  const rawSummary = !groups.length && typeof raw?.rawText === 'string' && raw.rawText.trim() ? raw.rawText.trim().slice(0, 600) : null;
+  return {
+    engine: 'antigravity',
+    label: 'Antigravity',
+    status: groups.length || credits || rawSummary ? 'ok' : 'unavailable',
+    ...(typeof plan === 'string' && plan.trim() ? { plan: plan.trim() } : {}),
+    ...(credits ? { credits } : {}),
+    ...(rawSummary ? { rawSummary } : {}),
+    groups,
+    fetchedAt: Date.now(),
+  };
+}
+
 /** Minimal ACP v1 JSON-RPC client over an attached Duplex socket. */
 class AcpConnection {
   constructor(socket, onMessage) {
@@ -253,6 +378,35 @@ export class AntigravityTurns {
     const pending = this.refreshModels();
     if (this.modelCache) return this.modelCache;
     return Promise.race([pending, delay(1500).then(() => this.modelCache ?? DEFAULT_MODELS)]);
+  }
+
+  async readQuota() {
+    let socket, acp;
+    const ac = new AbortController();
+    try {
+      socket = createConnection(this.socketPath);
+      await Promise.race([once(socket, 'connect'), delay(4000, undefined, { signal: ac.signal }).then(() => { throw Error('TIMEOUT'); })]);
+      acp = new AcpConnection(socket, () => {});
+      const res = await acp.call('anywhere/quota', {}, 22000);
+      return normalizeAntigravityQuota(res);
+    } catch (error) {
+      const msg = String(error?.message || 'QUOTA_UNAVAILABLE');
+      return {
+        engine: 'antigravity',
+        label: 'Antigravity',
+        status: 'error',
+        error: /TIMEOUT/i.test(msg) ? '查询 Antigravity 额度超时，请稍后重试。'
+          : /auth|login|登录/i.test(msg) ? 'Antigravity 尚未登录，请在服务器运行 agy 登录。'
+          : /method not found|-32601|unsupported/i.test(msg) ? '服务端 Antigravity 代理尚未升级以支持额度查询。'
+          : '暂时无法获取 Antigravity 额度信息。',
+        groups: [],
+        fetchedAt: Date.now(),
+      };
+    } finally {
+      ac.abort();
+      try { acp?.close(); } catch {}
+      try { socket?.destroy(); } catch {}
+    }
   }
 
   async workspaceTools(t) {

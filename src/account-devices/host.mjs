@@ -24,6 +24,7 @@ export async function startServer(config) {
   const CodexTurns = config.codexSocket ? (await import('../session-host/codex-turns.mjs')).CodexTurns : null;
   const AntigravityTurns = config.antigravitySocket ? (await import('../session-host/antigravity-turns.mjs')).AntigravityTurns : null;
   const accounts = new Map(), projects = new Map(), opening = new Map(), online = new Map(), streams = new Set();
+  let quotaCache = null, quotaCacheAt = 0, quotaInFlight = null;
   const socketServer = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 524288 });
   function account(id) {
     if (!accounts.has(id)) {
@@ -74,6 +75,25 @@ export async function startServer(config) {
     return host;
   }
   for (const userId of directory.accountIds()) await prepare(userId);
+
+  async function readQuota(host, force = false) {
+    const now = Date.now();
+    const ttl = force ? 5000 : 60000;
+    if (quotaCache && now - quotaCacheAt < ttl) return quotaCache;
+    if (quotaInFlight) return quotaInFlight;
+    quotaInFlight = (async () => {
+      const tasks = [];
+      if (host.codex) tasks.push(host.codex.readQuota());
+      if (host.antigravity) tasks.push(host.antigravity.readQuota());
+      const engines = tasks.length ? await Promise.all(tasks) : [];
+      const snapshot = { fetchedAt: Date.now(), engines };
+      const hasOk = engines.some(e => e.status === 'ok');
+      quotaCache = snapshot;
+      quotaCacheAt = hasOk || !engines.length ? snapshot.fetchedAt : snapshot.fetchedAt - 50000;
+      return snapshot;
+    })().finally(() => { quotaInFlight = null; });
+    return quotaInFlight;
+  }
 
   function detach(id, current = online.get(id)) {
     if (!current || online.get(id) !== current) return;
@@ -293,6 +313,9 @@ export async function startServer(config) {
         ...(Object.keys(engineModels).length ? { engineModels } : {}),
         devices: deviceRows(user.id), projects: workspaceRows(user.id, deviceId), sessions: host.sessions(),
       }); return;
+    }
+    if (req.method === 'GET' && path === '/api/quota') {
+      json(res, 200, await readQuota(host, url.searchParams.get('refresh') === '1')); return;
     }
     if (req.method === 'POST' && path === '/api/sessions') {
       const input = await body(req); fields(input, ['workspaceId', 'title', 'requestId'], ['options']);

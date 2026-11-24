@@ -395,6 +395,7 @@ export class DeviceClient {
         return { user: null, localName: this.cfg.name };
       }
     }
+    if (method === 'quota') return this.api('GET', '/api/quota' + (p.refresh ? '?refresh=1' : ''));
     if (method === 'admin') return this.api('GET', '/api/admin/devices');
     if (method === 'disable') return this.api('POST', '/api/admin/devices/' + p.id, { disabled: p.disabled });
     if (method === 'deleteDevice') return this.api('DELETE', '/api/admin/devices/' + p.id);
