@@ -81,7 +81,7 @@ if (single) app.whenReady().then(async () => {
       const u = new URL(req.url);
       if (req.method !== 'GET' || u.host !== 'app' || u.username || u.password || u.search || u.hash) return new Response('Denied', { status: 403 });
       const path = realpathSync(resolve(assets, '.' + decodeURIComponent(u.pathname)));
-      if (!path.startsWith(assets + sep) || !['.html', '.css', '.js', '.svg', '.png', '.woff2'].includes(extname(path))) return new Response('Denied', { status: 403 });
+      if (!path.startsWith(assets + sep) || !['.html', '.css', '.js', '.svg', '.png', '.woff2', '.webmanifest'].includes(extname(path))) return new Response('Denied', { status: 403 });
       return net.fetch(pathToFileURL(path).href);
     } catch { return new Response('Not found', { status: 404 }); }
   });

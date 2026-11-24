@@ -109,10 +109,107 @@ let localConnectUntil = 0;
 let rows = [], seq = 0, firstSeq = 0, hasOlder = false, epoch, sidebarKey, searchKey, fleetKey, usersKey, deviceKey, historyProblem = false, historyDirty = false;
 let fleet = [], adminUsers = [], adminTab = 'users', resetTargetUser = null, consent, projectSource, restoring = false, reviewWorkspaceId = null;
 let pendingAgent = null, pendingModel = null, pendingEffort = null;
-// Pending attachments: either already uploaded ({ id, name, mime, size }) or staged locally before session creation ({ localFile, name, mime, size, dataBase64 }).
+// Pending attachments with local preview, upload status & progress.
 let pendingAttachments = [];
+let pasteCounter = 0;
 let live = { text: '', thinking: '', toolOutput: new Map() };
 let eventSource = null, subscribedSessionId = null;
+let deferredInstallPrompt = null;
+let pwaBannerDismissed = (() => { try { return localStorage.getItem('anywhere-pwa-dismissed') === '1'; } catch { return false; } })();
+
+const MIME_EXT = {
+  'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp',
+  'image/gif': 'gif', 'image/bmp': 'bmp', 'image/svg+xml': 'svg', 'image/avif': 'avif',
+  'application/pdf': 'pdf', 'text/plain': 'txt', 'application/json': 'json',
+};
+const selectSizer = element('span', '', 'pill-select-sizer');
+selectSizer.setAttribute('aria-hidden', 'true');
+document.body.append(selectSizer);
+
+function fmtSize(bytes) {
+  if (!Number.isFinite(bytes) || bytes < 0) return '';
+  if (bytes >= 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  if (bytes >= 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return bytes + ' B';
+}
+function fitSelectWidth(sel) {
+  if (!sel || sel.hidden || !sel.options.length) return;
+  const opt = sel.selectedOptions?.[0] ?? sel.options[sel.selectedIndex] ?? sel.options[0];
+  const label = opt?.textContent ?? '';
+  selectSizer.textContent = label;
+  const textWidth = selectSizer.getBoundingClientRect().width;
+  const cs = getComputedStyle(sel);
+  const padLeft = parseFloat(cs.paddingLeft) || 8;
+  const padRight = parseFloat(cs.paddingRight) || 22;
+  const border = (parseFloat(cs.borderLeftWidth) || 1) + (parseFloat(cs.borderRightWidth) || 1);
+  sel.style.width = Math.ceil(textWidth + padLeft + padRight + border + 2) + 'px';
+  if (sel === $('model-select')) sel.title = label ? '模型：' + label : '选择模型';
+}
+function fitAllModelSelects() {
+  fitSelectWidth($('engine-select'));
+  fitSelectWidth($('model-select'));
+  fitSelectWidth($('effort-select'));
+}
+
+const isStandalonePwa = () => Boolean(window.matchMedia?.('(display-mode: standalone)').matches || window.navigator.standalone === true);
+const isIOSBrowser = () => /iP(?:hone|ad|od)/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const isMobileBrowser = () => Boolean(
+  /Android|iPhone|iPad|iPod|Mobile|HarmonyOS|MicroMessenger/i.test(navigator.userAgent) ||
+  (navigator.maxTouchPoints > 1 && window.matchMedia?.('(max-width: 900px)').matches)
+);
+function updatePwaInstallUI() {
+  const banner = $('pwa-install-bar');
+  const menuRow = $('install-pwa-menu');
+  const signinBtn = $('signin-install-pwa');
+  if (native || isStandalonePwa()) {
+    banner.hidden = true;
+    menuRow.hidden = true;
+    signinBtn.hidden = true;
+    return;
+  }
+  const canPrompt = Boolean(deferredInstallPrompt);
+  const available = canPrompt || isMobileBrowser();
+  menuRow.hidden = !available;
+  signinBtn.hidden = !available;
+  $('install-pwa-menu-label').textContent = canPrompt ? '安装应用到桌面' : '添加到手机桌面';
+  signinBtn.lastElementChild.textContent = canPrompt ? '安装 AnywhereMesh 到桌面' : '安装 AnywhereMesh 到手机桌面';
+  banner.hidden = !available || pwaBannerDismissed || $('app').hidden;
+  $('pwa-install-btn').textContent = canPrompt ? '安装' : '添加到桌面';
+  $('pwa-banner-desc').textContent = canPrompt
+    ? '一键安装到桌面，全屏快速启动'
+    : isIOSBrowser()
+      ? '在 Safari 点底部分享按钮，选择「添加到主屏幕」'
+      : '添加到主屏幕，像原生 App 一样全屏使用';
+}
+function openInstallGuide() {
+  const steps = isIOSBrowser()
+    ? [
+        '请确保在 Safari 浏览器中打开本页面（若在微信等内置浏览器中，请先点击右上角选择「在 Safari 中打开」）。',
+        '点击浏览器底部工具栏的「分享」按钮（带向上箭头的方框图标）。',
+        '向上滑动菜单，点击「添加到主屏幕」，再点击右上角「添加」即可在手机桌面看到 AnywhereMesh 图标。',
+      ]
+    : [
+        '若当前在微信、QQ 等内置浏览器中，请先点击右上角选择「在默认浏览器 / Chrome 中打开」。',
+        '点击浏览器右上角或底部的菜单按钮（⋮ 或 ≡）。',
+        '选择「安装应用」或「添加到主屏幕」，确认后即可从手机桌面全屏打开 AnywhereMesh。',
+      ];
+  $('install-pwa-steps').replaceChildren(...steps.map(t => element('li', t)));
+  showDialog('install-pwa-dialog');
+}
+async function triggerPwaInstall() {
+  if (deferredInstallPrompt) {
+    const promptEvent = deferredInstallPrompt;
+    deferredInstallPrompt = null;
+    try {
+      await promptEvent.prompt();
+      const choice = await promptEvent.userChoice;
+      if (choice?.outcome === 'accepted') pwaBannerDismissed = true;
+    } catch {}
+    updatePwaInstallUI();
+    return;
+  }
+  openInstallGuide();
+}
 
 const groups = new Map(), unfolded = new Set();
 const canUseProject = p => isLocal(p) && (!state.workspacePicker || (p.localMode !== undefined && !p.localUnavailable));
@@ -323,21 +420,124 @@ function resetHistory() {
 function renderPendingAttachments() {
   const strip = $('pending-attachments');
   strip.hidden = !pendingAttachments.length;
-  strip.replaceChildren(...pendingAttachments.map((att, index) => {
-    const chip = element('span', undefined, 'att-chip');
-    const del = element('button', undefined, undefined);
+  strip.replaceChildren(...pendingAttachments.map(att => {
+    const isUploading = att.status === 'uploading';
+    const isError = att.status === 'error';
+    const pct = Math.max(0, Math.min(100, Math.round(att.progress || 0)));
+    const tip = `${att.name}${att.size ? ' (' + fmtSize(att.size) + ')' : ''}${isError && att.error ? ' · ' + att.error : ''}`;
+    if (att.isImage && att.previewUrl) {
+      const card = element('div', undefined, 'att-card' + (isError ? ' error' : ''));
+      card.dataset.attId = att.localId;
+      const wrap = element('div', undefined, 'att-thumb-wrap');
+      const thumbBtn = element('button', undefined, 'att-thumb-btn');
+      thumbBtn.type = 'button';
+      thumbBtn.title = `点击预览 ${tip}`;
+      thumbBtn.setAttribute('aria-label', `预览图片 ${att.name}`);
+      const img = element('img', undefined, 'att-thumb');
+      img.src = att.previewUrl; img.alt = att.name;
+      thumbBtn.append(img);
+      thumbBtn.onclick = () => openImagePreview({ url: att.previewUrl, name: att.name, size: att.size });
+      wrap.append(thumbBtn);
+      if (isUploading) {
+        const overlay = element('div', undefined, 'att-overlay');
+        overlay.append(element('span', pct > 0 ? pct + '%' : '上传中', 'att-overlay-text'));
+        const bar = element('div', undefined, 'att-overlay-bar');
+        const fill = element('div', undefined, 'att-overlay-fill');
+        fill.style.width = pct + '%';
+        bar.append(fill);
+        overlay.append(bar);
+        wrap.append(overlay);
+      } else if (isError) {
+        const overlay = element('div', undefined, 'att-overlay error');
+        const retry = element('button', undefined, 'att-retry-btn');
+        retry.type = 'button';
+        retry.title = att.error || '重新上传';
+        retry.append(icon('refresh'), element('span', '重试'));
+        retry.onclick = e => { e.stopPropagation(); retryAttachment(att); };
+        overlay.append(element('span', '失败'), retry);
+        wrap.append(overlay);
+      }
+      const del = element('button', undefined, 'att-remove');
+      del.type = 'button'; del.title = '移除附件'; del.setAttribute('aria-label', '移除 ' + att.name);
+      del.append(icon('close'));
+      del.onclick = e => { e.stopPropagation(); removePendingAttachment(att.localId); };
+      wrap.append(del);
+      const cap = element('span', att.name, 'att-card-name');
+      cap.title = tip;
+      card.append(wrap, cap);
+      return card;
+    }
+    const chip = element('span', undefined, 'att-chip' + (isError ? ' error' : ''));
+    chip.dataset.attId = att.localId;
+    chip.title = tip;
+    chip.append(icon('paperclip'), element('span', att.name, 'att-chip-name'));
+    if (isUploading) {
+      chip.append(element('span', pct > 0 ? pct + '%' : '上传中', 'att-chip-pct'));
+      const bar = element('div', undefined, 'att-chip-bar');
+      const fill = element('div', undefined, 'att-chip-fill');
+      fill.style.width = pct + '%';
+      bar.append(fill);
+      chip.append(bar);
+    } else if (isError) {
+      const retry = element('button', '重试', 'att-chip-retry');
+      retry.type = 'button';
+      retry.onclick = () => retryAttachment(att);
+      chip.append(retry);
+    }
+    const del = element('button', undefined, 'att-chip-del');
     del.type = 'button'; del.title = '移除附件'; del.setAttribute('aria-label', '移除 ' + att.name);
     del.append(icon('close'));
-    del.onclick = () => { pendingAttachments.splice(index, 1); renderPendingAttachments(); controls(); };
-    chip.append(icon('paperclip'), element('span', att.name), del);
+    del.onclick = () => removePendingAttachment(att.localId);
+    chip.append(del);
     return chip;
   }));
+}
+function updateAttachmentProgressDom(att) {
+  const node = $('pending-attachments').querySelector(`[data-att-id="${CSS.escape(att.localId)}"]`);
+  if (!node) return;
+  const pct = Math.max(0, Math.min(100, Math.round(att.progress || 0)));
+  const label = pct > 0 ? pct + '%' : '上传中';
+  const textEl = node.querySelector('.att-overlay-text, .att-chip-pct');
+  if (textEl) textEl.textContent = label;
+  const fillEl = node.querySelector('.att-overlay-fill, .att-chip-fill');
+  if (fillEl) fillEl.style.width = pct + '%';
+}
+function disposeAttachment(att) {
+  if (att.xhr) { try { att.xhr.abort(); } catch {} att.xhr = null; }
+  if (att.previewUrl && att.previewUrl.startsWith('blob:')) {
+    try { URL.revokeObjectURL(att.previewUrl); } catch {}
+  }
+}
+function clearPendingAttachments() {
+  for (const att of pendingAttachments) disposeAttachment(att);
+  pendingAttachments = [];
+  renderPendingAttachments();
+}
+function removePendingAttachment(localId) {
+  const idx = pendingAttachments.findIndex(a => a.localId === localId);
+  if (idx < 0) return;
+  disposeAttachment(pendingAttachments[idx]);
+  pendingAttachments.splice(idx, 1);
+  renderPendingAttachments();
+  controls();
+}
+function openImagePreview({ url, name, size }) {
+  if (!url) return;
+  const img = $('image-preview-img');
+  $('image-preview-title').textContent = name || '图片预览';
+  $('image-preview-info').textContent = size ? fmtSize(size) : '';
+  img.onload = () => {
+    const dims = img.naturalWidth && img.naturalHeight ? `${img.naturalWidth} × ${img.naturalHeight}` : '';
+    $('image-preview-info').textContent = [dims, size ? fmtSize(size) : ''].filter(Boolean).join(' · ');
+  };
+  img.src = url;
+  img.alt = name || '图片预览';
+  showDialog('image-preview-dialog');
 }
 function select(id) {
   if (id !== selected) {
     resetHistory();
-    pendingAttachments = [];
-    renderPendingAttachments();
+    clearPendingAttachments();
   }
   selected = id;
   const s = thread();
@@ -381,7 +581,7 @@ function loginView(localName, restore = false, detail) {
     drawer(false);
     resetHistory();
     selected = projectId = consent = null;
-    pendingAttachments = []; renderPendingAttachments();
+    clearPendingAttachments();
     sidebarKey = searchKey = fleetKey = deviceKey = null;
     groups.clear(); unfolded.clear(); fleet = []; adminUsers = []; usersKey = null; fleetKey = null;
     for (const id of ['sessions', 'devices', 'fleet', 'search-results', 'signed-user', 'account', 'notice', 'session-title', 'project', 'mode', 'consent-copy']) $(id).replaceChildren();
@@ -402,6 +602,7 @@ function loginView(localName, restore = false, detail) {
   renderConnectProgress();
   $('app').hidden = true; $('signin').hidden = false;
   $('entry').textContent = localName ? '连接设备 · ' + localName : native ? '登录后继续本机项目的对话。' : '使用你的 AnywhereMesh 账号继续。';
+  updatePwaInstallUI();
 }
 
 function sidebar() {
@@ -643,16 +844,19 @@ function renderModelControls() {
   $('engine-select').disabled = locked;
   $('model-select').disabled = locked;
   $('effort-select').disabled = locked;
+  fitAllModelSelects();
 }
 
 function controls() {
   const p = project(), d = p && deviceById(p.deviceId), t = thread()?.activeTurn;
   const localRevoked = isLocal(p) && (p.localMode ?? p.mode) === 'revoked';
+  const uploadingAtt = pendingAttachments.some(a => a.status === 'uploading');
+  const failedAtt = pendingAttachments.some(a => a.status === 'error');
   $('send').hidden = Boolean(t);
   $('stop').hidden = !t;
   $('stop').disabled = busy || !online || Boolean(t?.cancelRequested);
   $('draft').readOnly = busy;
-  $('send').disabled = busy || !online || !d?.online || d.disabled || !p?.ready || Boolean(t) ||
+  $('send').disabled = busy || uploadingAtt || failedAtt || !online || !d?.online || d.disabled || !p?.ready || Boolean(t) ||
     (!localRevoked && p.mode === 'revoked') || (!$('draft').value.trim() && !pendingAttachments.length);
   $('attach-file').disabled = busy || !online || Boolean(t) || pendingAttachments.length >= 8;
   $('context').disabled = busy || (!p && !(state.workspacePicker && !selected) && !selectableProjects().length);
@@ -723,9 +927,10 @@ function render() {
   $('web-devices').textContent = state.user.isAdmin ? '系统管理' : '查看设备';
   $('suggestions').hidden = !home || webEmpty;
   $('input-hint').hidden = home;
-  $('project-label').textContent = s && p ? modes[p.localMode ?? p.mode]?.[0] ?? '项目权限' : p ? (isLocal(p) ? p.label : p.label + ' · ' + (deviceById(p.deviceId)?.name ?? '远程')) : '选择项目文件夹';
+  const fullProjectLabel = p ? (isLocal(p) ? p.label : p.label + ' · ' + (deviceById(p.deviceId)?.name ?? '远程')) : '选择项目文件夹';
+  $('project-label').textContent = s && p ? modes[p.localMode ?? p.mode]?.[0] ?? '项目权限' : fullProjectLabel;
   $('context').querySelector('use').setAttribute('href', s ? '#i-lock' : '#i-folder');
-  $('context').title = !s ? '选择本机或在线远程设备项目' : p ? '查看「' + p.label + '」项目与权限' : '暂无可用项目';
+  $('context').title = !s ? (p ? `目标项目：${fullProjectLabel}（点击切换）` : '选择本机或在线远程设备项目') : p ? '查看「' + p.label + '」项目与权限' : '暂无可用项目';
   $('engine-name').textContent = engine; $('recipient').textContent = '发给' + (hasAI ? ' ' + engine : engine);
   $('example-code').lastElementChild.textContent = hasAI ? '解释代码' : '查看指令';
   $('draft').placeholder = home ? '描述任务，或问问项目里的代码…' : '继续对话…';
@@ -734,6 +939,7 @@ function render() {
   if (!s?.activeTurn && (live.text || live.thinking)) clearLive();
   renderModelControls();
   controls(); sidebar();
+  updatePwaInstallUI();
   if ($('devices-dialog').open) renderDevices();
   if ($('search-dialog').open) searchResults();
   if (tab === 'admin') { renderAdminTabs(); renderUsers(); renderFleet(); }
@@ -1002,9 +1208,14 @@ async function refreshReviewList() {
   }));
 }
 
-function readFileAsBase64(file) {
+function readFileAsBase64(file, onProgress) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
+    if (onProgress) {
+      reader.onprogress = e => {
+        if (e.lengthComputable && e.total > 0) onProgress(Math.round((e.loaded / e.total) * 100));
+      };
+    }
     reader.onload = () => {
       const str = String(reader.result || '');
       const comma = str.indexOf(',');
@@ -1014,20 +1225,158 @@ function readFileAsBase64(file) {
     reader.readAsDataURL(file);
   });
 }
-async function attachLocalFile(file) {
-  if (!file) return;
-  if (file.size > 10 * 1024 * 1024) throw Error('BODY_LIMIT');
-  const dataBase64 = await readFileAsBase64(file);
-  const name = file.name || ('paste-' + Date.now() + '.png');
-  const mime = file.type || 'application/octet-stream';
+function normalizeAttachmentName(file, { pasted = false } = {}) {
+  const mime = (file.type || 'application/octet-stream').toLowerCase();
+  const raw = (file.name || '').trim();
+  const extFromRaw = raw.includes('.') ? raw.slice(raw.lastIndexOf('.') + 1).toLowerCase() : '';
+  const ext = MIME_EXT[mime] || extFromRaw || (mime.startsWith('image/') ? 'png' : 'bin');
+  const genericPaste = !raw || (pasted && /^(?:image|blob|clipboard|screenshot|pasted?)(?:\.[a-z0-9]+)?$/i.test(raw));
+  let candidate = raw;
+  if (genericPaste) {
+    const d = new Date();
+    const pad = n => String(n).padStart(2, '0');
+    const stamp = `${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+    candidate = `paste-${stamp}-${++pasteCounter}.${ext}`;
+  }
+  const existing = new Set(pendingAttachments.map(a => a.name.toLowerCase()));
+  if (!existing.has(candidate.toLowerCase())) return candidate;
+  const dot = candidate.lastIndexOf('.');
+  const base = dot > 0 ? candidate.slice(0, dot) : candidate;
+  const suffix = dot > 0 ? candidate.slice(dot) : '';
+  let n = 2;
+  while (existing.has(`${base}-${n}${suffix}`.toLowerCase())) n++;
+  return `${base}-${n}${suffix}`;
+}
+function uploadAttachmentWeb(sessionId, item, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    item.xhr = xhr;
+    xhr.open('POST', `/api/sessions/${sessionId}/attachments`);
+    xhr.withCredentials = true;
+    xhr.setRequestHeader('Content-Type', item.mime || 'application/octet-stream');
+    xhr.setRequestHeader('X-Filename', encodeURIComponent(item.name));
+    xhr.upload.onprogress = e => {
+      if (e.lengthComputable && e.total > 0) onProgress(Math.min(99, Math.round((e.loaded / e.total) * 100)));
+    };
+    xhr.onload = () => {
+      item.xhr = null;
+      let data = {};
+      try { data = JSON.parse(xhr.responseText || '{}'); } catch {}
+      if (xhr.status >= 200 && xhr.status < 300 && data.id) {
+        onProgress(100);
+        resolve(data);
+      } else {
+        reject(Error(data.error || '附件上传失败。'));
+      }
+    };
+    xhr.onerror = () => { item.xhr = null; reject(Error('网络异常，附件上传失败。')); };
+    xhr.onabort = () => { item.xhr = null; reject(Error('UPLOAD_ABORTED')); };
+    xhr.send(item.file);
+  });
+}
+async function uploadPendingItem(item, sessionId) {
+  if (!item || !sessionId || !item.file) return item?.id ? item : null;
+  item.status = 'uploading';
+  item.progress = 2;
+  item.error = '';
+  renderPendingAttachments();
+  controls();
+  let ticker = null;
+  try {
+    let uploaded;
+    if (!native) {
+      uploaded = await uploadAttachmentWeb(sessionId, item, pct => {
+        item.progress = Math.max(2, pct);
+        updateAttachmentProgressDom(item);
+      });
+    } else {
+      const dataBase64 = await readFileAsBase64(item.file, pct => {
+        item.progress = Math.max(2, Math.round(pct * 0.4));
+        updateAttachmentProgressDom(item);
+      });
+      item.progress = 45;
+      updateAttachmentProgressDom(item);
+      ticker = setInterval(() => {
+        if (item.progress < 92) {
+          item.progress = Math.min(92, item.progress + 7);
+          updateAttachmentProgressDom(item);
+        }
+      }, 180);
+      uploaded = await action('uploadAttachment', { sessionId, name: item.name, mime: item.mime, dataBase64 });
+    }
+    if (!pendingAttachments.includes(item)) return null;
+    item.id = uploaded.id;
+    item.name = uploaded.name || item.name;
+    item.size = uploaded.size ?? item.size;
+    item.status = 'ready';
+    item.progress = 100;
+    item.error = '';
+    renderPendingAttachments();
+    controls();
+    return uploaded;
+  } catch (err) {
+    if (err.message === 'UPLOAD_ABORTED' || !pendingAttachments.includes(item)) return null;
+    item.status = 'error';
+    item.error = message(err);
+    renderPendingAttachments();
+    controls();
+    notify(item.error);
+    return null;
+  } finally {
+    if (ticker) clearInterval(ticker);
+  }
+}
+function retryAttachment(item) {
+  if (!item || !pendingAttachments.includes(item)) return;
   if (selected) {
-    const uploaded = await action('uploadAttachment', { sessionId: selected, name, mime, dataBase64 });
-    pendingAttachments.push(uploaded);
+    void uploadPendingItem(item, selected);
   } else {
-    pendingAttachments.push({ name, mime, size: file.size, dataBase64 });
+    item.status = 'staged';
+    item.error = '';
+    item.progress = 0;
+    renderPendingAttachments();
+    controls();
+  }
+}
+function attachLocalFiles(files, { pasted = false } = {}) {
+  const list = [...(files || [])].filter(Boolean);
+  if (!list.length) return;
+  const targetSession = selected;
+  const added = [];
+  for (const file of list) {
+    if (pendingAttachments.length >= 8) {
+      notify('最多可同时附加 8 个文件。');
+      break;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      notify(errors.BODY_LIMIT);
+      continue;
+    }
+    const name = normalizeAttachmentName(file, { pasted });
+    const mime = file.type || 'application/octet-stream';
+    const isImage = /^image\//.test(mime);
+    const item = {
+      localId: crypto.randomUUID(),
+      id: null,
+      name,
+      mime,
+      size: file.size,
+      file,
+      previewUrl: isImage ? URL.createObjectURL(file) : null,
+      isImage,
+      status: targetSession ? 'uploading' : 'staged',
+      progress: targetSession ? 2 : 0,
+      error: '',
+      xhr: null,
+    };
+    pendingAttachments.push(item);
+    added.push(item);
   }
   renderPendingAttachments();
   controls();
+  if (targetSession) {
+    for (const item of added) void uploadPendingItem(item, targetSession);
+  }
 }
 
 function rememberInput() {
@@ -1073,15 +1422,14 @@ async function sendMessage() {
     const att = pendingAttachments[i];
     if (att.id) attIds.push(att.id);
     else {
-      const uploaded = await action('uploadAttachment', { sessionId, name: att.name, mime: att.mime, dataBase64: att.dataBase64 });
-      pendingAttachments[i] = uploaded;
+      const uploaded = await uploadPendingItem(att, sessionId);
+      if (!uploaded?.id) throw Error(att.error || '附件上传失败，请重试。');
       attIds.push(uploaded.id);
     }
   }
   await action('send', { sessionId, requestId, text, ...(attIds.length ? { attachments: attIds } : {}) });
   sessionStorage.removeItem(keyFor(sessionId));
-  pendingAttachments = [];
-  renderPendingAttachments();
+  clearPendingAttachments();
   if (selected === sessionId) $('draft').value = '';
   $('timeline').scrollTop = $('timeline').scrollHeight;
 }
@@ -1272,7 +1620,9 @@ $('show-rail').onclick = () => {
   if (narrow.matches) drawer(true); else { $('app').classList.remove('folded'); $('hide-rail').focus(); }
 };
 $('rail-scrim').onclick = () => { drawer(false); $('show-rail').focus(); };
-narrow.addEventListener('change', () => { if (!narrow.matches) drawer(false); });
+narrow.addEventListener('change', () => { if (!narrow.matches) drawer(false); fitAllModelSelects(); });
+window.addEventListener('resize', fitAllModelSelects);
+document.fonts?.ready.then(fitAllModelSelects);
 $('new-chat').onclick = () => openThread(null);
 $('find-chat').onclick = openSearch;
 $('search-input').oninput = searchResults;
@@ -1333,16 +1683,19 @@ $('delete-session').onclick = () => {
 };
 
 $('engine-select').onchange = () => {
+  fitSelectWidth($('engine-select'));
   const val = $('engine-select').value || null;
   if (selected) void perform(() => action('setSessionOptions', { sessionId: selected, agent: val, model: null, effort: null }));
   else { pendingAgent = val; pendingModel = null; pendingEffort = null; render(); }
 };
 $('model-select').onchange = () => {
+  fitSelectWidth($('model-select'));
   const val = $('model-select').value || null;
   if (selected) void perform(() => action('setSessionOptions', { sessionId: selected, model: val }));
   else { pendingModel = val; renderModelControls(); }
 };
 $('effort-select').onchange = () => {
+  fitSelectWidth($('effort-select'));
   const val = $('effort-select').value || null;
   if (selected) void perform(() => action('setSessionOptions', { sessionId: selected, effort: val }));
   else { pendingEffort = val; renderModelControls(); }
@@ -1350,34 +1703,66 @@ $('effort-select').onchange = () => {
 
 $('attach-file').onclick = () => {
   if (busy) return;
-  if (native && selected) {
-    void perform(async () => {
-      const uploaded = await action('chooseAttachment', { sessionId: selected });
-      if (uploaded) { pendingAttachments.push(uploaded); renderPendingAttachments(); }
-    }, { refreshState: false });
-  } else {
-    $('file-input').value = '';
-    $('file-input').click();
-  }
+  $('file-input').value = '';
+  $('file-input').click();
 };
 $('file-input').onchange = () => {
-  const file = $('file-input').files?.[0];
-  if (file) void perform(() => attachLocalFile(file), { refreshState: false });
+  const files = $('file-input').files;
+  if (files?.length) attachLocalFiles(files, { pasted: false });
 };
 $('draft').addEventListener('paste', e => {
-  const items = e.clipboardData?.items;
-  if (!items) return;
-  for (const item of items) {
+  const files = [];
+  for (const item of e.clipboardData?.items ?? []) {
     if (item.kind === 'file') {
       const file = item.getAsFile();
-      if (file) {
-        e.preventDefault();
-        void perform(() => attachLocalFile(file), { refreshState: false });
-        return;
-      }
+      if (file) files.push(file);
     }
   }
+  if (!files.length && e.clipboardData?.files?.length) {
+    files.push(...e.clipboardData.files);
+  }
+  if (files.length) {
+    e.preventDefault();
+    attachLocalFiles(files, { pasted: true });
+  }
 });
+$('events').addEventListener('click', e => {
+  const btn = e.target.closest('.msg-att-img-btn');
+  if (!btn) return;
+  openImagePreview({
+    url: btn.dataset.previewUrl,
+    name: btn.dataset.previewName,
+    size: Number(btn.dataset.previewSize || 0),
+  });
+});
+$('image-preview-dialog').addEventListener('close', () => {
+  $('image-preview-img').removeAttribute('src');
+});
+$('pwa-install-btn').onclick = () => void triggerPwaInstall();
+$('signin-install-pwa').onclick = () => void triggerPwaInstall();
+$('install-pwa-menu').onclick = () => { $('account-dialog').close(); void triggerPwaInstall(); };
+$('close-install-pwa').onclick = () => $('install-pwa-dialog').close();
+$('pwa-dismiss-btn').onclick = () => {
+  pwaBannerDismissed = true;
+  try { localStorage.setItem('anywhere-pwa-dismissed', '1'); } catch {}
+  updatePwaInstallUI();
+};
+if (!native) {
+  window.addEventListener('beforeinstallprompt', e => {
+    e.preventDefault();
+    deferredInstallPrompt = e;
+    updatePwaInstallUI();
+  });
+  window.addEventListener('appinstalled', () => {
+    deferredInstallPrompt = null;
+    pwaBannerDismissed = true;
+    updatePwaInstallUI();
+  });
+  window.matchMedia?.('(display-mode: standalone)').addEventListener?.('change', updatePwaInstallUI);
+  if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+    window.addEventListener('load', () => { navigator.serviceWorker.register('./sw.js').catch(() => {}); });
+  }
+}
 
 $('compose').onsubmit = e => { e.preventDefault(); requestSend(); };
 $('draft').oninput = rememberInput;

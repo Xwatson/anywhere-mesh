@@ -122,7 +122,17 @@ export async function startServer(config) {
     const raw = await rawBody(req, limit);
     try { return JSON.parse(raw); } catch { throw Error('INVALID_FIELDS'); }
   }
-  const assets = new Map([['/', ['index.html', 'text/html']], ['/app.js', ['app.js', 'text/javascript']], ['/thread.js', ['thread.js', 'text/javascript']], ['/style.css', ['style.css', 'text/css']]]);
+  const assets = new Map([
+    ['/', ['index.html', 'text/html']],
+    ['/app.js', ['app.js', 'text/javascript']],
+    ['/thread.js', ['thread.js', 'text/javascript']],
+    ['/style.css', ['style.css', 'text/css']],
+    ['/manifest.webmanifest', ['manifest.webmanifest', 'application/manifest+json']],
+    ['/sw.js', ['sw.js', 'text/javascript']],
+    ['/icon-192.png', ['icon-192.png', 'image/png']],
+    ['/icon-512.png', ['icon-512.png', 'image/png']],
+    ['/apple-touch-icon.png', ['icon-192.png', 'image/png']],
+  ]);
   const uiVersion = (() => {
     const h = createHash('sha256');
     for (const [name] of assets.values()) {
@@ -138,7 +148,8 @@ export async function startServer(config) {
     if (req.headers.origin && req.headers.origin !== 'https://' + req.headers.host) throw Error('FORBIDDEN');
     if (req.method === 'GET' && assets.has(path)) {
       const [name, type] = assets.get(path);
-      res.writeHead(200, { 'Content-Type': type + '; charset=utf-8', 'Cache-Control': 'no-store' });
+      const contentType = type.startsWith('text/') || type.includes('json') ? type + '; charset=utf-8' : type;
+      res.writeHead(200, { 'Content-Type': contentType, 'Cache-Control': 'no-store' });
       res.end(readFileSync(new URL('./ui/' + name, import.meta.url))); return;
     }
     if (path === '/api/auth/login' && req.method === 'POST') {
@@ -379,7 +390,7 @@ export async function startServer(config) {
     if (req.method === 'POST' && match[2] === 'attachments') {
       const ct = req.headers['content-type'] ?? '';
       let name, mime, bytes;
-      if (/^application\/json(?:\s*;|$)/i.test(ct)) {
+      if (!req.headers['x-filename'] && /^application\/json(?:\s*;|$)/i.test(ct)) {
         const b = await body(req, 15 * 1024 * 1024);
         fields(b, ['name', 'mime', 'dataBase64']);
         name = b.name; mime = b.mime; bytes = Buffer.from(String(b.dataBase64), 'base64');

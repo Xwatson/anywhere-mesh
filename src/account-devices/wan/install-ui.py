@@ -19,7 +19,7 @@ with tempfile.TemporaryDirectory(dir=releases) as temp:
     output.mkdir(mode=0o755)
     output.chmod(0o755)
     digest = hashlib.sha256()
-    for name in ("index.html", "app.js", "thread.js", "style.css"):
+    for name in ("index.html", "app.js", "thread.js", "style.css", "manifest.webmanifest", "sw.js", "icon-192.png", "icon-512.png"):
         data = (source / name).read_bytes()
         (output / name).write_bytes(data)
         (output / name).chmod(0o644)

@@ -137,9 +137,17 @@ export function renderThread(container, rows, { sessionId, isWeb = false, liveTo
         for (const att of event.attachments) {
           const url = isWeb && sessionId ? `/api/sessions/${sessionId}/attachments/${att.id}` : null;
           if (url && /^image\//.test(att.mime)) {
+            const btn = element('button', undefined, 'msg-att-img-btn');
+            btn.type = 'button';
+            btn.dataset.previewUrl = url;
+            btn.dataset.previewName = att.name;
+            btn.dataset.previewSize = String(att.size ?? 0);
+            btn.title = `点击查看大图：${att.name} (${fmtSize(att.size)})`;
+            btn.setAttribute('aria-label', `预览图片 ${att.name}`);
             const img = element('img', undefined, 'msg-att-img');
             img.src = url; img.alt = att.name; img.loading = 'lazy';
-            list.append(img);
+            btn.append(img, element('span', att.name, 'msg-att-img-cap'));
+            list.append(btn);
           } else {
             const chip = element(url ? 'a' : 'span', undefined, 'msg-att');
             if (url) { chip.href = url; chip.target = '_blank'; chip.rel = 'noopener'; }

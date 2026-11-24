@@ -29,7 +29,7 @@ APP_FILES = {
         "linux-agent.mjs", "linux-workspace.mjs",
         "linux/network.mjs", "linux/client.mjs", "linux/controller.mjs",
         "linux/agent.sh", "linux/anywhere-mesh-agent.service.example",
-        "ui/index.html", "ui/app.js", "ui/thread.js", "ui/style.css",
+        "ui/index.html", "ui/app.js", "ui/thread.js", "ui/style.css", "ui/manifest.webmanifest", "ui/sw.js", "ui/icon-192.png", "ui/icon-512.png",
     ],
 }
 

@@ -17,7 +17,7 @@ unitdir = Path("/etc/systemd/system")
 prefix = Path("/opt/anywhere-wan")
 service = "anywhere-wan-host.service"
 control = lambda *args: subprocess.run(["systemctl", *args], check=True)
-files = ("server.mjs", "mcp.mjs", "agy-mcp-bridge.mjs", "ui/app.js", "ui/index.html", "ui/thread.js", "ui/style.css")
+files = ("server.mjs", "mcp.mjs", "agy-mcp-bridge.mjs", "ui/app.js", "ui/index.html", "ui/thread.js", "ui/style.css", "ui/manifest.webmanifest", "ui/sw.js", "ui/icon-192.png", "ui/icon-512.png")
 has_agy = all((stage / name).exists() for name in ("anywhere-wan-agy.socket", "anywhere-wan-agy@.service", "agy-service.py"))
 sha = hashlib.sha256()
 for name in files:
