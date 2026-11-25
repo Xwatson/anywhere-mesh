@@ -111,7 +111,7 @@ ExecStart={node} {release}/server.mjs {etc}/host.json
 WorkingDirectory={state}
 CapabilityBoundingSet=
 MemoryMax=640M
-TasksMax=128
+TasksMax=512
 {common}''')
 wire_host='127.0.0.1' if domain else public
 for suffix,listen,target in [('wire',wire_host+':31483','127.0.0.1:31483'),('admin','127.0.0.1:18443','10.203.73.2:18443')]:

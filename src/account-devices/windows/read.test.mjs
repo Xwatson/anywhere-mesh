@@ -46,7 +46,7 @@ test('installed Windows reader pins the project and pages only bounded, single-l
   await assert.rejects(read(path,build(adapter.identifyRoot(other))),/WORKSPACE_ROOT_CHANGED/);
 });
 
-test('installed project grants, guarded edits, offline builds, conflicts and cancellation', {skip:process.platform!=='win32'},async t=>{
+test('installed project grants, guarded edits, direct command execution with network and cancellation', {skip:process.platform!=='win32'},async t=>{
   const adapter=await installedWorkspace();
   const temp=await realpath(await mkdtemp(join(tmpdir(),'anywhere-full-test-')));
   t.after(()=>rm(temp,{recursive:true,force:true,maxRetries:3}));
@@ -62,6 +62,9 @@ test('installed project grants, guarded edits, offline builds, conflicts and can
   };
   const write=(path,content,expectedRevision=null,mode='rewrite')=>tool('write_file',{path,content,expectedRevision,mode});
   assert.deepEqual(adapter.modes,['revoked','read','edit','execute']);
+  assert.equal(adapter.sandbox.platform,'win32');
+  assert.equal(adapter.sandbox.network,true);
+  assert.equal(adapter.sandbox.isolation,'none');
   assert.throws(()=>operation(write('a','!'),'read'),/TOOL_UNAVAILABLE_ON_DEVICE/);
   assert.throws(()=>operation(run('ver'),'edit'),/TOOL_UNAVAILABLE_ON_DEVICE/);
   await call(tool('create_directory',{path:'验证/sub'}),'edit');
@@ -79,18 +82,16 @@ test('installed project grants, guarded edits, offline builds, conflicts and can
   assert.ok(matches.response.content[0].text.includes(path+':2:'));
   const multi=await call(tool('read_multiple_files',{paths:[path,'missing.txt']}),'read');
   assert.equal(multi.fileVersions.length,1);assert.match(multi.response.content[1].text,/FILE_NOT_FOUND/);
-  // Use a loopback fixture and a private sibling file to exercise the native boundary.
-  const outside=join(temp,'outside.txt');
-  await writeFile(outside,'private');
+  // Direct execution in execute mode allows local network access and writes directly to workspaceRoot.
   const listener=createServer(socket=>socket.end());listener.listen(0,'127.0.0.1');await once(listener,'listening');
   t.after(()=>new Promise(resolve=>listener.close(resolve)));
   await writeFile(join(root,'验证','package.json'),JSON.stringify({scripts:{test:'node build.cjs'}}));
   await writeFile(join(root,'验证','build.cjs'),[
     "const fs=require('node:fs'),net=require('node:net');",
-    "try {fs.readFileSync("+JSON.stringify(outside)+");process.exit(50);}catch(e){if(!['EACCES','EPERM','ENOENT'].includes(e.code))throw e;}",
     "const s=net.createConnection("+listener.address().port+",'127.0.0.1');",
-    "s.setTimeout(3000,()=>s.destroy(Error('timeout')));s.on('connect',()=>{s.destroy();process.exit(51)});",
-    "s.on('error',()=>{fs.mkdirSync('dist');fs.writeFileSync('dist/result.bin',Buffer.from([0,254,1]));fs.renameSync('sub/说明.txt','sub/moved.txt');console.log('BUILD_VERIFIED')});"
+    "s.setTimeout(3000,()=>s.destroy(Error('timeout')));",
+    "s.on('connect',()=>{s.destroy();fs.mkdirSync('dist');fs.writeFileSync('dist/result.bin',Buffer.from([0,254,1]));fs.renameSync('sub/说明.txt','sub/moved.txt');console.log('BUILD_VERIFIED');});",
+    "s.on('error',()=>{process.exit(51);});"
   ].join('\n'));
   const output=[];
   const built=await call(run('npm test --silent','验证'),'execute',undefined,(_kind,data)=>output.push(data));
@@ -98,20 +99,9 @@ test('installed project grants, guarded edits, offline builds, conflicts and can
   assert.deepEqual(await readFile(join(root,'验证','dist','result.bin')),Buffer.from([0,254,1]));
   await assert.rejects(readFile(join(root,path)),{code:'ENOENT'});
   assert.equal(await readFile(join(root,'验证','sub','moved.txt'),'utf8'),'line one\nline three\n');
-  assert.equal(await readFile(outside,'utf8'),'private');
-  // Change the live project while the staged task waits; a commit must preserve the local work.
-  const conflict=join(root,'conflict.txt');
-  await writeFile(conflict,'original');
-  await writeFile(join(root,'wait.cjs'),"require('fs').writeFileSync('conflict.txt','staged');console.log('WAITING');setTimeout(()=>{},1800);");
-  let seen=false,local;
-  const attempt=call(run('node wait.cjs'),'execute',undefined,(_kind,data)=>{
-    if(!seen&&data.includes('WAITING')){seen=true;local=writeFile(conflict,'new local work');}
-  });
-  await assert.rejects(attempt,/FILE_VERSION_CONFLICT/);await local;
-  assert.equal(await readFile(conflict,'utf8'),'new local work');
+  await writeFile(join(root,'wait.cjs'),"console.log('WAITING');setTimeout(()=>{},15000);");
   const cancel=new AbortController();
   await assert.rejects(call(run('node wait.cjs'),'execute',cancel.signal,(_kind,data)=>{
     if(data.includes('WAITING'))cancel.abort();
   }),{name:'AbortError'});
-  assert.equal(await readFile(conflict,'utf8'),'new local work');
 });

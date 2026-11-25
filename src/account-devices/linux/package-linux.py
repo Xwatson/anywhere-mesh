@@ -11,7 +11,7 @@ import tarfile
 import tempfile
 import zipfile
 
-VERSION = "0.4.9"
+VERSION = "0.4.14"
 WS_INTEGRITY = "sha512-Ydggc987+RO0AnWtZ/7Wq9FtNvcrL1b/RO0ud9mWjUPgDrsAAwQSF51sm2hm1XofbU/4jkpGEsLFsZZxU+1DOg=="
 PINNED = {
     "electron-v45.3.3-linux-x64.zip": "0a63ce0e2b6a69d6ced7194949934b8414a6dadeca82910f88dc8720a1433269",
@@ -29,7 +29,7 @@ APP_FILES = {
         "linux-agent.mjs", "linux-workspace.mjs",
         "linux/network.mjs", "linux/client.mjs", "linux/controller.mjs",
         "linux/agent.sh", "linux/anywhere-mesh-agent.service.example",
-        "ui/index.html", "ui/app.js", "ui/thread.js", "ui/style.css", "ui/manifest.webmanifest", "ui/sw.js", "ui/icon-192.png", "ui/icon-512.png",
+        "ui/index.html", "ui/app.js", "ui/thread.js", "ui/session-cache.js", "ui/style.css", "ui/manifest.webmanifest", "ui/sw.js", "ui/icon-192.png", "ui/icon-512.png",
     ],
 }
 

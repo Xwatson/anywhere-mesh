@@ -10,4 +10,4 @@ node_modules/.bin/esbuild src/account-devices/wan/{server,mcp}.mjs \
   --banner:js="import {createRequire as __nodeRequire} from 'node:module';const require=__nodeRequire(import.meta.url);" \
   --external:bufferutil --external:utf-8-validate --legal-comments=eof
 cp src/account-devices/wan/agy-mcp-bridge.mjs "$dest/agy-mcp-bridge.mjs"
-cp src/account-devices/ui/{index.html,app.js,thread.js,style.css,manifest.webmanifest,sw.js,icon-192.png,icon-512.png} "$dest/ui/"
+cp src/account-devices/ui/{index.html,app.js,thread.js,session-cache.js,style.css,manifest.webmanifest,sw.js,icon-192.png,icon-512.png} "$dest/ui/"

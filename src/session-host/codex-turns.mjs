@@ -7,6 +7,12 @@ import { CodexAppServer } from './codex-app-server.mjs';
 import { CATALOG, listTools, normalize } from '../workspace/catalog.mjs';
 import { assertIdentity } from '../execution/grants.mjs';
 import { hash, string } from '../execution/protocol.mjs';
+import {
+  MEMORY_TOOLS,
+  MEMORY_TOOL_NAMES,
+  buildMemoryInstructions,
+  executeMemoryTool,
+} from './memory.mjs';
 
 const IMAGE_MIMES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
 const DEFAULT_MODELS = {
@@ -260,16 +266,13 @@ export class CodexTurns {
     const remote = await this.broker(t, 'workspace');
     assertIdentity(remote.grant, t.binding);
     if (!remote.confirmed || remote.grant.grantVersion !== t.binding.grantVersion || remote.grant.revoked) throw Error('LOCAL_PERMISSION_CHANGED');
-    const tools = listTools(remote.grant, true, remote.sandbox?.supportedTools).filter(tool => workspaceNames.has(tool.name));
-    if (remote.sandbox?.shell === 'cmd.exe') {
-      const command = tools.find(tool => tool.name === 'workspace_run');
-      if (command) command.description = 'Run a finite Windows cmd.exe project command in an offline AppContainer. Normal exit writes project changes back. Node and npm are available.';
-    }
+    const tools = listTools(remote.grant, true, remote.sandbox?.supportedTools, remote.sandbox).filter(tool => workspaceNames.has(tool.name));
     const sessionAtts = this.db.attachments(t.sessionId);
     if (sessionAtts.length) {
       tools.push(SESSION_TOOLS[0]);
       if (tools.some(x => x.name === 'workspace_write_file')) tools.push(SESSION_TOOLS[1]);
     }
+    tools.push(...MEMORY_TOOLS);
     return tools;
   }
 
@@ -329,6 +332,12 @@ export class CodexTurns {
       this.event(t, { type: 'tool_call', id: callId, name: tool, input: args, status: res.success ? 'completed' : 'failed', output: out.slice(0, 4500) });
       return res;
     }
+    if (MEMORY_TOOL_NAMES.has(tool)) {
+      this.event(t, { type: 'tool_call', id: callId, name: tool, input: args, status: 'running' });
+      const res = executeMemoryTool(this.db, t.workspaceId, tool, args);
+      this.event(t, { type: 'tool_call', id: callId, name: tool, input: args, status: res.ok ? 'completed' : 'failed', output: res.text.slice(0, 4500) });
+      return { success: res.ok, contentItems: [{ type: 'inputText', text: res.text }] };
+    }
     let effectiveTool = tool, effectiveArgs = args;
     if (tool === 'session_send_attachment') {
       const query = String(args?.attachment ?? '').trim();
@@ -354,39 +363,45 @@ export class CodexTurns {
     const h = await this.host.host(current);
     // Check live authorization again before issuing or returning a previously stored result.
     if (run.ending || this.turn(t.id).cancelRequested) return failure('Turn stopped.');
-    await this.waitForWorkspaceReady(current, run, 20000);
-    run.touch?.();
-    if (!(await this.workspaceTools(current)).some(item => item.name === effectiveTool)) return failure('Workspace permission changed.');
-    const ticket = await h.executor.issue(callId, effectiveTool, effectiveArgs);
-    this.save(t.id, { operationId: ticket.operationId });
-    const saved = this.db.get('codexResults', ticket.operationId);
-    if (saved) {
-      await h.executor.consumeAfterPersist(saved.receipt);
-      return saved.reply;
-    }
-    if (run.ending || this.turn(t.id).cancelRequested) {
-      await this.broker(current, 'stopTurn', turnScope(current));
-      return failure('Turn stopped.');
-    }
-    let result = await h.client.callTool({ name: effectiveTool, arguments: effectiveArgs, _meta: { 'anywhere/callTicket': ticket.ticket } });
-    const until = Date.now() + 180000;
-    let outputSeq = 0;
-    while (result.structuredContent?.task && !result.structuredContent.task.resultReady) {
+    const waitAlive = setInterval(() => run.touch?.(), 15000);
+    waitAlive.unref?.();
+    return this.host.withWorkspaceLock(t.workspaceId, async () => {
+      clearInterval(waitAlive);
+      if (run.ending || this.turn(t.id).cancelRequested) return failure('Turn stopped.');
+      await this.waitForWorkspaceReady(current, run, 20000);
       run.touch?.();
-      if (run.ending || result.structuredContent.task.state === 'unknown' || Date.now() > until) throw Error('WORKSPACE_RESULT_PENDING');
-      const receivedSeq = result.structuredContent.task.receivedSeq ?? 0;
-      if (receivedSeq > outputSeq) {
-        try {
-          const out = await h.executor.output(ticket.operationId, outputSeq);
-          const chunk = out.rows.map(r => r.data).join('');
-          if (chunk) this.host.delta(t.sessionId, { kind: 'tool_output', id: callId, text: chunk });
-          outputSeq = out.nextSeq;
-        } catch {}
+      if (!(await this.workspaceTools(current)).some(item => item.name === effectiveTool)) return failure('Workspace permission changed.');
+      const ticket = await h.executor.issue(callId, effectiveTool, effectiveArgs);
+      this.save(t.id, { operationId: ticket.operationId });
+      const saved = this.db.get('codexResults', ticket.operationId);
+      if (saved) {
+        await h.executor.consumeAfterPersist(saved.receipt);
+        return saved.reply;
       }
-      await delay(250);
-      result = await h.client.callTool({ name: 'workspace_task_status', arguments: { operationId: ticket.operationId } });
-    }
-    return this.capture(current, { id: callId, tool, args }, h, ticket.operationId, result);
+      if (run.ending || this.turn(t.id).cancelRequested) {
+        await this.broker(current, 'stopTurn', turnScope(current));
+        return failure('Turn stopped.');
+      }
+      let result = await h.client.callTool({ name: effectiveTool, arguments: effectiveArgs, _meta: { 'anywhere/callTicket': ticket.ticket } });
+      const until = Date.now() + 180000;
+      let outputSeq = 0;
+      while (result.structuredContent?.task && !result.structuredContent.task.resultReady) {
+        run.touch?.();
+        if (run.ending || result.structuredContent.task.state === 'unknown' || Date.now() > until) throw Error('WORKSPACE_RESULT_PENDING');
+        const receivedSeq = result.structuredContent.task.receivedSeq ?? 0;
+        if (receivedSeq > outputSeq) {
+          try {
+            const out = await h.executor.output(ticket.operationId, outputSeq);
+            const chunk = out.rows.map(r => r.data).join('');
+            if (chunk) this.host.delta(t.sessionId, { kind: 'tool_output', id: callId, text: chunk });
+            outputSeq = out.nextSeq;
+          } catch {}
+        }
+        await delay(250);
+        result = await h.client.callTool({ name: 'workspace_task_status', arguments: { operationId: ticket.operationId } });
+      }
+      return this.capture(current, { id: callId, tool, args }, h, ticket.operationId, result);
+    }).finally(() => clearInterval(waitAlive));
   }
 
   async capture(t, call, h, operationId, result) {
@@ -446,7 +461,7 @@ export class CodexTurns {
     const socket = createConnection(this.socketPath);
     const connected = once(socket, 'connect');
     socket.on('error', () => {});
-    const run = { socket, ready: Promise.withResolvers(), end: Promise.withResolvers(), queue: Promise.resolve(), messages: [], thoughts: [], usage: null, model: null, tools: new Set() };
+    const run = { socket, ready: Promise.withResolvers(), end: Promise.withResolvers(), queue: Promise.resolve(), messages: [], thoughts: [], usage: null, context: null, model: null, tools: new Set() };
     run.end.promise.catch(() => {});
     this.active.set(t.id, run);
     const app = new CodexAppServer({
@@ -478,7 +493,16 @@ export class CodexTurns {
       }
       if (method === 'thread/tokenUsage/updated' && p.tokenUsage?.last) {
         run.usage = p.tokenUsage.last;
-        this.host.delta(t.sessionId, { kind: 'context', used: p.tokenUsage.last.totalTokens, window: p.tokenUsage.modelContextWindow ?? undefined });
+        const used = typeof p.tokenUsage.last.totalTokens === 'number'
+          ? p.tokenUsage.last.totalTokens
+          : ((p.tokenUsage.last.inputTokens ?? 0) + (p.tokenUsage.last.outputTokens ?? 0));
+        const window = typeof p.tokenUsage.modelContextWindow === 'number' && p.tokenUsage.modelContextWindow > 0
+          ? p.tokenUsage.modelContextWindow
+          : (run.context?.window ?? null);
+        if (typeof used === 'number' && Number.isFinite(used)) {
+          run.context = { used, ...(window ? { window } : {}) };
+          this.host.delta(t.sessionId, { kind: 'context', used, window: window ?? undefined });
+        }
       }
       if (method === 'account/rateLimits/updated' && p.rateLimits) {
         const parsed = normalizeCodexQuota({ rateLimits: p.rateLimits });
@@ -503,10 +527,20 @@ export class CodexTurns {
       const signature = JSON.stringify(tools.map(tool => tool.name).sort());
       const resume = saved && session.codexToolSet === signature;
       const hasAtts = this.db.attachments(t.sessionId).length > 0;
+      const projectDocs = (!resume && tools.some(tool => tool.name === 'workspace_read_files'))
+        ? await this.host.preloadProjectDocs(t)
+        : [];
+      const projectLabel = this.host.workspaces.get(t.workspaceId)?.label ?? '';
+      const memoryInstructions = buildMemoryInstructions({
+        store: this.db,
+        workspaceId: t.workspaceId,
+        projectLabel,
+        projectDocs,
+      });
       const common = {
         cwd: this.cwd, sandbox: 'read-only', approvalPolicy: 'never',
         ...(opts.model ? { model: opts.model } : {}),
-        developerInstructions: deviceInstructions(hasAtts),
+        developerInstructions: `${deviceInstructions(hasAtts)}\n\n${memoryInstructions}`,
         config: { web_search: 'disabled' },
       };
       if (this.turn(t.id).cancelRequested) throw Error('TURN_STOPPED');
@@ -561,7 +595,7 @@ export class CodexTurns {
             this.db.append(t.sessionId, { type: 'assistant_text', id: m.id + '-' + pos, text: m.text.slice(pos, pos + 16000), engine: 'codex' });
           }
         }
-        this.save(t.id, { modelFinished: true, durationMs, usage, model: run.model });
+        this.save(t.id, { modelFinished: true, durationMs, usage, ...(run.context ? { context: run.context } : {}), model: run.model });
       });
       outcome = 'succeeded';
     } catch (error) {
@@ -628,13 +662,74 @@ export class CodexTurns {
         ...(latest.durationMs ? { durationMs: latest.durationMs } : {}),
         ...(latest.model ? { model: latest.model } : {}),
         ...(latest.usage ? { usage: latest.usage } : {}),
+        ...(latest.context ? { context: latest.context } : {}),
       });
       this.save(t.id, { state, done: true, consumed: true });
       const s = this.host.session(t.sessionId);
-      if (s.activeTurnId === t.id) this.db.put('sessions', s.id, { ...s, activeTurnId: null });
+      const contextUsage = latest.context
+        ? { used: latest.context.used, window: latest.context.window ?? s.contextUsage?.window ?? null, engine: 'codex', model: latest.model ?? s.contextUsage?.model ?? null, updatedAt: Date.now() }
+        : s.contextUsage;
+      const nextSession = { ...s, ...(s.activeTurnId === t.id ? { activeTurnId: null } : {}), ...(contextUsage ? { contextUsage } : {}) };
+      if (s.activeTurnId === t.id || latest.context) this.db.put('sessions', s.id, nextSession);
     });
     await this.host.closeHost(t.id);
     this.host.emit('events', t.sessionId);
+    this.host.emit('state');
+  }
+
+  async compact(session) {
+    if (!session?.codexThreadId) throw Error('NOTHING_TO_COMPACT');
+    const socket = createConnection(this.socketPath);
+    const connected = once(socket, 'connect');
+    socket.on('error', () => {});
+    const end = Promise.withResolvers();
+    end.promise.catch(() => {});
+    let app = null;
+    let afterContext = null;
+    let compacted = false;
+    const timeout = setTimeout(() => end.reject(Error('COMPACT_TIMEOUT')), 120000);
+    try {
+      await Promise.race([connected, delay(6000).then(() => { throw Error('CODEX_CONNECT_TIMEOUT'); })]);
+      app = new CodexAppServer({
+        experimentalApi: true, initializeTimeoutMs: 30000, transport: { input: socket, output: socket },
+        onExit: () => end.reject(Error('CODEX_DISCONNECTED')),
+      });
+      app.onNotification((method, p) => {
+        if (p?.threadId && p.threadId !== session.codexThreadId) return;
+        if (method === 'thread/tokenUsage/updated' && p.tokenUsage?.last) {
+          const used = typeof p.tokenUsage.last.totalTokens === 'number'
+            ? p.tokenUsage.last.totalTokens
+            : ((p.tokenUsage.last.inputTokens ?? 0) + (p.tokenUsage.last.outputTokens ?? 0));
+          const window = typeof p.tokenUsage.modelContextWindow === 'number' && p.tokenUsage.modelContextWindow > 0
+            ? p.tokenUsage.modelContextWindow
+            : (afterContext?.window ?? session.contextUsage?.window ?? null);
+          if (typeof used === 'number' && Number.isFinite(used)) afterContext = { used, ...(window ? { window } : {}) };
+        }
+        if (method === 'thread/compacted') compacted = true;
+        if (method === 'turn/completed') end.resolve(p.turn);
+      });
+      const opts = session.options ?? {};
+      const resumed = await app.call('thread/resume', {
+        cwd: this.cwd, sandbox: 'read-only', approvalPolicy: 'never',
+        ...(opts.model ? { model: opts.model } : {}),
+        threadId: session.codexThreadId, excludeTurns: true,
+        config: { web_search: 'disabled' },
+      });
+      await app.call('thread/compact/start', { threadId: session.codexThreadId });
+      const ended = await end.promise;
+      if (ended?.status && ended.status !== 'completed') throw Error('COMPACT_FAILED');
+      return {
+        engine: 'codex',
+        model: opts.model ?? resumed?.model ?? session.contextUsage?.model ?? null,
+        before: session.contextUsage ?? null,
+        after: afterContext,
+        compacted: compacted || true,
+      };
+    } finally {
+      clearTimeout(timeout);
+      try { app?.stop(); } catch {}
+      try { socket.destroy(); } catch {}
+    }
   }
 
   async close() {

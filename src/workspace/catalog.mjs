@@ -33,7 +33,7 @@ const definitions = [
   ['workspace_create_directory', 'Create a directory inside the workspace.', 'write', { path }, ['path'], a => file('create_directory', a)],
   ['workspace_search', 'Search file names or text. Results may be partial when limits are reached.', 'read', { path, pattern: { type: 'string', minLength: 1, maxLength: 1024 }, searchType: { type: 'string', enum: ['files', 'content'], default: 'content' }, literal: { type: 'boolean', default: true }, maxResults: count(1, 50, 50) }, ['path', 'pattern'],
     a => ({ kind: 'dc.search', cwdRelative: '.', args: { path: a.path, pattern: a.pattern, searchType: a.searchType ?? 'content', literalSearch: a.literal ?? true, maxResults: a.maxResults ?? 50 } })],
-  ['workspace_run', 'Run a finite shell command in the offline workspace sandbox. Poll tasks that remain running; inspect output before continuing.', 'execute', { command: { type: 'string', minLength: 1, maxLength: 32768 }, cwd: { ...path, default: '.' }, input: { type: 'string', maxLength: 65536 } }, ['command'],
+  ['workspace_run', 'Run a finite shell command on the bound workspace device (cwd defaults to the workspace root) and wait for completion.', 'execute', { command: { type: 'string', minLength: 1, maxLength: 32768 }, cwd: { ...path, default: '.' }, input: { type: 'string', maxLength: 65536 } }, ['command'],
     a => ({ kind: 'dc.run', cwdRelative: a.cwd ?? '.', args: { command: a.command, ...(a.input === undefined ? {} : { input: a.input }) } })],
 ];
 export const CATALOG = definitions.map(([name, description, permission, properties, required, translate]) => ({ name, description, permission, inputSchema: schema(properties, required), translate }));
@@ -61,7 +61,31 @@ export function allowed(tool, grant, supportedTools) {
   if (tool.permission === 'execute') return grant.capabilities.includes('workspace.exec');
   return grant.capabilities.includes(tool.name === 'workspace_search' ? 'dc.search' : 'dc.tool');
 }
-export function listTools(grant, executable = true, supportedTools) {
-  return [...CATALOG.filter(t => executable && allowed(t, grant, supportedTools)).map(({ translate, permission, ...t }) => ({ ...t,
-    annotations: { readOnlyHint: permission === 'read', destructiveHint: permission !== 'read', openWorldHint: false } })), ...LIFECYCLE];
+export function isOfflineSandbox(sandbox) {
+  return Boolean(sandbox && (sandbox.network === false || sandbox.isolation === 'windows-appcontainer' || sandbox.isolation === 'bwrap'));
+}
+export function workspaceRunDescription(sandbox) {
+  if (isOfflineSandbox(sandbox)) {
+    if (sandbox?.shell === 'cmd.exe') {
+      return 'Run a finite Windows cmd.exe project command in an offline AppContainer (120s timeout). Normal exit writes project changes back. Node and npm are available.';
+    }
+    return 'Run a finite shell command in an offline workspace sandbox.';
+  }
+  const timeoutSec = Number.isFinite(sandbox?.timeoutMs) && sandbox.timeoutMs > 0 ? Math.round(sandbox.timeoutMs / 1000) : 120;
+  if (sandbox?.platform === 'win32' || sandbox?.shell === 'cmd.exe') {
+    return `Run a finite Windows cmd.exe command directly on the remote device as the current user (cwd defaults to the workspace root; full network and local toolchain access; ${timeoutSec}s timeout). Do not kill or restart the AnywhereMesh process hosting this session.`;
+  }
+  if (sandbox?.platform === 'linux' || sandbox?.shell === '/bin/bash') {
+    return `Run a finite /bin/bash -lc command directly on the remote Linux device as the current user (cwd defaults to the workspace root; full network and local toolchain access; ${timeoutSec}s timeout). Do not kill or restart the AnywhereMesh process hosting this session.`;
+  }
+  return 'Run a finite shell command on the bound workspace device (cwd defaults to the workspace root) and wait for completion.';
+}
+export function listTools(grant, executable = true, supportedTools, sandbox) {
+  const runDesc = sandbox ? workspaceRunDescription(sandbox) : null;
+  const offline = sandbox ? isOfflineSandbox(sandbox) : true;
+  return [...CATALOG.filter(t => executable && allowed(t, grant, supportedTools)).map(({ translate, permission, ...t }) => ({
+    ...t,
+    ...(t.name === 'workspace_run' && runDesc ? { description: runDesc } : {}),
+    annotations: { readOnlyHint: permission === 'read', destructiveHint: permission !== 'read', openWorldHint: permission === 'execute' && !offline },
+  })), ...LIFECYCLE];
 }

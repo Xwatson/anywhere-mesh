@@ -14,7 +14,7 @@ export class WorkspaceExecutor {
     const bindingCurrent = info.grant.grantVersion === this.binding.grantVersion;
     return { workspaceId: info.grant.workspaceId, label: info.label, connection: info.phase,
       permission: { mode: info.grant.mode, version: info.grant.grantVersion, confirmed: info.confirmed }, bindingCurrent,
-      tools: listTools(info.grant, info.confirmed && bindingCurrent, info.sandbox?.supportedTools), activeOperations: info.activeOperations,
+      tools: listTools(info.grant, info.confirmed && bindingCurrent, info.sandbox?.supportedTools, info.sandbox), activeOperations: info.activeOperations,
       blockers: info.blockers, sandbox: info.sandbox, history: info.history,
       limits: { maxRuntimeMs: 120000, maxReadLines: 500, maxSearchResults: 50, maxResultBytes: 196608, retainedOutputBytes: 65536, concurrentTasks: 1 } };
   }

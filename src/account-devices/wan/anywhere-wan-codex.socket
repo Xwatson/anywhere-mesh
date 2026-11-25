@@ -6,7 +6,7 @@ ListenStream=/run/anywhere-wan-codex.sock
 Accept=yes
 SocketUser=anywhere-wan
 SocketMode=0600
-MaxConnections=8
+MaxConnections=32
 RemoveOnStop=yes
 
 [Install]

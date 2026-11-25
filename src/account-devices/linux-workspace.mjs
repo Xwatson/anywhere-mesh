@@ -237,7 +237,8 @@ function runShellCommand(cwd, command, input, signal, emit) {
     if (input !== undefined) child.stdin.end(String(input));
     else child.stdin.end();
 
-    const timer = setTimeout(() => killGroup(), 120000);
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; killGroup(); }, 120000);
     child.once('error', err => {
       clearTimeout(timer);
       signal?.removeEventListener('abort', onAbort);
@@ -250,11 +251,13 @@ function runShellCommand(cwd, command, input, signal, emit) {
       clearTimeout(timer);
       signal?.removeEventListener('abort', onAbort);
       killGroup();
-      const ok = code === 0 && !sig;
-      const summary = combined.trim() || (ok ? '(command succeeded with no output)' : `Command exited with code=${code ?? 'null'} signal=${sig ?? 'none'}`);
+      const ok = !timedOut && code === 0 && !sig;
+      const summary = timedOut
+        ? (combined.trim() ? `${combined.trim()}\n[Command timed out after 120s]` : 'Command timed out after 120s')
+        : (combined.trim() || (ok ? '(command succeeded with no output)' : `Command exited with code=${code ?? 'null'} signal=${sig ?? 'none'}`));
       resolvePromise({
         version: 1, ok, committed: true,
-        process: { exitCode: code, signal: sig ?? null },
+        process: { exitCode: code, signal: sig ?? null, ...(timedOut ? { timedOut: true } : {}) },
         response: { isError: !ok, content: [{ type: 'text', text: summary.slice(-32000) }] },
       });
     });
@@ -453,7 +456,14 @@ export function linuxWorkspace() {
   return {
     identifyRoot: identifyLinuxRoot,
     modes: ['revoked', 'read', 'edit', 'execute'],
-    sandbox: { platform: 'linux', shell: '/bin/bash', supportedTools: SUPPORTED_TOOLS },
+    sandbox: {
+      platform: 'linux',
+      shell: '/bin/bash',
+      network: true,
+      isolation: 'none',
+      timeoutMs: 120000,
+      supportedTools: SUPPORTED_TOOLS,
+    },
     launcher,
   };
 }

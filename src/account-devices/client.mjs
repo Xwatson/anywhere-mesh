@@ -22,6 +22,13 @@ const MIME_BY_EXT = {
   '.py': 'text/x-python', '.css': 'text/css', '.html': 'text/html', '.csv': 'text/csv', '.log': 'text/plain',
 };
 
+const clientVersion = (() => {
+  try {
+    const parsed = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8'));
+    return typeof parsed?.version === 'string' && parsed.version.trim() ? parsed.version.trim() : null;
+  } catch { return null; }
+})();
+const CONCURRENT_READ_METHODS = new Set(['history', 'historyBefore', 'quota', 'memoriesList', 'admin', 'adminUsers']);
 const RETRYABLE_SOCKET_ERR = /ECONNRESET|EPIPE|ERR_SOCKET_CLOSED|socket hang up/i;
 function singleRequest(url, tls, method, path, raw, token, { idleMs, totalMs, freshSocket }) {
   const deadline = AbortSignal.timeout(totalMs);
@@ -396,6 +403,26 @@ export class DeviceClient {
       }
     }
     if (method === 'quota') return this.api('GET', '/api/quota' + (p.refresh ? '?refresh=1' : ''));
+    if (method === 'memoriesList') {
+      const q = new URLSearchParams({ scope: p.scope, ...(p.workspaceId ? { workspaceId: p.workspaceId } : {}) });
+      return this.api('GET', '/api/memories?' + q.toString());
+    }
+    if (method === 'memoriesSave') {
+      return this.api('PUT', '/api/memories', {
+        scope: p.scope,
+        ...(p.workspaceId ? { workspaceId: p.workspaceId } : {}),
+        key: p.key,
+        content: p.content,
+      });
+    }
+    if (method === 'memoriesDelete') {
+      const q = new URLSearchParams({ scope: p.scope, key: p.key, ...(p.workspaceId ? { workspaceId: p.workspaceId } : {}) });
+      return this.api('DELETE', '/api/memories?' + q.toString());
+    }
+    if (method === 'memoriesClear') {
+      const q = new URLSearchParams({ scope: p.scope, all: '1', ...(p.workspaceId ? { workspaceId: p.workspaceId } : {}) });
+      return this.api('DELETE', '/api/memories?' + q.toString());
+    }
     if (method === 'admin') return this.api('GET', '/api/admin/devices');
     if (method === 'disable') return this.api('POST', '/api/admin/devices/' + p.id, { disabled: p.disabled });
     if (method === 'deleteDevice') return this.api('DELETE', '/api/admin/devices/' + p.id);
@@ -420,6 +447,7 @@ export class DeviceClient {
     if (method === 'historyBefore') return this.api('GET', base + '/events?beforeSeq=' + p.beforeSeq);
     if (method === 'send') return this.api('POST', base + '/messages', { requestId: p.requestId, text: p.text, ...(p.attachments?.length ? { attachments: p.attachments } : {}) });
     if (method === 'stop') return this.api('POST', base + '/stop', { requestId: p.requestId, turnId: p.turnId });
+    if (method === 'compactSession') return this.api('POST', base + '/compact', {});
     if (method === 'uploadAttachment') {
       const bytes = Buffer.from(p.dataBase64, 'base64');
       return this.uploadAttachmentBytes(p.sessionId, p.name, p.mime, bytes);
@@ -462,7 +490,12 @@ export class DeviceClient {
         }
       }
     }
-    return { ...state, localName: this.cfg.name, ...(this.cfg.workspacePicker ? { workspacePicker: true } : {}) };
+    return {
+      ...state,
+      localName: this.cfg.name,
+      ...(clientVersion ? { clientVersion } : {}),
+      ...(this.cfg.workspacePicker ? { workspacePicker: true } : {}),
+    };
   }
   enqueue(work) {
     const result = this.queue.catch(() => {}).then(work);
@@ -471,6 +504,9 @@ export class DeviceClient {
   }
   control(method, p = {}) {
     contract.internalValidate(method, p);
+    if (this.signed && CONCURRENT_READ_METHODS.has(method)) {
+      return this.act(method, p);
+    }
     return this.enqueue(() => this.act(method, p));
   }
 }

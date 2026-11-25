@@ -1,6 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import { Journal } from '../execution/journal.mjs';
 import { hash } from '../execution/protocol.mjs';
+import {
+  MEMORY_LIMITS,
+  memoryEntryBytes,
+  normalizeMemoryContent,
+  normalizeMemoryKey,
+  normalizeMemoryScope,
+  resolveScopeId,
+} from './memory.mjs';
 
 export const uuid = value => { if (typeof value !== 'string' || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(value)) throw Error('INVALID_ID'); return value; };
 export function fields(value, keys, optional = []) {
@@ -34,6 +42,14 @@ export class SessionStore extends Journal {
   constructor(path) {
     super(path);
     this.db.exec('CREATE TABLE IF NOT EXISTS chat_events(session_id TEXT,seq INTEGER,ts INTEGER,event TEXT,PRIMARY KEY(session_id,seq))');
+    this.db.exec(`CREATE TABLE IF NOT EXISTS memories(
+      scope TEXT NOT NULL,
+      scope_id TEXT NOT NULL,
+      mem_key TEXT NOT NULL,
+      content TEXT NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY(scope, scope_id, mem_key)
+    )`);
   }
   session(id) { uuid(id); const s = this.get('sessions', id); if (!s) throw Error('SESSION_NOT_FOUND'); return s; }
   request(id, payload) {
@@ -125,14 +141,26 @@ export class SessionStore extends Journal {
     const s = this.session(sessionId);
     if (!Number.isSafeInteger(beforeSeq) || beforeSeq < 1) throw Error('INVALID_CURSOR');
     const upper = Math.min(beforeSeq, s.lastSeq + 1);
+    const isRenderable = ev => Boolean(
+      ev && (
+        ev.type === 'user_message' ||
+        ev.type === 'assistant_text' ||
+        ev.type === 'tool_call' ||
+        ev.type === 'context_compacted' ||
+        (ev.type === 'thinking' && ev.text) ||
+        (ev.type === 'turn_end' && (!ev.ok || ev.model || ev.durationMs || ev.usage?.inputTokens || ev.usage?.outputTokens))
+      ),
+    );
     const rev = [];
-    let bytes = 0, messages = 0, lastAssistantGroup = null;
+    let bytes = 0, messages = 0, lastAssistantGroup = null, hasRenderable = false;
     for (const row of this.db.prepare('SELECT seq,ts,event FROM chat_events WHERE session_id=? AND seq<? ORDER BY seq DESC LIMIT 240').all(sessionId, upper)) {
       const parsed = JSON.parse(row.event);
       const next = { seq: Number(row.seq), ts: Number(row.ts), event: parsed };
       const size = Buffer.byteLength(JSON.stringify(next));
-      if (rev.length && bytes + size > 128000) break;
+      if (rev.length && hasRenderable && bytes + size > 128000) break;
+      if (rev.length && bytes + size > 512000) break;
       rev.push(next); bytes += size;
+      if (isRenderable(parsed)) hasRenderable = true;
       if (parsed.type === 'user_message') {
         messages++;
         lastAssistantGroup = null;
@@ -151,5 +179,94 @@ export class SessionStore extends Journal {
     const firstSeq = events[0]?.seq ?? upper;
     const throughSeq = events.at(-1)?.seq ?? Math.max(0, upper - 1);
     return { sessionId, workspaceId: s.workspaceId, historyEpoch: s.historyEpoch, events, firstSeq, throughSeq, hasMore: firstSeq > 1 };
+  }
+  listMemories(scope, workspaceId = null) {
+    const cleanScope = normalizeMemoryScope(scope);
+    const scopeId = resolveScopeId(cleanScope, workspaceId);
+    const limits = MEMORY_LIMITS[cleanScope];
+    const rows = this.db.prepare(
+      'SELECT mem_key, content, updated_at FROM memories WHERE scope=? AND scope_id=? ORDER BY updated_at DESC, mem_key ASC',
+    ).all(cleanScope, scopeId);
+    let usedBytes = 0;
+    const items = rows.map(row => {
+      const entry = { key: row.mem_key, content: row.content, updatedAt: Number(row.updated_at) };
+      usedBytes += memoryEntryBytes(entry);
+      return entry;
+    });
+    return {
+      scope: cleanScope,
+      workspaceId: cleanScope === 'workspace' ? scopeId : null,
+      items,
+      count: items.length,
+      usedBytes,
+      limits,
+    };
+  }
+  upsertMemory(scope, workspaceId, { key, content }) {
+    const cleanScope = normalizeMemoryScope(scope);
+    const scopeId = resolveScopeId(cleanScope, workspaceId);
+    const cleanKey = normalizeMemoryKey(key);
+    const cleanContent = normalizeMemoryContent(cleanScope, content);
+    const limits = MEMORY_LIMITS[cleanScope];
+    return this.tx(() => {
+      const existing = this.db.prepare(
+        'SELECT mem_key, content FROM memories WHERE scope=? AND scope_id=?',
+      ).all(cleanScope, scopeId);
+      const prior = existing.find(row => row.mem_key === cleanKey);
+      if (!prior && existing.length >= limits.maxItems) throw Error('MEMORY_LIMIT_REACHED');
+      let totalBytes = memoryEntryBytes({ key: cleanKey, content: cleanContent });
+      for (const row of existing) {
+        if (row.mem_key !== cleanKey) totalBytes += memoryEntryBytes({ key: row.mem_key, content: row.content });
+      }
+      if (totalBytes > limits.maxTotalBytes) throw Error('MEMORY_STORAGE_LIMIT');
+      this.ensureCapacity(65536);
+      const updatedAt = Date.now();
+      this.db.prepare(
+        `INSERT INTO memories(scope, scope_id, mem_key, content, updated_at)
+         VALUES(?,?,?,?,?)
+         ON CONFLICT(scope, scope_id, mem_key) DO UPDATE SET content=excluded.content, updated_at=excluded.updated_at`,
+      ).run(cleanScope, scopeId, cleanKey, cleanContent, updatedAt);
+      const count = prior ? existing.length : existing.length + 1;
+      return {
+        scope: cleanScope,
+        workspaceId: cleanScope === 'workspace' ? scopeId : null,
+        item: { key: cleanKey, content: cleanContent, updatedAt },
+        count,
+        usedBytes: totalBytes,
+        limits,
+      };
+    });
+  }
+  deleteMemory(scope, workspaceId, key) {
+    const cleanScope = normalizeMemoryScope(scope);
+    const scopeId = resolveScopeId(cleanScope, workspaceId);
+    const cleanKey = normalizeMemoryKey(key);
+    const deleted = this.db.prepare(
+      'DELETE FROM memories WHERE scope=? AND scope_id=? AND mem_key=?',
+    ).run(cleanScope, scopeId, cleanKey).changes > 0;
+    return {
+      scope: cleanScope,
+      workspaceId: cleanScope === 'workspace' ? scopeId : null,
+      key: cleanKey,
+      deleted,
+    };
+  }
+  clearMemories(scope, workspaceId = null) {
+    const cleanScope = normalizeMemoryScope(scope);
+    const scopeId = resolveScopeId(cleanScope, workspaceId);
+    const cleared = Number(this.db.prepare(
+      'DELETE FROM memories WHERE scope=? AND scope_id=?',
+    ).run(cleanScope, scopeId).changes ?? 0);
+    return {
+      scope: cleanScope,
+      workspaceId: cleanScope === 'workspace' ? scopeId : null,
+      cleared,
+    };
+  }
+  purgeWorkspaceMemories(workspaceId) {
+    const id = uuid(workspaceId);
+    return Number(this.db.prepare(
+      "DELETE FROM memories WHERE scope='workspace' AND scope_id=?",
+    ).run(id).changes ?? 0);
   }
 }

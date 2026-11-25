@@ -5,7 +5,7 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
   <meta name="color-scheme" content="light dark">
   <meta name="theme-color" content="#fdfdfa" media="(prefers-color-scheme: light)">
-  <meta name="theme-color" content="#1c201d" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#121417" media="(prefers-color-scheme: dark)">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -53,6 +53,7 @@
   <symbol id="i-gauge" viewBox="0 0 24 24"><path d="M4.5 16.5a8.5 8.5 0 1 1 15 0M12 13l4-4"/><circle cx="12" cy="13" r="1.5" fill="currentColor" stroke="none"/></symbol>
   <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
   <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
+  <symbol id="i-compress" viewBox="0 0 24 24"><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M10 14l-7 7"/></symbol>
 </defs></svg>
 <main id="signin">
   <div class="wordmark login-brand"><span class="brand-mark" aria-hidden="true"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-terminal"></use></svg></span><span>AnywhereMesh</span></div>
@@ -97,7 +98,7 @@
     <footer class="rail-foot">
       <button id="usage-quota" class="nav-action" aria-haspopup="dialog" hidden><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-gauge"></use></svg><span>使用额度</span><span id="quota-summary" class="foot-state"></span></button>
       <button id="my-devices" class="nav-action"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-devices"></use></svg><span>我的设备</span><span id="device-count" class="foot-state"></span></button>
-      <button id="account-menu" class="account-button" aria-haspopup="dialog"><span id="avatar" class="avatar" aria-hidden="true"></span><span id="account"></span><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-more"></use></svg></button>
+      <button id="account-menu" class="account-button" aria-haspopup="dialog"><span id="avatar" class="avatar" aria-hidden="true"></span><span id="account"></span><span id="app-version" class="version-badge" hidden></span><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-more"></use></svg></button>
     </footer>
   </aside>
 
@@ -123,9 +124,37 @@
     <p id="error" class="error-banner" role="alert" hidden></p>
     <section id="chat" class="chat home">
       <div id="notice-bar" hidden><p id="notice" role="status"></p><button id="review-banner-btn" type="button" class="secondary notice-action" hidden>核对未知任务</button></div>
+      <div id="remote-toast" class="remote-toast" role="status" aria-live="polite" hidden><p id="remote-toast-text"></p></div>
       <div id="timeline" tabindex="0" aria-label="会话记录" hidden>
         <div class="thread-width">
+          <div id="history-sync" class="history-sync" role="status" hidden>
+            <span id="history-sync-spinner" class="spinner" aria-hidden="true"></span>
+            <span id="history-sync-text">正在同步最新记录…</span>
+            <button id="history-sync-retry" type="button" class="history-sync-retry" hidden>重试</button>
+          </div>
           <button id="load-older" type="button" class="secondary load-older" hidden>加载更早记录</button>
+          <div id="history-loading" class="history-loading" role="status" aria-live="polite" hidden>
+            <div class="history-loading-head">
+              <span class="spinner" aria-hidden="true"></span>
+              <span id="history-loading-text">正在加载会话记录…</span>
+            </div>
+            <div class="skeleton-thread" aria-hidden="true">
+              <div class="skeleton-bubble user"></div>
+              <div class="skeleton-group">
+                <div class="skeleton-line short"></div>
+                <div class="skeleton-line full"></div>
+                <div class="skeleton-line med"></div>
+              </div>
+              <div class="skeleton-bubble user narrow"></div>
+              <div class="skeleton-group">
+                <div class="skeleton-line short"></div>
+                <div class="skeleton-line full"></div>
+                <div class="skeleton-line med"></div>
+              </div>
+            </div>
+          </div>
+          <div id="history-empty" class="history-state" hidden><p id="history-empty-text">该会话暂无消息记录，可以直接发送消息开始对话。</p></div>
+          <div id="history-error" class="history-state error" role="alert" hidden><p id="history-error-text">会话记录加载失败，请检查网络后重试。</p><button id="retry-history" type="button" class="secondary">重新加载</button></div>
           <div id="events"></div>
           <div id="live" class="live-area" hidden></div>
           <div id="working" class="working" role="status" hidden><i></i><span>正在处理…</span></div>
@@ -151,6 +180,12 @@
               <select id="engine-select" class="pill-select" aria-label="AI 引擎" title="选择 AI 引擎" hidden></select>
               <select id="model-select" class="pill-select" aria-label="模型" title="选择模型" hidden></select>
               <select id="effort-select" class="pill-select" aria-label="推理强度" title="选择推理强度" hidden></select>
+              <button id="ctx-meter-btn" type="button" class="ctx-ring-btn" aria-haspopup="dialog" aria-expanded="false" aria-label="查看上下文用量" title="上下文用量" hidden>
+                <svg class="ctx-ring-svg" viewBox="0 0 24 24" aria-hidden="true">
+                  <circle class="ctx-ring-track" cx="12" cy="12" r="8.5"></circle>
+                  <circle class="ctx-ring-arc" id="ctx-ring-arc" cx="12" cy="12" r="8.5"></circle>
+                </svg>
+              </button>
             </div>
             <div class="composer-submit">
               <button type="submit" id="send" class="send" aria-label="发送消息" title="发送消息 (Enter)" disabled><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-up"></use></svg></button>
@@ -158,10 +193,6 @@
             </div>
           </div>
         </form>
-        <div id="suggestions" class="suggestions">
-          <button id="example-read"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-file"></use></svg><span>读取文件</span></button>
-          <button id="example-code"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-code"></use></svg><span>解释代码</span></button>
-        </div>
         <p id="input-hint" class="input-hint" hidden>Enter 发送<span>·</span>Shift + Enter 换行<span>·</span>支持粘贴图片</p>
         <div id="web-empty" hidden><p>在桌面客户端发起对话后，可以在这里继续。</p><button id="web-devices" class="secondary">查看设备</button></div>
       </section>
@@ -203,13 +234,16 @@
   <div id="search-results" class="dialog-list"></div>
 </dialog>
 <dialog id="devices-dialog" aria-labelledby="devices-heading">
-  <div class="dialog-head"><h2 id="devices-heading">我的设备</h2><button class="icon-button dialog-close" type="button" aria-label="关闭"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-close"></use></svg></button></div><div id="devices" class="dialog-list"></div>
+  <div class="dialog-head"><h2 id="devices-heading">我的设备</h2><button class="icon-button dialog-close" type="button" aria-label="关闭"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-close"></use></svg></button></div>
+  <p id="devices-session-note" class="devices-session-note" hidden></p>
+  <div id="devices" class="dialog-list"></div>
 </dialog>
 <dialog id="account-dialog" aria-labelledby="account-heading">
   <div class="dialog-head"><h2 id="account-heading">账户</h2><button class="icon-button dialog-close" type="button" aria-label="关闭"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-close"></use></svg></button></div>
   <p id="signed-user" class="account-info"></p>
   <p id="account-feedback" role="status"></p>
   <button class="menu-row" id="settings-project"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-lock"></use></svg><span>本机项目权限</span><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-right"></use></svg></button>
+  <button class="menu-row" id="global-memory-menu" aria-haspopup="dialog"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-spark"></use></svg><span>全局偏好记忆</span><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-right"></use></svg></button>
   <button class="menu-row" id="change-password" aria-haspopup="dialog"><svg class="icon" aria-hidden="true"><use href="#i-key"></use></svg><span>更改密码</span><svg class="icon" aria-hidden="true"><use href="#i-right"></use></svg></button>
   <button class="menu-row" id="admin-nav" hidden><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-sliders"></use></svg><span>系统管理</span><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-right"></use></svg></button>
   <button class="menu-row" id="install-pwa-menu" hidden><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-download"></use></svg><span id="install-pwa-menu-label">安装到手机桌面</span><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-right"></use></svg></button>
@@ -232,7 +266,7 @@
     <div class="dialog-actions"><button id="cancel-password" class="secondary" type="button">取消</button><button id="save-password" class="primary" type="submit">保存密码</button></div>
   </form>
 </dialog>
-<dialog id="project-dialog" aria-labelledby="project-heading">
+<dialog id="project-dialog" class="project-dialog" aria-labelledby="project-heading">
   <div class="dialog-head"><h2 id="project-heading">项目与权限</h2><button class="icon-button dialog-close" type="button" aria-label="关闭"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-close"></use></svg></button></div>
   <div class="dialog-body">
     <label for="project" id="project-caption">本机项目</label><select id="project"></select>
@@ -244,12 +278,60 @@
       <p id="project-unknown-text"></p>
       <button id="open-review" class="secondary" type="button">核对未知任务</button>
     </div>
+    <section id="project-memory-section" class="memory-section" hidden>
+      <div class="memory-head">
+        <div class="memory-title-group">
+          <h3>项目记忆</h3>
+          <span id="project-memory-quota" class="memory-quota"></span>
+        </div>
+        <button id="project-memory-clear" class="secondary danger-text memory-clear-btn" type="button" hidden>清空</button>
+      </div>
+      <p class="memory-hint">跨会话自动加载（Codex / Antigravity 共享）；新会话首轮也会自动读取项目根目录的 AGENTS.md / CLAUDE.md / GEMINI.md。</p>
+      <div id="project-memory-list" class="memory-list"></div>
+      <div class="memory-editor">
+        <input id="project-memory-key" type="text" maxlength="80" placeholder="主题键（如 deploy、代码规范）" autocomplete="off">
+        <textarea id="project-memory-content" rows="2" maxlength="500" placeholder="需要 AI 记住的项目要点（单条 ≤ 500 字）…"></textarea>
+        <div class="memory-editor-actions">
+          <span id="project-memory-status" class="muted"></span>
+          <div class="memory-editor-btns">
+            <button id="project-memory-cancel" class="secondary" type="button" hidden>取消编辑</button>
+            <button id="project-memory-save" class="secondary" type="button">保存记忆</button>
+          </div>
+        </div>
+      </div>
+    </section>
     <p class="dialog-error inline-error" role="alert"></p>
   </div>
   <div class="dialog-actions">
     <button id="remove-workspace" class="secondary danger-text" type="button" hidden>移除项目</button>
     <button id="choose-workspace" class="secondary" type="button" hidden>选择文件夹…</button>
     <button id="apply" class="primary">完成</button>
+  </div>
+</dialog>
+<dialog id="user-memory-dialog" class="memory-dialog" aria-labelledby="user-memory-heading">
+  <div class="dialog-head"><h2 id="user-memory-heading">全局偏好记忆</h2><button class="icon-button dialog-close" type="button" aria-label="关闭"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-close"></use></svg></button></div>
+  <div class="dialog-body">
+    <div class="memory-head">
+      <span id="user-memory-quota" class="memory-quota"></span>
+      <button id="user-memory-clear" class="secondary danger-text memory-clear-btn" type="button" hidden>清空</button>
+    </div>
+    <p class="memory-hint">对当前账号下所有项目生效，建议仅保存回复语言、代码风格等个人通用习惯（最多 10 条，总量 ≤ 2 KB）。</p>
+    <div id="user-memory-list" class="memory-list"></div>
+    <div class="memory-editor">
+      <input id="user-memory-key" type="text" maxlength="80" placeholder="偏好键（如 reply-language、git-rule）" autocomplete="off">
+      <textarea id="user-memory-content" rows="2" maxlength="300" placeholder="通用偏好内容（单条 ≤ 300 字）…"></textarea>
+      <div class="memory-editor-actions">
+        <span id="user-memory-status" class="muted"></span>
+        <div class="memory-editor-btns">
+          <button id="user-memory-cancel" class="secondary" type="button" hidden>取消编辑</button>
+          <button id="user-memory-save" class="primary" type="button">保存偏好</button>
+        </div>
+      </div>
+    </div>
+    <p id="user-memory-error" class="dialog-error inline-error" role="alert"></p>
+  </div>
+  <div class="dialog-actions">
+    <button id="close-user-memory" class="secondary" type="button">完成</button>
   </div>
 </dialog>
 <dialog id="consent-dialog" aria-labelledby="consent-heading">
@@ -351,6 +433,22 @@
 <div id="link-hover-card" class="link-hover-card" role="tooltip" hidden>
   <code id="link-hover-path" class="link-hover-path"></code>
   <button id="link-hover-copy" type="button" class="link-hover-copy"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-copy"></use></svg><span id="link-hover-copy-label">复制路径</span></button>
+</div>
+<div id="ctx-popover" class="ctx-popover" role="dialog" aria-label="当前会话上下文" hidden>
+  <div class="ctx-pop-head">
+    <span class="ctx-pop-title">上下文</span>
+    <strong id="ctx-pop-pct" class="ctx-pop-pct">—</strong>
+  </div>
+  <div class="ctx-pop-bar"><div id="ctx-pop-fill" class="ctx-pop-fill"></div></div>
+  <div id="ctx-pop-usage" class="ctx-pop-usage">暂无上下文用量</div>
+  <p id="ctx-pop-note" class="ctx-pop-note">根据最近一次回复的用量计算，不额外请求</p>
+  <div class="ctx-pop-actions">
+    <button id="ctx-compact-btn" type="button" class="secondary ctx-compact-btn">
+      <svg class="icon" aria-hidden="true" focusable="false"><use href="#i-compress"></use></svg>
+      <span id="ctx-compact-label">压缩上下文</span>
+    </button>
+    <span id="ctx-compact-status" class="ctx-compact-status" hidden></span>
+  </div>
 </div>
 <div id="link-context-menu" class="link-context-menu" role="menu" hidden></div>
 </body></html>

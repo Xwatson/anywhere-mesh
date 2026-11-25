@@ -8,7 +8,7 @@ import { TextFileHandler } from './vendor/text.mjs';
 import { fail, hash } from '../../execution/protocol.mjs';
 import { relative } from '../../desktop-commander/adapter.mjs';
 import { applyHunks, parsePatch } from '../../workspace/patch.mjs';
-import { runTask } from './tasks.mjs';
+import { runTask, WINDOWS_SANDBOX } from './tasks.mjs';
 
 const exec = promisify(execFile);
 const snapshotLimit = 1024*1024;
@@ -18,9 +18,6 @@ const options = {windowsHide:true,timeout:10000,maxBuffer:snapshotLimit+4096};
 const textReader = new TextFileHandler();
 const revision = bytes => 'file-v1:'+createHash('sha256').update(bytes).digest('hex');
 const response = text => ({version:1,ok:true,calls:1,response:{content:[{type:'text',text}]}});
-const tools = ['workspace_read_file','workspace_read_files','workspace_file_info','workspace_list_directory',
-  'workspace_search','workspace_create_directory','workspace_write_file','workspace_edit_file',
-  'workspace_delete_file','workspace_move_file','workspace_apply_patch','workspace_run'];
 const reading = new Set(['read_file','read_multiple_files','get_file_info','list_directory']);
 const writing = new Set(['write_file','edit_block','create_directory','delete_file','move_file','apply_patch']);
 
@@ -50,15 +47,15 @@ async function backup(stateDir,operationId,path,bytes) {
 }
 
 export function windowsWorkspace(executable) {
+  const identifyRoot = root => {
+    const identity=execFileSync(executable,[root],{...options,encoding:'utf8'}).trim();
+    if(!/^[A-F0-9]{8}:[A-F0-9]{16}$/.test(identity)) fail('WORKSPACE_ROOT_CHANGED');
+    return identity;
+  };
   return {
     modes:['revoked','read','edit','execute'],
-    sandbox:{network:false,guardedFileWrites:true,fileWriteProtection:'optimistic-version-check-with-preimage',
-      supportedTools:tools,isolation:'windows-appcontainer',shell:'cmd.exe'},
-    identifyRoot(root) {
-      const identity=execFileSync(executable,[root],{...options,encoding:'utf8'}).trim();
-      if(!/^[A-F0-9]{8}:[A-F0-9]{16}$/.test(identity)) fail('WORKSPACE_ROOT_CHANGED');
-      return identity;
-    },
+    sandbox:{...WINDOWS_SANDBOX,supportedTools:[...WINDOWS_SANDBOX.supportedTools]},
+    identifyRoot,
     launcher({workspaceRoot,rootIdentity,stateDir}) {
       const scratch=join(stateDir,'windows-read-snapshots');
       mkdirSync(scratch,{recursive:true});
@@ -236,7 +233,7 @@ export function windowsWorkspace(executable) {
         const r=op.request,name=r.args.tool;
         if(!['read','edit','execute'].includes(grant.mode))fail('TOOL_UNAVAILABLE_ON_DEVICE');
         if(r.kind==='dc.run'&&grant.mode==='execute')
-          return {mutates:true,perform:(signal,output)=>runTask({stateDir,guard,supervisor:join(dirname(executable),'TaskHost.exe'),request:r,signal,output})};
+          return {mutates:true,perform:(signal,output)=>runTask({stateDir,workspaceRoot,rootIdentity,identifyRoot,request:r,signal,output})};
         if(r.cwdRelative!=='.')fail('TOOL_UNAVAILABLE_ON_DEVICE');
         if(r.kind==='dc.search'||(r.kind==='dc.tool'&&reading.has(name)))return {read:signal=>readTool(r,signal)};
         if(r.kind==='dc.tool'&&writing.has(name)&&grant.mode!=='read')return {mutates:true,perform:signal=>writeTool(op,signal)};

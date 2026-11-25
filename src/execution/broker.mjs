@@ -201,6 +201,7 @@ export class Broker {
       exact(params, []);
       return { phase: this.phase, grant: this.grant, label: this.workspace.label,
         confirmed: this.phase === 'ready', blockers: this.blockers(this.grant.workspaceId).map((o) => o.operationId),
+        unknownOperations: this.journal.all('ops').filter((o) => o.state === 'unknown').map((o) => o.operationId),
         activeOperations: this.journal.all('ops').filter((o) => !TERMINAL.has(o.state)).map((o) => o.operationId),
         sandbox: this.workspaceStatus?.sandbox ?? { network: false, readOnly: true },
         history: { ...this.journal.storage(), device: this.workspaceStatus?.history ?? null } };

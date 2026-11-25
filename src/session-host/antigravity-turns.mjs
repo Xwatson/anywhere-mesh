@@ -12,6 +12,12 @@ import { fileURLToPath } from 'node:url';
 import { CATALOG, listTools, normalize } from '../workspace/catalog.mjs';
 import { assertIdentity } from '../execution/grants.mjs';
 import { hash } from '../execution/protocol.mjs';
+import {
+  MEMORY_TOOLS,
+  MEMORY_TOOL_NAMES,
+  buildMemoryInstructions,
+  executeMemoryTool,
+} from './memory.mjs';
 
 const MCP_NAME = 'anywhere_workspace';
 const MCP_PREFIX = `mcp_${MCP_NAME}_`;
@@ -413,15 +419,12 @@ export class AntigravityTurns {
     const remote = await this.broker(t, 'workspace');
     assertIdentity(remote.grant, t.binding);
     if (!remote.confirmed || remote.grant.grantVersion !== t.binding.grantVersion || remote.grant.revoked) throw Error('LOCAL_PERMISSION_CHANGED');
-    const tools = listTools(remote.grant, true, remote.sandbox?.supportedTools).filter(tool => workspaceNames.has(tool.name));
-    if (remote.sandbox?.shell === 'cmd.exe') {
-      const command = tools.find(tool => tool.name === 'workspace_run');
-      if (command) command.description = 'Run a finite Windows cmd.exe project command in an offline AppContainer. Normal exit writes project changes back. Node and npm are available.';
-    }
+    const tools = listTools(remote.grant, true, remote.sandbox?.supportedTools, remote.sandbox).filter(tool => workspaceNames.has(tool.name));
     if (this.db.attachments(t.sessionId).length) {
       tools.push(SESSION_TOOLS[0]);
       if (tools.some(x => x.name === 'workspace_write_file')) tools.push(SESSION_TOOLS[1]);
     }
+    tools.push(...MEMORY_TOOLS);
     return tools;
   }
 
@@ -482,6 +485,12 @@ export class AntigravityTurns {
       this.event(t, { type: 'tool_call', id: callId, name: tool, input: args, status: res.isError ? 'failed' : 'completed', output: out.slice(0, 4500) });
       return res;
     }
+    if (MEMORY_TOOL_NAMES.has(tool)) {
+      this.event(t, { type: 'tool_call', id: callId, name: tool, input: args, status: 'running' });
+      const res = executeMemoryTool(this.db, t.workspaceId, tool, args);
+      this.event(t, { type: 'tool_call', id: callId, name: tool, input: args, status: res.ok ? 'completed' : 'failed', output: res.text.slice(0, 4500) });
+      return { isError: !res.ok, content: [{ type: 'text', text: res.text }] };
+    }
     let effectiveTool = tool, effectiveArgs = args;
     if (tool === 'session_send_attachment') {
       const query = String(args?.attachment ?? '').trim();
@@ -516,41 +525,49 @@ export class AntigravityTurns {
     if (run.ending || this.turn(t.id).cancelRequested) {
       return { isError: true, content: [{ type: 'text', text: 'Turn stopped.' }] };
     }
-    await this.waitForWorkspaceReady(current, run, 20000);
-    run.touch?.();
-    if (!(await this.workspaceTools(current)).some(item => item.name === effectiveTool)) {
-      return { isError: true, content: [{ type: 'text', text: 'Workspace permission changed.' }] };
-    }
-    const ticket = await h.executor.issue(callId, effectiveTool, effectiveArgs);
-    this.save(t.id, { operationId: ticket.operationId });
-    const saved = this.db.get('agyResults', ticket.operationId);
-    if (saved) {
-      await h.executor.consumeAfterPersist(saved.receipt);
-      return saved.reply;
-    }
-    if (run.ending || this.turn(t.id).cancelRequested) {
-      await this.broker(current, 'stopTurn', turnScope(current));
-      return { isError: true, content: [{ type: 'text', text: 'Turn stopped.' }] };
-    }
-    let result = await h.client.callTool({ name: effectiveTool, arguments: effectiveArgs, _meta: { 'anywhere/callTicket': ticket.ticket } });
-    const until = Date.now() + 180000;
-    let outputSeq = 0;
-    while (result.structuredContent?.task && !result.structuredContent.task.resultReady) {
-      run.touch?.();
-      if (run.ending || result.structuredContent.task.state === 'unknown' || Date.now() > until) throw Error('WORKSPACE_RESULT_PENDING');
-      const receivedSeq = result.structuredContent.task.receivedSeq ?? 0;
-      if (receivedSeq > outputSeq) {
-        try {
-          const out = await h.executor.output(ticket.operationId, outputSeq);
-          const chunk = out.rows.map(r => r.data).join('');
-          if (chunk) this.host.delta(t.sessionId, { kind: 'tool_output', id: callId, text: chunk });
-          outputSeq = out.nextSeq;
-        } catch {}
+    const waitAlive = setInterval(() => run.touch?.(), 15000);
+    waitAlive.unref?.();
+    return this.host.withWorkspaceLock(t.workspaceId, async () => {
+      clearInterval(waitAlive);
+      if (run.ending || this.turn(t.id).cancelRequested) {
+        return { isError: true, content: [{ type: 'text', text: 'Turn stopped.' }] };
       }
-      await delay(250);
-      result = await h.client.callTool({ name: 'workspace_task_status', arguments: { operationId: ticket.operationId } });
-    }
-    return this.capture(current, { id: callId, tool, args }, h, ticket.operationId, result);
+      await this.waitForWorkspaceReady(current, run, 20000);
+      run.touch?.();
+      if (!(await this.workspaceTools(current)).some(item => item.name === effectiveTool)) {
+        return { isError: true, content: [{ type: 'text', text: 'Workspace permission changed.' }] };
+      }
+      const ticket = await h.executor.issue(callId, effectiveTool, effectiveArgs);
+      this.save(t.id, { operationId: ticket.operationId });
+      const saved = this.db.get('agyResults', ticket.operationId);
+      if (saved) {
+        await h.executor.consumeAfterPersist(saved.receipt);
+        return saved.reply;
+      }
+      if (run.ending || this.turn(t.id).cancelRequested) {
+        await this.broker(current, 'stopTurn', turnScope(current));
+        return { isError: true, content: [{ type: 'text', text: 'Turn stopped.' }] };
+      }
+      let result = await h.client.callTool({ name: effectiveTool, arguments: effectiveArgs, _meta: { 'anywhere/callTicket': ticket.ticket } });
+      const until = Date.now() + 180000;
+      let outputSeq = 0;
+      while (result.structuredContent?.task && !result.structuredContent.task.resultReady) {
+        run.touch?.();
+        if (run.ending || result.structuredContent.task.state === 'unknown' || Date.now() > until) throw Error('WORKSPACE_RESULT_PENDING');
+        const receivedSeq = result.structuredContent.task.receivedSeq ?? 0;
+        if (receivedSeq > outputSeq) {
+          try {
+            const out = await h.executor.output(ticket.operationId, outputSeq);
+            const chunk = out.rows.map(r => r.data).join('');
+            if (chunk) this.host.delta(t.sessionId, { kind: 'tool_output', id: callId, text: chunk });
+            outputSeq = out.nextSeq;
+          } catch {}
+        }
+        await delay(250);
+        result = await h.client.callTool({ name: 'workspace_task_status', arguments: { operationId: ticket.operationId } });
+      }
+      return this.capture(current, { id: callId, tool, args }, h, ticket.operationId, result);
+    }).finally(() => clearInterval(waitAlive));
   }
 
   async capture(t, call, h, operationId, result) {
@@ -652,7 +669,7 @@ export class AntigravityTurns {
     const run = {
       socket, acp: null, sessionId: null, mcpServer: null, queue: Promise.resolve(),
       tools: new Set(), callSeq: 0, ending: false, prompting: false,
-      text: '', thinking: '', usage: null, model: null,
+      text: '', thinking: '', usage: null, context: null, model: null,
     };
     this.active.set(t.id, run);
     let outcome = 'interrupted';
@@ -689,16 +706,18 @@ export class AntigravityTurns {
           acp.unsupported(id, method ?? '');
           return;
         }
-        if (method === 'session/update' && params?.sessionId === run.sessionId && run.prompting && params?.update) {
+        if (method === 'session/update' && params?.sessionId === run.sessionId && params?.update) {
           const u = params.update;
-          if (u.sessionUpdate === 'agent_message_chunk' && u.content?.type === 'text' && u.content.text) {
+          if (u.sessionUpdate === 'usage_update' && typeof u.used === 'number' && Number.isFinite(u.used)) {
+            const window = typeof u.size === 'number' && u.size > 0 ? u.size : (run.context?.window ?? 1048576);
+            run.context = { used: u.used, window };
+            this.host.delta(t.sessionId, { kind: 'context', used: u.used, window });
+          } else if (run.prompting && u.sessionUpdate === 'agent_message_chunk' && u.content?.type === 'text' && u.content.text) {
             run.text += u.content.text;
             this.host.delta(t.sessionId, { kind: 'text', id: t.id, text: u.content.text });
-          } else if (u.sessionUpdate === 'agent_thought_chunk' && u.content?.type === 'text' && u.content.text) {
+          } else if (run.prompting && u.sessionUpdate === 'agent_thought_chunk' && u.content?.type === 'text' && u.content.text) {
             run.thinking += u.content.text;
             this.host.delta(t.sessionId, { kind: 'thinking', id: t.id, text: u.content.text });
-          } else if (u.sessionUpdate === 'usage_update' && typeof u.used === 'number') {
-            this.host.delta(t.sessionId, { kind: 'context', used: u.used, window: u.size });
           }
         }
       });
@@ -716,6 +735,16 @@ export class AntigravityTurns {
       const signature = JSON.stringify(tools.map(tool => tool.name).sort());
       const resume = Boolean(saved && session.agyToolSet === signature);
       const hasAtts = this.db.attachments(t.sessionId).length > 0;
+      const projectDocs = (!resume && tools.some(tool => tool.name === 'workspace_read_files'))
+        ? await this.host.preloadProjectDocs(t)
+        : [];
+      const projectLabel = this.host.workspaces.get(t.workspaceId)?.label ?? '';
+      const memoryInstructions = buildMemoryInstructions({
+        store: this.db,
+        workspaceId: t.workspaceId,
+        projectLabel,
+        projectDocs,
+      });
       const mcpServers = [{
         name: MCP_NAME,
         command: this.nodePath,
@@ -728,7 +757,7 @@ export class AntigravityTurns {
       const sessionParams = {
         cwd: this.cwd,
         mcpServers,
-        _meta: { antigravity: { systemPrompt: { append: deviceInstructions(hasAtts) } } },
+        _meta: { antigravity: { systemPrompt: { append: `${deviceInstructions(hasAtts)}\n\n${memoryInstructions}` } } },
       };
       if (this.turn(t.id).cancelRequested) throw Error('TURN_STOPPED');
       const acpSession = resume
@@ -779,7 +808,7 @@ export class AntigravityTurns {
         for (let pos = 0; pos < run.text.length; pos += 16000) {
           this.db.append(t.sessionId, { type: 'assistant_text', id: t.id + '-' + pos, text: run.text.slice(pos, pos + 16000), engine: 'antigravity' });
         }
-        this.save(t.id, { modelFinished: true, durationMs, usage, model: run.model });
+        this.save(t.id, { modelFinished: true, durationMs, usage, ...(run.context ? { context: run.context } : {}), model: run.model });
       });
       outcome = 'succeeded';
     } catch (error) {
@@ -849,13 +878,83 @@ export class AntigravityTurns {
         ...(latest.durationMs ? { durationMs: latest.durationMs } : {}),
         ...(latest.model ? { model: latest.model } : {}),
         ...(latest.usage ? { usage: latest.usage } : {}),
+        ...(latest.context ? { context: latest.context } : {}),
       });
       this.save(t.id, { state, done: true, consumed: true });
       const s = this.host.session(t.sessionId);
-      if (s.activeTurnId === t.id) this.db.put('sessions', s.id, { ...s, activeTurnId: null });
+      const contextUsage = latest.context
+        ? { used: latest.context.used, window: latest.context.window ?? s.contextUsage?.window ?? 1048576, engine: 'antigravity', model: latest.model ?? s.contextUsage?.model ?? null, updatedAt: Date.now() }
+        : s.contextUsage;
+      const nextSession = { ...s, ...(s.activeTurnId === t.id ? { activeTurnId: null } : {}), ...(contextUsage ? { contextUsage } : {}) };
+      if (s.activeTurnId === t.id || latest.context) this.db.put('sessions', s.id, nextSession);
     });
     await this.host.closeHost(t.id);
     this.host.emit('events', t.sessionId);
+    this.host.emit('state');
+  }
+
+  async compact(session) {
+    if (!session?.agySessionId) throw Error('NOTHING_TO_COMPACT');
+    const socket = createConnection(this.socketPath);
+    const connected = once(socket, 'connect');
+    socket.on('error', () => {});
+    let acp = null;
+    let latestContext = null;
+    let summaryText = '';
+    let activeSessionId = session.agySessionId;
+    try {
+      await Promise.race([connected, delay(6000).then(() => { throw Error('ANTIGRAVITY_CONNECT_TIMEOUT'); })]);
+      acp = new AcpConnection(socket, msg => {
+        const { id, method, params } = msg;
+        if (id !== undefined) {
+          if (method === 'session/request_permission') {
+            const opts = Array.isArray(params?.options) ? params.options : [];
+            const rejectId = opts.find(o => o.kind === 'reject_once')?.optionId;
+            acp.reply(id, { outcome: rejectId ? { outcome: 'selected', optionId: rejectId } : { outcome: 'cancelled' } });
+            return;
+          }
+          acp.unsupported(id, method ?? '');
+          return;
+        }
+        if (method === 'session/update' && params?.sessionId === activeSessionId && params?.update) {
+          const u = params.update;
+          if (u.sessionUpdate === 'usage_update' && typeof u.used === 'number' && Number.isFinite(u.used)) {
+            const window = typeof u.size === 'number' && u.size > 0 ? u.size : (latestContext?.window ?? session.contextUsage?.window ?? 1048576);
+            latestContext = { used: u.used, window };
+          } else if (u.sessionUpdate === 'agent_message_chunk' && u.content?.type === 'text' && u.content.text) {
+            summaryText += u.content.text;
+          }
+        }
+      });
+      const init = await acp.call('initialize', {
+        protocolVersion: 1,
+        clientInfo: { name: 'anywhere-mesh', title: 'AnywhereMesh', version: '0.4.12' },
+        clientCapabilities: {},
+      });
+      if (init.protocolVersion !== 1) throw Error('ANTIGRAVITY_PROTOCOL_UNSUPPORTED');
+      const acpSession = await acp.call('session/resume', {
+        cwd: this.cwd,
+        mcpServers: [],
+        sessionId: session.agySessionId,
+      });
+      if (!acpSession?.sessionId) throw Error('ANTIGRAVITY_NO_SESSION');
+      activeSessionId = acpSession.sessionId;
+      await acp.call('session/prompt', {
+        sessionId: activeSessionId,
+        prompt: [{ type: 'text', text: '/compact' }],
+      }, 120000);
+      return {
+        engine: 'antigravity',
+        model: session.options?.model ?? session.contextUsage?.model ?? null,
+        before: session.contextUsage ?? null,
+        after: latestContext,
+        summary: summaryText.trim().slice(0, 600),
+        compacted: true,
+      };
+    } finally {
+      try { acp?.close(); } catch {}
+      try { socket.destroy(); } catch {}
+    }
   }
 
   async close() {

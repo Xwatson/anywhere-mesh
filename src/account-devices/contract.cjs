@@ -9,17 +9,23 @@ const routes = {
   create: ['workspaceId','requestId','title'],
   renameSession: ['sessionId','title'], deleteSession: ['sessionId'],
   setSessionOptions: ['sessionId'],
+  compactSession: ['sessionId'],
   send: ['sessionId','requestId','text'], history: ['sessionId','afterSeq'], historyBefore: ['sessionId','beforeSeq'],
   stop: ['sessionId','requestId','turnId'],
   subscribe: ['sessionId','afterSeq'], unsubscribe: [],
   reviewList: ['workspaceId'], reviewSubmit: ['workspaceId','requestId','operationId','expectedDigest','note'],
   chooseAttachment: ['sessionId'], uploadAttachment: ['sessionId','name','mime','dataBase64'],
+  memoriesList: ['scope'], memoriesSave: ['scope','key','content'], memoriesDelete: ['scope','key'], memoriesClear: ['scope'],
 };
 const optional = {
   quota: ['refresh'],
   create: ['options'],
   send: ['attachments'],
   setSessionOptions: ['agent','model','effort'],
+  memoriesList: ['workspaceId'],
+  memoriesSave: ['workspaceId'],
+  memoriesDelete: ['workspaceId'],
+  memoriesClear: ['workspaceId'],
 };
 const AGENTS = new Set(['codex','antigravity']);
 const EFFORTS = new Set(['minimal','low','medium','high','xhigh','max']);
@@ -44,6 +50,17 @@ function validate(method, p = {}) {
   }
   for (const [k, max] of [['title',80],['text',65536],['username',32],['current',200],['password',200],['note',2048],['name',200],['mime',120]]) {
     if (k in p && (typeof p[k] !== 'string' || !p[k].trim() || p[k].length > max)) throw Error('INVALID_TEXT');
+  }
+  if ('scope' in p) {
+    if (p.scope !== 'workspace' && p.scope !== 'user') throw Error('INVALID_MEMORY_SCOPE');
+    if (p.scope === 'workspace' && !('workspaceId' in p)) throw Error('INVALID_ID');
+    if (p.scope === 'user' && 'workspaceId' in p) throw Error('INVALID_FIELDS');
+  }
+  if ('key' in p && (typeof p.key !== 'string' || !p.key.trim() || p.key.length > 80)) throw Error('INVALID_TEXT');
+  if ('content' in p) {
+    const maxLen = p.scope === 'user' ? 300 : 500;
+    if (typeof p.content !== 'string' || !p.content.trim()) throw Error('INVALID_TEXT');
+    if (p.content.trim().length > maxLen) throw Error('MEMORY_TOO_LARGE');
   }
   if ('expectedDigest' in p && (typeof p.expectedDigest !== 'string' || !/^[a-f0-9]{64}$/.test(p.expectedDigest))) throw Error('INVALID_FIELDS');
   if ('dataBase64' in p && (typeof p.dataBase64 !== 'string' || !p.dataBase64.length || p.dataBase64.length > 14 * 1024 * 1024)) throw Error('BODY_LIMIT');

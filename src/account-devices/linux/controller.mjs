@@ -50,17 +50,23 @@ const repair = setInterval(() => {
 
 reply({ event: 'ready' });
 try {
+  const inflight = new Set();
   for await (const line of input) {
-    let id;
-    try {
-      if (line.length > 16 * 1024 * 1024) throw Error('INVALID_FRAME');
-      const frame = JSON.parse(line);
-      id = frame.id;
-      reply({ id, value: await client.control(frame.method, frame.params) });
-    } catch (error) {
-      reply({ id, error: error.code ?? error.message });
-    }
+    const task = (async () => {
+      let id;
+      try {
+        if (line.length > 16 * 1024 * 1024) throw Error('INVALID_FRAME');
+        const frame = JSON.parse(line);
+        id = frame.id;
+        reply({ id, value: await client.control(frame.method, frame.params) });
+      } catch (error) {
+        reply({ id, error: error.code ?? error.message });
+      }
+    })();
+    inflight.add(task);
+    task.finally(() => inflight.delete(task));
   }
+  await Promise.allSettled([...inflight]);
 } finally {
   clearInterval(repair);
   try { await client.suspend(); } finally { await peer.stop(); }

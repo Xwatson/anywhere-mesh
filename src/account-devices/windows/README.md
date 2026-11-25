@@ -32,7 +32,7 @@
 
 只读权限覆盖单文件或多文件读取、目录列表、文件信息与搜索。编辑权限增加创建目录、写入和精确替换。修改已有文本时须提交最近读取的版本，文件在本机发生变化时会返回版本冲突。完全访问另可执行 Windows 项目命令，安装版附带 Node 与 npm。
 
-命令由 `cmd.exe` 在临时项目副本中运行。Windows AppContainer 以独立身份、无网络能力启动，Job Object 管理子进程。进程正常退出后，客户端校验原文件版本再写回改动，包括构建产物、重命名和删除。写回按文件内容与 Windows 默认不区分大小写的路径比较。只调整时间戳或文件名大小写的操作目前不会同步。取消执行会终止任务。提交中断且结果不明时，客户端保留任务数据以便核对。命令有 120 秒时限。项目副本支持至多 30,000 项、单文件 64 MiB、总文件内容 512 MiB。包含重解析点或多硬链接文件的项目会拒绝执行命令。[Microsoft AppContainer](https://learn.microsoft.com/en-us/windows/win32/secauthz/appcontainer-isolation)
+与 Linux 端统一：当项目授予「完全访问（`execute`）」权限时，命令由 `cmd.exe` 以当前 Windows 用户权限直接在项目工作区目录中运行，具备完整网络与本机工具链访问能力（自动将随包附带的 Node 与 npm 目录追加到 `PATH`），单条命令限时 120 秒，取消或超时会通过 `taskkill /T /F` 终止整个子进程树。只读与编辑模式的文件工具仍通过 `WorkspaceSnapshot.exe` 限制在授权工作区目录内并执行乐观版本校验。
 
 安装包按 Windows 用户安装，尚未做 Authenticode 签名或自动更新。升级会沿用原有 `windows.toml`、设备身份、项目和 0.3.4 的已保存登录。登记新文件夹需要同步升级会话宿主以支持 `POST /api/device/workspaces`。项目路径和文件系统身份保存在本机 `state/installation.json`，服务端登记项目名称和设备绑定。
 

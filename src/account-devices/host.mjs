@@ -10,11 +10,15 @@ import { serveControl } from '../execution/control.mjs';
 import { grantFor } from '../execution/grants.mjs';
 import { TERMINAL } from '../execution/protocol.mjs';
 import { SessionHost } from '../session-host/runtime.mjs';
+import { TurnLaunchLimiter } from '../session-host/launch-limiter.mjs';
 import { fields, uuid } from '../session-host/store.mjs';
 import { register } from '../desktop-commander/adapter.mjs';
 import { CAPABILITIES } from '../execution/protocol.mjs';
 import { NetworkLeases } from './network-leases.mjs';
 import * as directory from './directory.mjs';
+import pkg from '../../package.json' with { type: 'json' };
+
+const appVersion = typeof pkg?.version === 'string' && pkg.version.trim() ? pkg.version.trim() : null;
 
 if (!CAPABILITIES.includes('dc.tool.v1')) register();
 for (const c of ['workspace.grants.v1', 'history.archive.v1', 'review.v1']) if (!CAPABILITIES.includes(c)) CAPABILITIES.push(c);
@@ -24,12 +28,17 @@ export async function startServer(config) {
   const CodexTurns = config.codexSocket ? (await import('../session-host/codex-turns.mjs')).CodexTurns : null;
   const AntigravityTurns = config.antigravitySocket ? (await import('../session-host/antigravity-turns.mjs')).AntigravityTurns : null;
   const accounts = new Map(), projects = new Map(), opening = new Map(), online = new Map(), streams = new Set();
+  const launchLimiter = new TurnLaunchLimiter(config.launchLimiter);
+  const workspaceLocks = new Map();
   let quotaCache = null, quotaCacheAt = 0, quotaInFlight = null;
   const socketServer = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 524288 });
   function account(id) {
     if (!accounts.has(id)) {
       const stateDir = join(config.stateDir, 'u' + id);
-      const host = new SessionHost({ stateDir, accountId: String(id), requireDeviceBinding: true, workspaces: [], mcpPath: config.mcpPath });
+      const host = new SessionHost({
+        stateDir, accountId: String(id), requireDeviceBinding: true, workspaces: [],
+        mcpPath: config.mcpPath, launchLimiter, workspaceLocks,
+      });
       if (CodexTurns) host.codex = new CodexTurns(host, config.codexSocket, config.codexCwd);
       if (AntigravityTurns) host.antigravity = new AntigravityTurns(host, config.antigravitySocket, config.antigravityCwd, {
         bridgePath: config.antigravityMcpBridge,
@@ -146,6 +155,7 @@ export async function startServer(config) {
     ['/', ['index.html', 'text/html']],
     ['/app.js', ['app.js', 'text/javascript']],
     ['/thread.js', ['thread.js', 'text/javascript']],
+    ['/session-cache.js', ['session-cache.js', 'text/javascript']],
     ['/style.css', ['style.css', 'text/css']],
     ['/manifest.webmanifest', ['manifest.webmanifest', 'application/manifest+json']],
     ['/sw.js', ['sw.js', 'text/javascript']],
@@ -206,6 +216,7 @@ export async function startServer(config) {
       const host = account(user.id);
       if (host.sessions().some(s => s.workspaceId === delWs[1] && s.activeTurn)) throw Error('WORKSPACE_NOT_READY');
       closeProject(user.id, delWs[1]);
+      host.purgeWorkspaceMemories(delWs[1]);
       json(res, 200, directory.removeWorkspace(token, delWs[1])); return;
     }
     if (req.method === 'POST' && path === '/api/auth/password') {
@@ -234,7 +245,11 @@ export async function startServer(config) {
         for (const d of candidates) {
           try {
             const deleted = directory.deleteDevice(d.id);
-            for (const wid of deleted.workspaceIds) closeProject(deleted.userId, wid, { force: true });
+            const acc = account(deleted.userId);
+            for (const wid of deleted.workspaceIds) {
+              closeProject(deleted.userId, wid, { force: true });
+              acc.purgeWorkspaceMemories(wid);
+            }
             removed++;
           } catch {}
         }
@@ -250,7 +265,11 @@ export async function startServer(config) {
         if (account(info.userId).sessions().some(s => s.deviceId === info.id && s.activeTurn)) throw Error('DEVICE_BUSY');
         detach(info.id);
         const deleted = directory.deleteDevice(info.id);
-        for (const wid of deleted.workspaceIds) closeProject(deleted.userId, wid, { force: true });
+        const acc = account(deleted.userId);
+        for (const wid of deleted.workspaceIds) {
+          closeProject(deleted.userId, wid, { force: true });
+          acc.purgeWorkspaceMemories(wid);
+        }
         json(res, 200, { ok: true, id: info.id }); return;
       }
       if (req.method === 'GET' && path === '/api/admin/users') {
@@ -287,7 +306,11 @@ export async function startServer(config) {
         for (const devId of deleted.deviceIds) detach(devId);
         for (const wid of deleted.workspaceIds) closeProject(uid, wid, { force: true });
         const accHost = accounts.get(uid);
-        if (accHost) { accounts.delete(uid); await accHost.close(); }
+        if (accHost) {
+          try { accHost.store.db.exec('DELETE FROM memories'); } catch {}
+          accounts.delete(uid);
+          await accHost.close();
+        }
         json(res, 200, { ok: true, id: uid }); return;
       }
       throw Error('NOT_FOUND');
@@ -307,6 +330,7 @@ export async function startServer(config) {
       const fallbackModels = codexModels?.models ?? agyModels?.models ?? null;
       json(res, 200, {
         user, deviceId, uiVersion,
+        ...(appVersion ? { appVersion } : {}),
         chatEngine: engines[0] ?? 'mock',
         engines,
         ...(fallbackModels ? { models: fallbackModels } : {}),
@@ -316,6 +340,29 @@ export async function startServer(config) {
     }
     if (req.method === 'GET' && path === '/api/quota') {
       json(res, 200, await readQuota(host, url.searchParams.get('refresh') === '1')); return;
+    }
+    if (path === '/api/memories') {
+      if (req.method === 'GET') {
+        const scope = url.searchParams.get('scope') ?? 'workspace';
+        const workspaceId = url.searchParams.get('workspaceId') || null;
+        json(res, 200, host.listMemories(scope, workspaceId)); return;
+      }
+      if (req.method === 'PUT') {
+        const b = await body(req);
+        fields(b, ['scope', 'key', 'content'], ['workspaceId']);
+        const workspaceId = b.scope === 'workspace' ? b.workspaceId : null;
+        if (b.scope === 'user' && b.workspaceId !== undefined && b.workspaceId !== null) throw Error('INVALID_FIELDS');
+        json(res, 200, host.saveMemory(b.scope, workspaceId, { key: b.key, content: b.content })); return;
+      }
+      if (req.method === 'DELETE') {
+        const scope = url.searchParams.get('scope') ?? 'workspace';
+        const workspaceId = url.searchParams.get('workspaceId') || null;
+        if (url.searchParams.get('all') === '1') {
+          json(res, 200, host.clearMemories(scope, workspaceId)); return;
+        }
+        const key = url.searchParams.get('key') ?? '';
+        json(res, 200, host.deleteMemory(scope, workspaceId, key)); return;
+      }
     }
     if (req.method === 'POST' && path === '/api/sessions') {
       const input = await body(req); fields(input, ['workspaceId', 'title', 'requestId'], ['options']);
@@ -353,7 +400,7 @@ export async function startServer(config) {
       });
       res.end(bytes); return;
     }
-    const match = path.match(/^\/api\/sessions\/([a-f0-9-]{36})\/(events|messages|stop|stream|attachments)$/);
+    const match = path.match(/^\/api\/sessions\/([a-f0-9-]{36})\/(events|messages|stop|stream|attachments|compact)$/);
     if (!match) throw Error('NOT_FOUND');
     const s = host.session(match[1]);
     if (req.method === 'GET' && match[2] === 'events') {
@@ -431,6 +478,7 @@ export async function startServer(config) {
       json(res, 200, prior ?? await host.send(s.id, b)); return;
     }
     if (req.method === 'POST' && match[2] === 'stop') { json(res, 200, await host.stop(s.id, await body(req))); return; }
+    if (req.method === 'POST' && match[2] === 'compact') { json(res, 200, await host.compactSession(s.id)); return; }
     throw Error('NOT_FOUND');
   }
   const server = https.createServer({ cert: readFileSync(config.cert), key: readFileSync(config.key), minVersion: 'TLSv1.3' }, (req, res) => {
@@ -439,6 +487,7 @@ export async function startServer(config) {
       const status = { LOGIN_REQUIRED: 401, INVALID_CREDENTIALS: 401, FORBIDDEN: 403, DEVICE_DISABLED: 403, CREATE_ON_THIS_DEVICE: 403,
         NETWORK_ENROLLMENT_UNAVAILABLE: 503, NETWORK_ADDRESS_LIMIT: 503, NOT_FOUND: 404, SESSION_NOT_FOUND: 404, ATTACHMENT_NOT_FOUND: 404,
         LOGIN_THROTTLED: 429, PASSWORD_THROTTLED: 429, INVALID_FIELDS: 400, INVALID_ID: 400, INVALID_TEXT: 400, INVALID_USERNAME: 400,
+        INVALID_MEMORY_SCOPE: 400, MEMORY_TOO_LARGE: 400, MEMORY_LIMIT_REACHED: 409, MEMORY_STORAGE_LIMIT: 409,
         INVALID_ATTACHMENT: 400, BODY_LIMIT: 413, USERNAME_TAKEN: 409, LAST_ADMIN_PROTECTED: 400, CANNOT_DELETE_SELF: 400, DEVICE_BUSY: 409,
         INCORRECT_CURRENT_PASSWORD: 400, INVALID_NEW_PASSWORD: 400, PASSWORD_UNCHANGED: 400 }[message] ?? 409;
       if (!res.headersSent) json(res, status, { error: /^[A-Z0-9_]+$/.test(message) ? message : 'REQUEST_FAILED' });
