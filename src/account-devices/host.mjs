@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { createReadStream, existsSync, mkdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { join, resolve, sep } from 'node:path';
 import https from 'node:https';
 import { WebSocketServer } from '../execution/node_modules/ws/wrapper.mjs';
 import { Broker } from '../execution/broker.mjs';
@@ -170,12 +170,98 @@ export async function startServer(config) {
     }
     return h.digest('hex').slice(0, 12);
   })();
+  const updatesDir = config.updatesDir || (config.stateDir ? join(config.stateDir, 'updates') : null);
+  const UPDATE_FILE_RE = /^\/updates\/([A-Za-z0-9][A-Za-z0-9._-]{0,127})$/;
+  const UPDATE_EXT_RE = /(?:\.json|\.tar\.gz|\.exe|\.zip|\.sha256)$/i;
+  function serveUpdateFile(req, res, filename) {
+    if (!updatesDir || !UPDATE_EXT_RE.test(filename) || filename.includes('..')) {
+      json(res, 404, { error: 'UPDATE_NOT_AVAILABLE' });
+      return;
+    }
+    let rootReal, targetReal;
+    try {
+      if (!existsSync(updatesDir)) { json(res, 404, { error: 'UPDATE_NOT_AVAILABLE' }); return; }
+      rootReal = realpathSync(resolve(updatesDir));
+      targetReal = realpathSync(resolve(rootReal, filename));
+    } catch {
+      json(res, 404, { error: 'UPDATE_NOT_AVAILABLE' });
+      return;
+    }
+    if (!targetReal.startsWith(rootReal + sep)) {
+      json(res, 403, { error: 'FORBIDDEN' });
+      return;
+    }
+    let st;
+    try { st = statSync(targetReal); } catch { json(res, 404, { error: 'UPDATE_NOT_AVAILABLE' }); return; }
+    if (!st.isFile()) { json(res, 404, { error: 'UPDATE_NOT_AVAILABLE' }); return; }
+
+    const isManifest = filename === 'manifest.json';
+    const contentType = filename.endsWith('.json')
+      ? 'application/json; charset=utf-8'
+      : filename.endsWith('.sha256')
+        ? 'text/plain; charset=utf-8'
+        : filename.endsWith('.tar.gz')
+          ? 'application/gzip'
+          : 'application/octet-stream';
+    const cacheControl = isManifest ? 'no-cache, no-store, must-revalidate' : 'public, max-age=31536000, immutable';
+    const baseHeaders = {
+      'Content-Type': contentType,
+      'Cache-Control': cacheControl,
+      'Accept-Ranges': 'bytes',
+    };
+    if (!isManifest) {
+      baseHeaders['Content-Disposition'] = `attachment; filename="${filename}"`;
+    }
+    req.setTimeout?.(0);
+    res.setTimeout?.(0);
+
+    const rangeHeader = req.headers.range;
+    if (!isManifest && typeof rangeHeader === 'string' && /^bytes=\d*-\d*$/i.test(rangeHeader.trim())) {
+      const [startStr, endStr] = rangeHeader.trim().slice(6).split('-');
+      let start, end;
+      if (startStr === '' && endStr !== '') {
+        const suffix = Number(endStr);
+        start = Math.max(0, st.size - suffix);
+        end = st.size - 1;
+      } else {
+        start = Number(startStr);
+        end = endStr === '' ? st.size - 1 : Math.min(st.size - 1, Number(endStr));
+      }
+      if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || start > end || start >= st.size) {
+        res.writeHead(416, { ...baseHeaders, 'Content-Range': `bytes */${st.size}` });
+        res.end();
+        return;
+      }
+      const chunkLen = end - start + 1;
+      res.writeHead(206, {
+        ...baseHeaders,
+        'Content-Range': `bytes ${start}-${end}/${st.size}`,
+        'Content-Length': String(chunkLen),
+      });
+      if (req.method === 'HEAD') { res.end(); return; }
+      const stream = createReadStream(targetReal, { start, end });
+      stream.on('error', () => { if (!res.destroyed) res.destroy(); });
+      stream.pipe(res);
+      return;
+    }
+
+    res.writeHead(200, { ...baseHeaders, 'Content-Length': String(st.size) });
+    if (req.method === 'HEAD') { res.end(); return; }
+    const stream = createReadStream(targetReal);
+    stream.on('error', () => { if (!res.destroyed) res.destroy(); });
+    stream.pipe(res);
+  }
   async function handle(req, res) {
     const url = new URL(req.url, 'https://local.invalid'), path = url.pathname;
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('Content-Security-Policy', "default-src 'self'; img-src 'self' data: blob:; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
     if (req.headers.origin && req.headers.origin !== 'https://' + req.headers.host) throw Error('FORBIDDEN');
+    const updateMatch = (req.method === 'GET' || req.method === 'HEAD') && UPDATE_FILE_RE.exec(path);
+    if (updateMatch) {
+      serveUpdateFile(req, res, updateMatch[1]);
+      return;
+    }
     if (req.method === 'GET' && assets.has(path)) {
       const [name, type] = assets.get(path);
       const contentType = type.startsWith('text/') || type.includes('json') ? type + '; charset=utf-8' : type;

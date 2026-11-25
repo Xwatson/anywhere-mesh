@@ -68,6 +68,13 @@ if wire["secure_mode"]["enabled"] and wire["listeners"] == ["ws://127.0.0.1:3148
                              "serverKey": wire["secure_mode"]["local_public_key"]}
 if Path("/etc/nginx/conf.d/anywhere-wan-domain.conf").exists():
     cfg["directTransport"] = True
+updates_dir = Path("/var/lib/anywhere-wan/updates")
+updates_dir.mkdir(mode=0o755, parents=True, exist_ok=True)
+try:
+    shutil.chown(updates_dir, "anywhere-wan", "anywhere-wan")
+except LookupError:
+    pass
+cfg["updatesDir"] = str(updates_dir)
 config = release / "host.json"
 config.write_text(json.dumps(cfg) + "\n")
 config.chmod(0o644)

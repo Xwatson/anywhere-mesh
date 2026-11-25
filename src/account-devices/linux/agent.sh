@@ -49,6 +49,9 @@ for arg in "$@"; do
   if [[ "$arg" == "--help" || "$arg" == "-h" ]]; then
     exec "$NODE_BIN" "$AGENT_JS" --help
   fi
+  if [[ "$arg" == "--check-update" || "$arg" == "--update" ]]; then
+    exec "$NODE_BIN" "$AGENT_JS" "$@"
+  fi
 done
 
 if [[ "${1:-}" == "--logout" ]]; then

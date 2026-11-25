@@ -27,7 +27,7 @@ with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as bundle:
         bundle.writestr(entry, data)
 
     files = {
-        "desktop": ["main.cjs", "package.json", "contract.cjs"],
+        "desktop": ["main.cjs", "package.json", "contract.cjs", "updater-core.mjs", "updater.cjs", "apply-update.mjs"],
         "desktop-commander": ["adapter.mjs"],
         "execution": ["agent.mjs", "grants.mjs", "journal.mjs", "protocol.mjs", "retention.mjs", "rpc.mjs"],
         "workspace": ["patch.mjs"],

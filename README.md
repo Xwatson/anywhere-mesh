@@ -59,3 +59,16 @@ npm test
   ```
 - **Linux x64 安装包（桌面 + CLI）**：详见 [src/account-devices/linux/README.md](src/account-devices/linux/README.md)。
 - **Windows x64 安装包**：详见 [src/account-devices/windows/README.md](src/account-devices/windows/README.md)。
+- **发布客户端自动更新（Ed25519 签名 + 轻量热更包）**：
+  ```bash
+  python3 src/account-devices/wan/publish-update.py \
+    --ws /path/to/ws-8.22.0.tgz \
+    --dc /path/to/desktop-commander-0.3.3.tgz \
+    --signing-key /path/to/update-signing.pem \
+    --output-dir /tmp/update-stage \
+    --notes "本次更新内容…" \
+    [--win-installer /path/to/Setup.exe] \
+    [--linux-archive /path/to/linux-x64.tar.gz] \
+    [--deploy-ssh root@<server>]
+  ```
+  Linux 无界面 CLI Agent 可直接运行 `anywhere-mesh-agent --check-update` / `anywhere-mesh-agent --update` 自更新。

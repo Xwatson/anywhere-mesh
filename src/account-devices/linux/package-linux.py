@@ -11,7 +11,9 @@ import tarfile
 import tempfile
 import zipfile
 
-VERSION = "0.4.14"
+REPO_PKG_VERSION = json.loads((Path(__file__).resolve().parents[3] / "package.json").read_text(encoding="utf-8"))["version"]
+VERSION = REPO_PKG_VERSION
+RUNTIME_ABI = "e45.3.3-n24.21.0-et2.6.4-lin"
 WS_INTEGRITY = "sha512-Ydggc987+RO0AnWtZ/7Wq9FtNvcrL1b/RO0ud9mWjUPgDrsAAwQSF51sm2hm1XofbU/4jkpGEsLFsZZxU+1DOg=="
 PINNED = {
     "electron-v45.3.3-linux-x64.zip": "0a63ce0e2b6a69d6ced7194949934b8414a6dadeca82910f88dc8720a1433269",
@@ -20,7 +22,7 @@ PINNED = {
 }
 
 APP_FILES = {
-    "desktop": ["main.cjs", "package.json", "contract.cjs"],
+    "desktop": ["main.cjs", "package.json", "contract.cjs", "updater-core.mjs", "updater.cjs", "apply-update.mjs"],
     "desktop-commander": ["adapter.mjs"],
     "execution": ["agent.mjs", "grants.mjs", "journal.mjs", "protocol.mjs", "retention.mjs", "rpc.mjs"],
     "workspace": ["patch.mjs", "catalog.mjs"],
@@ -237,6 +239,7 @@ def main():
             "name": "anywhere-mesh",
             "productName": "AnywhereMesh",
             "version": VERSION,
+            "runtimeAbi": RUNTIME_ABI,
             "main": "src/desktop/main.cjs",
         }, indent=2) + "\n")
 

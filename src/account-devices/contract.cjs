@@ -16,6 +16,7 @@ const routes = {
   reviewList: ['workspaceId'], reviewSubmit: ['workspaceId','requestId','operationId','expectedDigest','note'],
   chooseAttachment: ['sessionId'], uploadAttachment: ['sessionId','name','mime','dataBase64'],
   memoriesList: ['scope'], memoriesSave: ['scope','key','content'], memoriesDelete: ['scope','key'], memoriesClear: ['scope'],
+  updateStatus: [], updateCheck: [], updateDownload: [], updateCancel: [], updateInstall: [], updateSettings: [], updateDismiss: ['version'],
 };
 const optional = {
   quota: ['refresh'],
@@ -26,10 +27,14 @@ const optional = {
   memoriesSave: ['workspaceId'],
   memoriesDelete: ['workspaceId'],
   memoriesClear: ['workspaceId'],
+  updateCheck: ['manual'],
+  updateInstall: ['relaunch'],
+  updateSettings: ['autoCheck','autoDownload','installOnQuit'],
 };
 const AGENTS = new Set(['codex','antigravity']);
 const EFFORTS = new Set(['minimal','low','medium','high','xhigh','max']);
 const UUID_RE = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/;
+const SEMVER_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?$/;
 
 function validateOptionsObj(o) {
   if (!o || typeof o !== 'object' || Array.isArray(o)) throw Error('INVALID_FIELDS');
@@ -70,6 +75,10 @@ function validate(method, p = {}) {
   if ('disabled' in p && typeof p.disabled !== 'boolean') throw Error('INVALID_FIELDS');
   if ('isAdmin' in p && typeof p.isAdmin !== 'boolean') throw Error('INVALID_FIELDS');
   if ('refresh' in p && typeof p.refresh !== 'boolean') throw Error('INVALID_FIELDS');
+  for (const bk of ['manual','relaunch','autoCheck','autoDownload','installOnQuit']) {
+    if (bk in p && typeof p[bk] !== 'boolean') throw Error('INVALID_FIELDS');
+  }
+  if ('version' in p && (typeof p.version !== 'string' || p.version.length > 40 || !SEMVER_RE.test(p.version.trim()))) throw Error('INVALID_FIELDS');
   if ('mode' in p && !['revoked','read','edit','execute'].includes(p.mode)) throw Error('INVALID_PERMISSION');
   if ('attachments' in p) {
     if (!Array.isArray(p.attachments) || p.attachments.length > 8 || !p.attachments.every(x => typeof x === 'string' && UUID_RE.test(x))) throw Error('INVALID_ID');

@@ -54,6 +54,7 @@
   <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
   <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
   <symbol id="i-compress" viewBox="0 0 24 24"><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M10 14l-7 7"/></symbol>
+  <symbol id="i-update" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 16V8m-3.5 3.5L12 8l3.5 3.5"/></symbol>
 </defs></svg>
 <main id="signin">
   <div class="wordmark login-brand"><span class="brand-mark" aria-hidden="true"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-terminal"></use></svg></span><span>AnywhereMesh</span></div>
@@ -81,6 +82,7 @@
     <p id="login-error" role="alert" class="inline-error"></p>
     <button id="login-submit" class="primary" type="submit"><span>登录</span><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-arrow"></use></svg></button>
     <button id="signin-install-pwa" class="secondary pwa-signin-btn" type="button" hidden><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-download"></use></svg><span>安装到手机桌面</span></button>
+    <button id="signin-update-btn" class="secondary signin-update-btn" type="button" hidden><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-update"></use></svg><span id="signin-update-label">发现新版本</span></button>
   </form>
 </main>
 
@@ -96,6 +98,7 @@
     </nav>
     <div class="rail-scroll"><h2 class="rail-label">项目会话</h2><nav id="sessions" aria-label="按项目浏览会话"></nav></div>
     <footer class="rail-foot">
+      <button id="update-rail-btn" class="nav-action update-rail-btn" type="button" hidden><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-update"></use></svg><span id="update-rail-label">发现新版本</span><span id="update-rail-meta" class="foot-state"></span></button>
       <button id="usage-quota" class="nav-action" aria-haspopup="dialog" hidden><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-gauge"></use></svg><span>使用额度</span><span id="quota-summary" class="foot-state"></span></button>
       <button id="my-devices" class="nav-action"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-devices"></use></svg><span>我的设备</span><span id="device-count" class="foot-state"></span></button>
       <button id="account-menu" class="account-button" aria-haspopup="dialog"><span id="avatar" class="avatar" aria-hidden="true"></span><span id="account"></span><span id="app-version" class="version-badge" hidden></span><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-more"></use></svg></button>
@@ -110,6 +113,7 @@
         <button id="rename-session" class="icon-button" type="button" title="重命名会话" aria-label="重命名会话"><svg class="icon" aria-hidden="true"><use href="#i-edit"></use></svg></button>
         <button id="delete-session" class="icon-button" type="button" title="删除会话" aria-label="删除会话"><svg class="icon" aria-hidden="true"><use href="#i-trash"></use></svg></button>
       </div>
+      <button id="topbar-update-btn" class="topbar-update-pill" type="button" hidden><i class="update-dot" aria-hidden="true"></i><span id="topbar-update-label">重启更新</span></button>
       <button id="device-status" class="presence-chip" aria-haspopup="dialog"><i id="status-dot" class="dot"></i><span id="target">本机</span><span id="presence">连接中</span><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-down"></use></svg></button>
     </header>
     <div id="pwa-install-bar" class="pwa-banner" role="region" aria-label="安装应用" hidden>
@@ -127,11 +131,6 @@
       <div id="remote-toast" class="remote-toast" role="status" aria-live="polite" hidden><p id="remote-toast-text"></p></div>
       <div id="timeline" tabindex="0" aria-label="会话记录" hidden>
         <div class="thread-width">
-          <div id="history-sync" class="history-sync" role="status" hidden>
-            <span id="history-sync-spinner" class="spinner" aria-hidden="true"></span>
-            <span id="history-sync-text">正在同步最新记录…</span>
-            <button id="history-sync-retry" type="button" class="history-sync-retry" hidden>重试</button>
-          </div>
           <button id="load-older" type="button" class="secondary load-older" hidden>加载更早记录</button>
           <div id="history-loading" class="history-loading" role="status" aria-live="polite" hidden>
             <div class="history-loading-head">
@@ -157,6 +156,11 @@
           <div id="history-error" class="history-state error" role="alert" hidden><p id="history-error-text">会话记录加载失败，请检查网络后重试。</p><button id="retry-history" type="button" class="secondary">重新加载</button></div>
           <div id="events"></div>
           <div id="live" class="live-area" hidden></div>
+          <div id="history-sync" class="history-sync" role="status" aria-live="polite" hidden>
+            <span id="history-sync-spinner" class="spinner" aria-hidden="true"></span>
+            <span id="history-sync-text">正在同步最新记录…</span>
+            <button id="history-sync-retry" type="button" class="history-sync-retry" hidden>重试</button>
+          </div>
           <div id="working" class="working" role="status" hidden><i></i><span>正在处理…</span></div>
         </div>
       </div>
@@ -247,6 +251,7 @@
   <button class="menu-row" id="change-password" aria-haspopup="dialog"><svg class="icon" aria-hidden="true"><use href="#i-key"></use></svg><span>更改密码</span><svg class="icon" aria-hidden="true"><use href="#i-right"></use></svg></button>
   <button class="menu-row" id="admin-nav" hidden><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-sliders"></use></svg><span>系统管理</span><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-right"></use></svg></button>
   <button class="menu-row" id="install-pwa-menu" hidden><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-download"></use></svg><span id="install-pwa-menu-label">安装到手机桌面</span><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-right"></use></svg></button>
+  <button class="menu-row" id="check-updates-menu" aria-haspopup="dialog" hidden><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-update"></use></svg><span>检查更新</span><span id="account-update-badge" class="menu-badge" hidden></span><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-right"></use></svg></button>
   <button class="menu-row" id="logout"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-logout"></use></svg><span>退出登录</span></button>
 </dialog>
 <dialog id="password-dialog" aria-labelledby="password-heading" aria-describedby="password-note">
@@ -429,6 +434,46 @@
     <ol id="install-pwa-steps" class="install-steps"></ol>
   </div>
   <div class="dialog-actions"><button id="close-install-pwa" class="primary" type="button">知道了</button></div>
+</dialog>
+<dialog id="update-dialog" class="update-dialog" aria-labelledby="update-heading">
+  <div class="dialog-head"><h2 id="update-heading">软件更新</h2><button class="icon-button dialog-close" type="button" aria-label="关闭"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-close"></use></svg></button></div>
+  <div class="dialog-body">
+    <div id="update-hero" class="update-hero">
+      <div class="update-hero-icon" aria-hidden="true"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-update"></use></svg></div>
+      <div class="update-hero-copy">
+        <strong id="update-title">检查更新</strong>
+        <span id="update-subtitle"></span>
+      </div>
+    </div>
+    <div id="update-progress-wrap" class="update-progress-wrap" hidden>
+      <div class="update-progress-head">
+        <span id="update-progress-text">正在下载…</span>
+        <span id="update-progress-pct">0%</span>
+      </div>
+      <div class="update-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="update-progress-bar">
+        <div id="update-progress-fill" class="update-progress-fill"></div>
+      </div>
+    </div>
+    <p id="update-active-turn-warn" class="update-alert" hidden>当前仍有 AI 任务正在运行。建议等待任务完成后再重启，或先选择「退出时更新」。</p>
+    <p id="update-error-box" class="update-alert error" role="alert" hidden></p>
+    <div id="update-notes-box" class="update-notes-box" hidden>
+      <h3>更新内容</h3>
+      <div id="update-notes-content" class="update-notes-content"></div>
+    </div>
+    <div class="update-prefs">
+      <label class="checkbox-row"><input id="pref-auto-update" type="checkbox"><span>自动检查并在后台下载更新</span></label>
+      <label class="checkbox-row"><input id="pref-install-on-quit" type="checkbox"><span>关闭应用时自动安装已就绪的更新</span></label>
+    </div>
+  </div>
+  <div class="dialog-actions">
+    <span id="update-meta-foot" class="update-meta-foot"></span>
+    <button id="update-dismiss-btn" class="secondary" type="button" hidden>忽略此版本</button>
+    <button id="update-later-btn" class="secondary" type="button" hidden>退出时更新</button>
+    <button id="update-cancel-btn" class="secondary" type="button" hidden>取消下载</button>
+    <button id="update-check-btn" class="secondary" type="button">立即检查</button>
+    <button id="update-download-btn" class="primary" type="button" hidden>立即下载</button>
+    <button id="update-install-btn" class="primary" type="button" hidden>立即重启并更新</button>
+  </div>
 </dialog>
 <div id="link-hover-card" class="link-hover-card" role="tooltip" hidden>
   <code id="link-hover-path" class="link-hover-path"></code>

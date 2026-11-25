@@ -1,25 +1,43 @@
 #!/usr/bin/env node
+import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, hostname } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { DeviceClient, request } from './client.mjs';
 import { linuxWorkspace } from './linux-workspace.mjs';
 import { LinuxPeer, service } from './linux/network.mjs';
+import {
+  DEFAULT_UPDATE_PUBLIC_KEY,
+  MAX_BUNDLE_ARCHIVE_BYTES,
+  MAX_FULL_ARTIFACT_BYTES,
+  applyBundleUpdate,
+  downloadVerified,
+  fetchManifest,
+  platformKeyFor,
+  readInstalledMeta,
+  resolveSafeArtifactUrl,
+  selectUpdateArtifact,
+} from '../desktop/updater-core.mjs';
 
 function parseArgs(argv) {
   const opts = {
     url: process.env.ANYWHERE_MESH_URL || service,
+    updateUrl: process.env.ANYWHERE_MESH_UPDATE_URL || null,
     state: process.env.ANYWHERE_MESH_STATE || join(homedir(), '.anywhere-mesh', 'linux-agent'),
     name: process.env.ANYWHERE_MESH_NAME || ('Linux · ' + hostname()),
     mode: process.env.ANYWHERE_MESH_MODE || 'read',
     projects: [],
     direct: false,
+    checkUpdate: false,
+    doUpdate: false,
+    forceUpdate: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--url') opts.url = argv[++i];
+    else if (a === '--update-url') opts.updateUrl = argv[++i];
     else if (a === '--ca') opts.ca = resolve(argv[++i]);
     else if (a === '--easytier') opts.easytier = resolve(argv[++i]);
     else if (a === '--state') opts.state = resolve(argv[++i]);
@@ -30,6 +48,9 @@ function parseArgs(argv) {
     else if (a === '--password-stdin') opts.passwordStdin = true;
     else if (a === '--logout') opts.logout = true;
     else if (a === '--direct') opts.direct = true;
+    else if (a === '--check-update') opts.checkUpdate = true;
+    else if (a === '--update') opts.doUpdate = true;
+    else if (a === '--force') opts.forceUpdate = true;
     else if (a === '--project') {
       const p = realpathSync(resolve(argv[++i]));
       const label = argv[i + 1] === '--label' ? (i += 2, argv[i]) : basename(p);
@@ -39,16 +60,27 @@ function parseArgs(argv) {
         'AnywhereMesh Linux Device Agent',
         '',
         'Usage:',
-        '  node src/account-devices/linux-agent.mjs \\',
-        '    --project /path/to/repo [--label my-repo] \\',
-        '    --ca /path/to/ca.crt --easytier /path/to/easytier-core \\',
-        '    [--url https://awc.xbxbe.com] [--state ~/.anywhere-mesh/linux-agent] \\',
-        '    [--name "Linux · Host"] [--mode read|edit|execute|revoked] \\',
-        '    [--username user --password-stdin|--password-file /path/pass] [--logout]',
+        '  anywhere-mesh-agent --project /path/to/repo [--label my-repo] [--mode read|edit|execute]',
+        '  anywhere-mesh-agent --check-update',
+        '  anywhere-mesh-agent --update [--force]',
+        '  anywhere-mesh-agent --logout',
+        '',
+        'Options:',
+        '  --url <url>             Server URL (default: https://awc.xbxbe.com)',
+        '  --update-url <url>      Override update manifest base URL',
+        '  --ca <file>             Deployment CA certificate path',
+        '  --easytier <file>       Path to easytier-core binary',
+        '  --state <dir>           State directory (default: ~/.anywhere-mesh/linux-agent)',
+        '  --name <name>           Device display name',
+        '  --mode <mode>           Permission mode: read|edit|execute|revoked',
+        '  --direct                Use direct HTTPS/WSS transport',
+        '  --check-update          Check for signed client updates and print details',
+        '  --update                Download, verify and apply available client update',
       ].join('\n'));
       process.exit(0);
     }
   }
+  if (opts.checkUpdate || opts.doUpdate) return opts;
   if (!opts.ca) throw Error('Missing required --ca /path/to/ca.crt');
   if (!opts.logout && !opts.direct && !opts.easytier) throw Error('Missing required --easytier /path/to/easytier-core (or pass --direct)');
   if (!['revoked', 'read', 'edit', 'execute'].includes(opts.mode)) throw Error('Invalid --mode: ' + opts.mode);
@@ -194,9 +226,131 @@ async function readPassword(opts) {
   throw Error('No saved login found; pass --username <user> with --password-stdin or --password-file');
 }
 
+async function runCliUpdate(opts) {
+  const appDir = resolve(import.meta.dirname, '../..');
+  const installed = existsSync(resolve(appDir, '../tools/node'));
+  const installDir = installed ? resolve(appDir, '../..') : null;
+  const meta = readInstalledMeta(appDir);
+  if (!meta.version) throw Error('Unable to read current client version from ' + join(appDir, 'package.json'));
+
+  const baseUrl = (opts.updateUrl || opts.url || service).replace(/\/+$/, '');
+  const publicKeyPem = process.env.ANYWHERE_MESH_UPDATE_PUBKEY || DEFAULT_UPDATE_PUBLIC_KEY;
+  const allowHttpLocalhost = process.env.ANYWHERE_MESH_UPDATE_ALLOW_HTTP === '1';
+
+  console.log(`[linux-agent] Checking updates from ${baseUrl} (current v${meta.version}, abi=${meta.runtimeAbi || 'none'})...`);
+  const manifest = await fetchManifest(baseUrl, { publicKeyPem, allowHttpLocalhost });
+  const decision = selectUpdateArtifact(manifest, {
+    currentVersion: meta.version,
+    platformKey: platformKeyFor(),
+    runtimeAbi: meta.runtimeAbi,
+    ignoreFailures: Boolean(opts.forceUpdate),
+  });
+
+  if (!decision.available) {
+    if (decision.upToDate) {
+      console.log(`[linux-agent] Already up to date (v${meta.version}).`);
+      return;
+    }
+    throw Error(`Update v${decision.latestVersion} is not compatible with this installation (${decision.reason}).`);
+  }
+
+  const sizeKb = (decision.artifact.size / 1024).toFixed(1);
+  console.log(`[linux-agent] Update available: v${meta.version} -> v${decision.version} (${decision.mode}, ${sizeKb} KiB)`);
+  if (decision.notes) {
+    console.log('\n--- Release Notes ---');
+    console.log(decision.notes);
+    console.log('---------------------\n');
+  }
+
+  if (!opts.doUpdate) {
+    console.log('[linux-agent] Run with --update to download and install.');
+    return;
+  }
+
+  if (!installed && process.env.ANYWHERE_MESH_UPDATE_ALLOW_DEV !== '1') {
+    throw Error('Self-update is only supported for installed Linux packages (not source checkouts).');
+  }
+
+  const url = resolveSafeArtifactUrl(baseUrl, decision.artifact.url, { allowHttpLocalhost });
+  const cacheDir = join(opts.state, 'updates');
+  mkdirSync(cacheDir, { recursive: true, mode: 0o700 });
+  const safeName = basename(url.pathname).replace(/[^A-Za-z0-9._-]/g, '_');
+  const destFile = join(cacheDir, safeName);
+
+  let lastPct = -1;
+  const dl = await downloadVerified(url, destFile, {
+    expectedSha256: decision.artifact.sha256,
+    expectedSize: decision.artifact.size,
+    maxBytes: decision.mode === 'bundle' ? MAX_BUNDLE_ARCHIVE_BYTES : MAX_FULL_ARTIFACT_BYTES,
+    allowHttpLocalhost,
+    onProgress: p => {
+      if (p.percent !== lastPct && (p.percent === 100 || p.percent - lastPct >= 10)) {
+        lastPct = p.percent;
+        console.log(`[linux-agent] Downloading: ${p.percent}% (${p.downloadedBytes}/${p.totalBytes} bytes)`);
+      }
+    },
+  });
+  console.log(`[linux-agent] Verified SHA-256: ${dl.sha256}`);
+
+  if (decision.mode === 'bundle') {
+    const applied = await applyBundleUpdate({
+      archivePath: dl.path,
+      expectedSha256: dl.sha256,
+      targetVersion: decision.version,
+      appDir,
+      backupDir: appDir + '.prev',
+      preserveRelPaths: [],
+    });
+    rmSync(dl.path, { force: true });
+    console.log(`[linux-agent] Updated successfully to v${applied.version}. Restart any running agent service to use the new version.`);
+  } else if (decision.mode === 'full' && decision.kind === 'linux-tar') {
+    const extractDir = mkdtempSync(join(cacheDir, 'extract-'));
+    try {
+      execFileSync('tar', ['-xzf', dl.path, '-C', extractDir], { stdio: 'inherit', timeout: 120000 });
+      const entries = readdirSync(extractDir);
+      const topDir = entries.length === 1 ? join(extractDir, entries[0]) : extractDir;
+      const installSh = join(topDir, 'install.sh');
+      if (!existsSync(installSh)) throw Error('MISSING_LINUX_INSTALL_SH');
+      const env = { ...process.env };
+      if (installDir) env.ANYWHERE_MESH_INSTALL_DIR = installDir;
+      execFileSync('bash', [installSh], { env, stdio: 'inherit', timeout: 120000 });
+    } finally {
+      rmSync(extractDir, { recursive: true, force: true });
+      rmSync(dl.path, { force: true });
+    }
+    console.log(`[linux-agent] Full package updated successfully to v${decision.version}. Restart any running agent service.`);
+  } else {
+    throw Error(`Unsupported update kind: ${decision.kind}`);
+  }
+}
+
+async function notifyUpdateIfAvailable(opts) {
+  try {
+    const appDir = resolve(import.meta.dirname, '../..');
+    const meta = readInstalledMeta(appDir);
+    if (!meta.version) return;
+    const baseUrl = (opts.updateUrl || opts.url || service).replace(/\/+$/, '');
+    const publicKeyPem = process.env.ANYWHERE_MESH_UPDATE_PUBKEY || DEFAULT_UPDATE_PUBLIC_KEY;
+    const allowHttpLocalhost = process.env.ANYWHERE_MESH_UPDATE_ALLOW_HTTP === '1';
+    const manifest = await fetchManifest(baseUrl, { publicKeyPem, allowHttpLocalhost, timeoutMs: 8000 });
+    const decision = selectUpdateArtifact(manifest, {
+      currentVersion: meta.version,
+      platformKey: platformKeyFor(),
+      runtimeAbi: meta.runtimeAbi,
+    });
+    if (decision.available) {
+      console.log(`[linux-agent] Update available: v${meta.version} -> v${decision.version} (run 'anywhere-mesh-agent --update' to upgrade)`);
+    }
+  } catch {}
+}
+
 async function main() {
   process.umask(0o077);
   const opts = parseArgs(process.argv.slice(2));
+  if (opts.checkUpdate || opts.doUpdate) {
+    await runCliUpdate(opts);
+    return;
+  }
   mkdirSync(opts.state, { recursive: true, mode: 0o700 });
   const caBytes = readFileSync(opts.ca);
   const peer = opts.direct ? null : new LinuxPeer(opts.state, opts.easytier, caBytes, opts.url);
@@ -256,6 +410,7 @@ async function main() {
     }
     await delay(500);
   }
+  void notifyUpdateIfAvailable(opts);
 
   // Keep tunnel & project connections healthy
   setInterval(async () => {

@@ -7,6 +7,7 @@ const { resolve, sep, extname } = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { createInterface } = require('node:readline');
 const { trustedSender } = require('./contract.cjs');
+const { DesktopUpdater, checkStartupRollbackSync } = require('./updater.cjs');
 const sessionsProfile = process.argv.includes('--lab-sessions');
 const deviceSlot = process.argv.find(arg => /^--lab-device=[ab]$/.test(arg))?.at(-1);
 const installedWindows = process.platform === 'win32' && existsSync(resolve(process.resourcesPath, 'tools/node.exe'));
@@ -18,11 +19,26 @@ const windowsRoot = windowsDevice ? resolve(process.env.LOCALAPPDATA, 'AnywhereM
 const linuxRoot = linuxDesktop ? resolve(process.env.ANYWHERE_MESH_DATA_DIR || resolve(process.env.XDG_DATA_HOME || resolve(homedir(), '.local/share'), 'AnywhereMesh')) : null;
 const wanProfile = deviceSlot && process.argv.includes('--lab-wan');
 const appDir = deviceSlot || standaloneDevice ? resolve(__dirname,'../account-devices') : sessionsProfile ? resolve(__dirname, '../desktop-sessions') : __dirname;
+const packageRootDir = resolve(__dirname, '../..');
 const contract = require(resolve(appDir, 'contract.cjs'));
 const validate = contract.internalValidate ?? contract.validate;
 const validatePublic = contract.publicValidate ?? contract.validate;
 let testPickerPath;
 let pickingWorkspace=false;
+let updater = null;
+let windowLoaded = false;
+
+if (installedWindows || installedLinux) {
+  const rollback = checkStartupRollbackSync({
+    dataRoot: installedWindows ? windowsRoot : linuxRoot,
+    appDir: packageRootDir,
+    currentVersion: app.getVersion(),
+  });
+  if (rollback.rolledBack) {
+    app.relaunch();
+    app.exit(0);
+  }
+}
 
 if (standaloneDevice) {
   if (sessionsProfile || deviceSlot) throw Error('STANDALONE_PROFILE_REQUIRED');
@@ -107,16 +123,41 @@ if (single) app.whenReady().then(async () => {
   });
   child.stderr.on('data', chunk => process.stderr.write(chunk));
   const lines = createInterface({ input: child.stdout });
+  const maybeMarkHealthy = () => {
+    if (backendReady && windowLoaded && updater) updater.markBootHealthy();
+  };
   lines.on('line', line => {
     if (line.length > 2 * 1024 * 1024) { child.stdin.end(); return; }
     let msg; try { msg = JSON.parse(line); } catch { child.stdin.end(); return; }
-    if (msg.event === 'ready') backendReady = true;
+    if (msg.event === 'ready') { backendReady = true; maybeMarkHealthy(); }
     if (msg.event === 'stream' && win && !win.isDestroyed()) { win.webContents.send('desktop:event', msg.data); return; }
     if (!msg.id) return;
     const waiter = pending.get(msg.id); if (!waiter) return;
     pending.delete(msg.id); clearTimeout(waiter.timer);
     msg.error ? waiter.reject(Error(msg.error)) : waiter.resolve(msg.value);
   });
+  if (standaloneDevice) {
+    const dataRoot = windowsDevice ? windowsRoot : linuxRoot;
+    const installDir = (installedWindows || installedLinux) ? resolve(process.resourcesPath, '..') : null;
+    const relaunchExe = installedWindows ? process.execPath :
+      installedLinux ? resolve(process.resourcesPath, '../bin/anywhere-mesh') : process.execPath;
+    updater = new DesktopUpdater({
+      dataRoot,
+      appDir: packageRootDir,
+      installDir,
+      nodeBin: backend,
+      relaunchExe,
+      canInstall: installedWindows || installedLinux || process.env.ANYWHERE_MESH_UPDATE_ALLOW_DEV === '1',
+      getExtraPids: () => (child?.pid ? [child.pid] : []),
+      onStateChange: snap => {
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('desktop:event', { type: 'update_state', payload: snap });
+        }
+      },
+      requestQuit: () => app.quit(),
+    });
+    void updater.init().catch(e => console.error('Desktop updater init:', e.message));
+  }
   child.once('exit', () => {
     childExited = true;
     for (const p of pending.values()) { clearTimeout(p.timer); p.reject(Error('DESKTOP_BACKEND_EXITED')); }
@@ -157,6 +198,13 @@ if (single) app.whenReady().then(async () => {
   ipcMain.handle('desktop:request', async (event, method, params) => {
     if (!trustedSender(event, win?.webContents)) throw Error('UNTRUSTED_DESKTOP_SENDER');
     validatePublic(method, params);
+    if (method === 'updateStatus') return updater ? updater.snapshot() : { supported: false };
+    if (method === 'updateCheck') return updater ? updater.check({ manual: params?.manual !== false }) : { supported: false };
+    if (method === 'updateDownload') return updater ? updater.download() : { supported: false };
+    if (method === 'updateCancel') return updater ? updater.cancelDownload() : { supported: false };
+    if (method === 'updateInstall') return updater ? updater.prepareInstall({ relaunch: params?.relaunch !== false }) : { supported: false };
+    if (method === 'updateSettings') return updater ? updater.updateSettings(params) : { supported: false };
+    if (method === 'updateDismiss') return updater ? updater.dismissVersion(params.version) : { supported: false };
     if (standaloneDevice && method === 'chooseAttachment') {
       const picked = await dialog.showOpenDialog(win, { title: '选择附件', buttonLabel: '添加附件',
         properties: ['openFile', 'dontAddToRecent'] });
@@ -180,9 +228,17 @@ if (single) app.whenReady().then(async () => {
     }
     return request(method, params);
   });
-  win.once('ready-to-show', () => win.show());
+  win.once('ready-to-show', () => {
+    windowLoaded = true;
+    maybeMarkHealthy();
+    win.show();
+  });
+  win.on('focus', () => updater?.onWindowFocus());
   win.on('closed', () => { win = null; });
   await win.loadURL('anywhere-desktop://app/index.html');
+  if (updater && win && !win.isDestroyed()) {
+    win.webContents.send('desktop:event', { type: 'update_state', payload: updater.snapshot() });
+  }
   if (windowsDevice && !installedWindows && process.argv.includes('--lab-windows-smoke')) {
     const { smoke } = await import('../account-devices/windows/smoke.mjs');
     smoke({win,root:windowsRoot}).catch(e=>{console.error(e.message);process.exitCode=1;}).finally(()=>app.quit());
@@ -217,7 +273,19 @@ app.on('before-quit', event => {
   event.preventDefault();
   if (stopping) return;
   if (win && !win.isDestroyed()) win.hide();
-  stop().then(() => { allowQuit = true; app.quit(); }).catch(e => {
+  updater?.dispose();
+  stop().then(async () => {
+    try {
+      if (updater) {
+        app.releaseSingleInstanceLock();
+        await updater.finalizeOnQuit();
+      }
+    } catch (e) {
+      console.error('Desktop updater finalize:', e.message);
+    }
+    allowQuit = true;
+    app.quit();
+  }).catch(e => {
     console.error('Desktop shutdown:', e.message);
     // Never silently pretend cleanup succeeded. The scoped systemd UI unit has
     // an ExecStopPost fallback; the per-task deadline/lease still bound failures.

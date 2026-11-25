@@ -17,7 +17,11 @@ dest.mkdir(parents=True, exist_ok=True)
 payload = dest / "payload"
 payload.mkdir()
 release = hashlib.sha256()
-version = "0.4.14"
+version = json.loads((src / "package.json").read_text(encoding="utf-8"))["version"]
+native_cs_hash = hashlib.sha256()
+for cs_name in ("WorkspaceSnapshot.cs", "PeerHost.cs", "TaskHost.cs", "LoginProtection.cs"):
+    native_cs_hash.update((Path(__file__).with_name(cs_name)).read_bytes())
+runtime_abi = f"e45.3.3-n24.21.0-et2.6.4-win-{native_cs_hash.hexdigest()[:8]}"
 
 def pinned(name, expected):
     archive = args.archives / name
@@ -54,7 +58,7 @@ with zipfile.ZipFile(args.app) as z:
             z.extract(entry, app)
 release.update(args.app.read_bytes())
 (app / "package.json").write_text(json.dumps({"name":"anywhere-mesh","productName":"AnywhereMesh",
-    "version":version,"main":"src/desktop/main.cjs"}))
+    "version":version,"runtimeAbi":runtime_abi,"main":"src/desktop/main.cjs"}))
 release.update((app / "package.json").read_bytes())
 native = app / "src/account-devices/windows"
 for name in ("WorkspaceSnapshot.exe", "PeerHost.exe", "TaskHost.exe", "LoginProtection.exe"):

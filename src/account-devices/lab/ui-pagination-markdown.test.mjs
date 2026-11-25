@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -144,6 +144,27 @@ test('renderThread renders Markdown file:// links, web links, bold links, hr and
   } finally {
     globalThis.document = prevDoc;
   }
+});
+
+test('cached-session history sync indicator is rendered at the bottom of #timeline below #events', () => {
+  const html = readFileSync(new URL('../ui/index.html', import.meta.url), 'utf8');
+  const appJs = readFileSync(new URL('../ui/app.js', import.meta.url), 'utf8');
+
+  const timelineIdx = html.indexOf('id="timeline"');
+  const loadOlderIdx = html.indexOf('id="load-older"');
+  const eventsIdx = html.indexOf('id="events"');
+  const liveIdx = html.indexOf('id="live"');
+  const historySyncIdx = html.indexOf('id="history-sync"');
+  const workingIdx = html.indexOf('id="working"');
+
+  assert.ok(timelineIdx >= 0 && loadOlderIdx > timelineIdx, 'load-older should stay inside timeline');
+  assert.ok(eventsIdx > loadOlderIdx, 'events should follow load-older');
+  assert.ok(liveIdx > eventsIdx, 'live area should follow events');
+  assert.ok(historySyncIdx > liveIdx, 'history-sync indicator must appear below events/live at the bottom of the thread');
+  assert.ok(workingIdx > historySyncIdx, 'working indicator should remain after history-sync');
+  assert.match(html, /id="history-sync-spinner" class="spinner"/);
+  assert.match(appJs, /正在加载最新消息…/);
+  assert.match(appJs, /pendingScrollBottom/);
 });
 
 test('renderThread supports GFM tables, headings h1-h6, emphasis/del, nested/task lists, code blocks with copy, autolinks, escapes and context_compacted', () => {

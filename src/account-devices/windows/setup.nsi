@@ -2,6 +2,7 @@ Unicode true
 !include "MUI2.nsh"
 !include "LogicLib.nsh"
 !include "x64.nsh"
+!include "FileFunc.nsh"
 !include "release.nsh"
 !define NAME "AnywhereMesh"
 !define REGKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\AnywhereMesh"
@@ -61,6 +62,25 @@ Section "AnywhereMesh"
   WriteRegDWORD HKCU "${REGKEY}" "NoModify" 1
   WriteRegDWORD HKCU "${REGKEY}" "NoRepair" 1
   IfErrors failed
+  ; Best-effort cleanup of previous app-<release> directories
+  FindFirst $0 $1 "$INSTDIR\app-????????????????"
+  cleanup_loop:
+    StrCmp $1 "" cleanup_done
+    StrCmp $1 "${RELDIR}" cleanup_next
+    IfFileExists "$INSTDIR\$1\installed.release" 0 cleanup_next
+    RMDir /r "$INSTDIR\$1"
+    ClearErrors
+  cleanup_next:
+    FindNext $0 $1
+    Goto cleanup_loop
+  cleanup_done:
+    FindClose $0
+  ; Relaunch updated desktop app if invoked by auto-updater with /RELAUNCH
+  ${GetParameters} $R0
+  ClearErrors
+  ${GetOptions} $R0 "/RELAUNCH" $R1
+  IfErrors done
+  Exec '"$INSTDIR\${RELDIR}\AnywhereMesh.exe"'
   Goto done
   failed:
     SetErrorLevel 1

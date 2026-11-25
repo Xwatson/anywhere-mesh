@@ -64,6 +64,18 @@ const errors = {
   COMPACT_UNSUPPORTED: '当前引擎暂不支持主动压缩上下文。',
   COMPACT_TIMEOUT: '压缩上下文超时，请稍后重试。',
   COMPACT_FAILED: '压缩上下文失败，请稍后重试。',
+  UPDATE_NOT_AVAILABLE: '当前暂无可下载的客户端更新包。',
+  UPDATE_SIGNATURE_INVALID: '更新清单数字签名校验失败，已拒绝本次更新。',
+  UPDATE_CHECKSUM_MISMATCH: '更新包完整性校验（SHA-256）失败，请重新下载。',
+  UPDATE_SIZE_MISMATCH: '更新包大小与签名清单不一致，请重试。',
+  UPDATE_NETWORK_TIMEOUT: '连接更新服务器超时，请检查网络后重试。',
+  UPDATE_DOWNLOAD_INTERRUPTED: '更新包下载中断，请重试。',
+  UPDATE_INSTALL_UNSUPPORTED: '当前为开发源码运行模式，不支持自动覆盖安装。',
+  UPDATE_NOT_READY: '更新包尚未下载完成，请先下载更新。',
+  PLATFORM_UNSUPPORTED: '当前版本暂未发布适用于此系统架构的安装包。',
+  RUNTIME_ABI_MISMATCH: '需要完整安装包才能升级，但当前清单未提供完整安装包。',
+  NEW_VERSION_STARTUP_FAILED: '新版本启动异常，已自动回滚至稳定版本。',
+  VERSION_UNCHANGED_AFTER_INSTALL: '上次安装未能升级到目标版本，已暂停自动重试。',
 };
 const message = e => Object.entries(errors).find(([key]) => String(e.message).includes(key))?.[1] ?? String(e.message);
 
@@ -173,8 +185,8 @@ const CONNECT_STEPS = [
 let connectState = new Map();
 let localConnectUntil = 0;
 let rows = [], seq = 0, firstSeq = 0, hasOlder = false, loadingOlder = false, epoch, sidebarKey, searchKey, fleetKey, usersKey, deviceKey, historyProblem = false, historyDirty = false;
-let historyStatus = 'idle', historySource = 'none', historyErrorText = '', historySyncPromise = null, historySyncGen = 0;
-let historyAbort = null, slowLoadTimer = null, cacheSaveTimer = null, prunedSessionsKey = null;
+let historyStatus = 'idle', historySource = 'none', historyErrorText = '', historySyncSlow = false, historySyncPromise = null, historySyncGen = 0;
+let historyAbort = null, slowLoadTimer = null, cacheSaveTimer = null, prunedSessionsKey = null, pendingScrollBottom = false, lastTimelineScrollTop = 0;
 let remoteToastTimer = null, remoteToastHideTimer = null, remoteToastShownFor = null;
 let fleet = [], adminUsers = [], adminTab = 'users', resetTargetUser = null, consent, projectSource, restoring = false, reviewWorkspaceId = null;
 let pendingAgent = null, pendingModel = null, pendingEffort = null;
@@ -190,6 +202,9 @@ let live = { text: '', thinking: '', toolOutput: new Map() };
 let eventSource = null, subscribedSessionId = null;
 let deferredInstallPrompt = null;
 let pwaBannerDismissed = (() => { try { return localStorage.getItem('anywhere-pwa-dismissed') === '1'; } catch { return false; } })();
+let updateState = null;
+let updateToastShownFor = null;
+let updateActionBusy = false;
 
 const MIME_EXT = {
   'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp',
@@ -283,6 +298,298 @@ async function triggerPwaInstall() {
     return;
   }
   openInstallGuide();
+}
+
+function hasActiveTurn() {
+  return Boolean(state?.sessions?.some(s => s.activeTurn));
+}
+function formatUpdateTime(ts) {
+  if (!Number.isFinite(ts) || ts <= 0) return '';
+  try {
+    return new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+  } catch { return ''; }
+}
+function updateModeLabel(upd) {
+  if (!upd) return '';
+  const sizeText = upd.size ? fmtSize(upd.size) : '';
+  const kindText = upd.mode === 'bundle' ? '轻量增量包' : '完整安装包';
+  return sizeText ? `${kindText} · ${sizeText}` : kindText;
+}
+function applyUpdateState(next) {
+  if (!next || typeof next !== 'object') return;
+  updateState = next;
+  renderUpdateUI();
+}
+async function runUpdateAction(fn) {
+  if (!native || updateActionBusy) return;
+  updateActionBusy = true;
+  if ($('update-dialog').open) renderUpdateDialog();
+  try {
+    const snap = await fn();
+    if (snap && typeof snap === 'object') updateState = snap;
+  } catch (err) {
+    if (updateState) updateState = { ...updateState, status: 'error', error: err?.message || 'UPDATE_CHECK_FAILED' };
+    else updateState = { supported: true, status: 'error', error: err?.message || 'UPDATE_CHECK_FAILED' };
+  } finally {
+    updateActionBusy = false;
+    renderUpdateUI();
+  }
+}
+function triggerUpdateRestart(fromQuickButton = false) {
+  if (!native || !updateState?.supported) return;
+  if (updateState.status !== 'ready') {
+    openUpdateDialog(false);
+    return;
+  }
+  if (fromQuickButton && hasActiveTurn()) {
+    openUpdateDialog(false);
+    return;
+  }
+  void runUpdateAction(() => action('updateInstall', { relaunch: true }));
+}
+function openUpdateDialog(autoCheck = false) {
+  if (!native) return;
+  if ($('account-dialog').open) $('account-dialog').close();
+  renderUpdateDialog();
+  showDialog('update-dialog');
+  if (!updateState) {
+    void runUpdateAction(() => action('updateStatus')).then(() => {
+      if (autoCheck && (!updateState || ['idle', 'up-to-date', 'error'].includes(updateState.status))) {
+        void runUpdateAction(() => action('updateCheck', { manual: true }));
+      }
+    });
+  } else if (autoCheck && ['idle', 'up-to-date', 'error'].includes(updateState.status)) {
+    void runUpdateAction(() => action('updateCheck', { manual: true }));
+  }
+}
+function renderUpdateUI() {
+  const menuRow = $('check-updates-menu');
+  const menuBadge = $('account-update-badge');
+  const railBtn = $('update-rail-btn');
+  const topbarBtn = $('topbar-update-btn');
+  const signinBtn = $('signin-update-btn');
+  if (!native || !updateState?.supported) {
+    if (menuRow) menuRow.hidden = !native;
+    if (menuBadge) menuBadge.hidden = true;
+    if (railBtn) railBtn.hidden = true;
+    if (topbarBtn) topbarBtn.hidden = true;
+    if (signinBtn) signinBtn.hidden = true;
+    if ($('update-dialog')?.open) renderUpdateDialog();
+    return;
+  }
+  const st = updateState;
+  const upd = st.update;
+  const ver = upd?.version ? 'v' + upd.version : '';
+  menuRow.hidden = false;
+
+  if (st.status === 'ready' && ver) {
+    menuBadge.textContent = '重启更新 ' + ver;
+    menuBadge.className = 'menu-badge accent';
+    menuBadge.hidden = false;
+  } else if (st.status === 'downloading') {
+    const pct = st.progress?.percent ?? 0;
+    menuBadge.textContent = `下载中 ${pct}%`;
+    menuBadge.className = 'menu-badge accent';
+    menuBadge.hidden = false;
+  } else if (st.status === 'available' && ver) {
+    menuBadge.textContent = '新版本 ' + ver;
+    menuBadge.className = 'menu-badge accent';
+    menuBadge.hidden = false;
+  } else if (st.status === 'installing') {
+    menuBadge.textContent = '正在重启…';
+    menuBadge.className = 'menu-badge accent';
+    menuBadge.hidden = false;
+  } else if (st.status === 'up-to-date') {
+    menuBadge.textContent = '最新';
+    menuBadge.className = 'menu-badge';
+    menuBadge.hidden = false;
+  } else {
+    menuBadge.hidden = true;
+  }
+
+  const showPrompt = !st.dismissed && Boolean(upd) && ['available', 'downloading', 'ready', 'installing'].includes(st.status);
+  railBtn.hidden = !showPrompt;
+  if (showPrompt) {
+    if (st.status === 'ready') {
+      railBtn.className = 'nav-action update-rail-btn ready';
+      $('update-rail-label').textContent = '重启以更新';
+      $('update-rail-meta').textContent = ver;
+      railBtn.title = `AnywhereMesh ${ver} 已下载就绪，点击重启并更新`;
+    } else if (st.status === 'installing') {
+      railBtn.className = 'nav-action update-rail-btn ready installing';
+      $('update-rail-label').textContent = '正在重启更新…';
+      $('update-rail-meta').textContent = ver;
+      railBtn.title = '正在关闭并应用更新…';
+    } else if (st.status === 'downloading') {
+      const pct = st.progress?.percent ?? 0;
+      railBtn.className = 'nav-action update-rail-btn downloading';
+      $('update-rail-label').textContent = '正在下载更新';
+      $('update-rail-meta').textContent = `${pct}%`;
+      railBtn.title = `正在后台下载 ${ver}（${pct}%），点击查看详情`;
+    } else {
+      railBtn.className = 'nav-action update-rail-btn';
+      $('update-rail-label').textContent = '有可用更新';
+      $('update-rail-meta').textContent = ver;
+      railBtn.title = `发现新版本 ${ver}，点击查看更新内容`;
+    }
+  }
+
+  const showTopbarPill = showPrompt && (st.status === 'ready' || st.status === 'available');
+  topbarBtn.hidden = !showTopbarPill;
+  if (showTopbarPill) {
+    $('topbar-update-label').textContent = st.status === 'ready' ? `重启更新 ${ver}` : `新版本 ${ver}`;
+    topbarBtn.title = st.status === 'ready' ? `点击重启并更新到 ${ver}` : `发现新版本 ${ver}`;
+  }
+
+  const showSigninBtn = showPrompt && !$('signin').hidden;
+  signinBtn.hidden = !showSigninBtn;
+  if (showSigninBtn) {
+    $('signin-update-label').textContent = st.status === 'ready'
+      ? `重启并更新至 ${ver}`
+      : st.status === 'downloading'
+        ? `正在下载更新 ${ver} (${st.progress?.percent ?? 0}%)`
+        : `发现新版本 ${ver}`;
+  }
+
+  if (st.justUpdatedFrom && st.currentVersion && updateToastShownFor !== st.currentVersion && !$('app').hidden) {
+    updateToastShownFor = st.currentVersion;
+    showRemoteToast(`已更新至 AnywhereMesh v${st.currentVersion}`);
+  }
+  if ($('update-dialog').open) renderUpdateDialog();
+}
+function renderUpdateDialog() {
+  const st = updateState;
+  const hero = $('update-hero');
+  const titleEl = $('update-title');
+  const subEl = $('update-subtitle');
+  const progWrap = $('update-progress-wrap');
+  const activeWarn = $('update-active-turn-warn');
+  const errBox = $('update-error-box');
+  const notesBox = $('update-notes-box');
+  const notesContent = $('update-notes-content');
+  const autoCb = $('pref-auto-update');
+  const quitCb = $('pref-install-on-quit');
+  const metaFoot = $('update-meta-foot');
+  const dismissBtn = $('update-dismiss-btn');
+  const laterBtn = $('update-later-btn');
+  const cancelBtn = $('update-cancel-btn');
+  const checkBtn = $('update-check-btn');
+  const downloadBtn = $('update-download-btn');
+  const installBtn = $('update-install-btn');
+
+  const clientVer = st?.currentVersion || state?.clientVersion || '';
+  const serverVer = state?.appVersion || '';
+  const versionSummary = [
+    clientVer ? `当前客户端 v${clientVer}` : '',
+    serverVer && serverVer !== clientVer ? `服务端 v${serverVer}` : '',
+  ].filter(Boolean).join(' · ');
+
+  if (!st || !st.supported) {
+    hero.className = 'update-hero';
+    titleEl.textContent = '软件更新';
+    subEl.textContent = versionSummary || '正在读取更新状态…';
+    progWrap.hidden = true;
+    activeWarn.hidden = true;
+    errBox.hidden = true;
+    notesBox.hidden = true;
+    dismissBtn.hidden = laterBtn.hidden = cancelBtn.hidden = downloadBtn.hidden = installBtn.hidden = true;
+    checkBtn.hidden = false;
+    checkBtn.disabled = updateActionBusy;
+    metaFoot.textContent = '';
+    return;
+  }
+
+  const upd = st.update;
+  const ver = upd?.version ? 'v' + upd.version : '';
+  const modeInfo = updateModeLabel(upd);
+  hero.className = 'update-hero ' + st.status;
+  autoCb.checked = Boolean(st.autoCheck && st.autoDownload);
+  quitCb.checked = Boolean(st.installOnQuit);
+  autoCb.disabled = quitCb.disabled = updateActionBusy || st.status === 'installing';
+
+  if (st.status === 'checking') {
+    titleEl.textContent = '正在检查更新…';
+    subEl.textContent = versionSummary;
+  } else if (st.status === 'up-to-date') {
+    titleEl.textContent = '已是最新版本';
+    subEl.textContent = versionSummary;
+  } else if (st.status === 'available') {
+    titleEl.textContent = `发现新版本 ${ver}`;
+    subEl.textContent = [versionSummary, modeInfo].filter(Boolean).join(' · ');
+  } else if (st.status === 'downloading') {
+    titleEl.textContent = `正在下载 ${ver}`;
+    subEl.textContent = [versionSummary, modeInfo].filter(Boolean).join(' · ');
+  } else if (st.status === 'ready') {
+    titleEl.textContent = `${ver} 已准备就绪`;
+    subEl.textContent = `重启应用即可完成更新${modeInfo ? '（' + modeInfo + '）' : ''}`;
+  } else if (st.status === 'installing') {
+    titleEl.textContent = `正在准备重启更新至 ${ver}…`;
+    subEl.textContent = '正在优雅关闭连接并应用更新包，应用将自动重新打开。';
+  } else if (st.status === 'error') {
+    titleEl.textContent = '更新遇到问题';
+    subEl.textContent = versionSummary;
+  } else {
+    titleEl.textContent = '检查软件更新';
+    subEl.textContent = versionSummary;
+  }
+
+  const showProg = st.status === 'downloading' && Boolean(st.progress);
+  progWrap.hidden = !showProg;
+  if (showProg) {
+    const pct = Math.max(0, Math.min(100, st.progress.percent ?? 0));
+    const dlText = st.progress.totalBytes
+      ? `${fmtSize(st.progress.downloadedBytes)} / ${fmtSize(st.progress.totalBytes)}`
+      : fmtSize(st.progress.downloadedBytes);
+    const spdText = st.progress.speedBps > 0 ? ` · ${fmtSize(st.progress.speedBps)}/s` : '';
+    $('update-progress-text').textContent = dlText + spdText;
+    $('update-progress-pct').textContent = pct + '%';
+    $('update-progress-bar').setAttribute('aria-valuenow', String(pct));
+    $('update-progress-fill').style.width = pct + '%';
+  }
+
+  activeWarn.hidden = !(st.status === 'ready' && hasActiveTurn());
+
+  let alertText = '';
+  if (st.error) {
+    alertText = message(Error(st.error));
+  } else if (st.rolledBackVersion) {
+    alertText = `上次更新至 v${st.rolledBackVersion} 时启动异常，已自动回滚到当前版本。`;
+  } else if (upd?.blockedByFailure) {
+    alertText = `版本 ${ver} 此前多次安装未成功，已暂停自动下载；如已修复，可点击「立即下载」手动重试。`;
+  } else if (upd && !st.canInstall) {
+    alertText = '当前为开发源码运行模式，可查看新版本信息，不支持自动覆盖安装。';
+  }
+  errBox.textContent = alertText;
+  errBox.hidden = !alertText;
+  errBox.className = st.error ? 'update-alert error' : 'update-alert';
+
+  const notes = (upd?.notes || '').trim();
+  notesBox.hidden = !notes;
+  if (notes) notesContent.textContent = notes;
+
+  const checkedTime = formatUpdateTime(st.lastCheckedAt);
+  metaFoot.textContent = checkedTime ? `上次检查 ${checkedTime}` : '';
+
+  const isInstalling = st.status === 'installing';
+  const isDownloading = st.status === 'downloading';
+  const isChecking = st.status === 'checking';
+  const isReady = st.status === 'ready';
+  const isAvail = st.status === 'available';
+
+  dismissBtn.hidden = !(isAvail && upd?.version && !st.dismissed);
+  laterBtn.hidden = !isReady;
+  cancelBtn.hidden = !isDownloading;
+  downloadBtn.hidden = !(isAvail && st.canInstall);
+  installBtn.hidden = !(isReady && st.canInstall);
+  checkBtn.hidden = isDownloading || isReady || isInstalling;
+
+  dismissBtn.disabled = updateActionBusy;
+  laterBtn.disabled = updateActionBusy;
+  cancelBtn.disabled = updateActionBusy;
+  downloadBtn.disabled = updateActionBusy;
+  installBtn.disabled = updateActionBusy || isInstalling;
+  checkBtn.disabled = updateActionBusy || isChecking;
+  checkBtn.textContent = isChecking ? '检查中…' : '立即检查';
 }
 
 const groups = new Map(), unfolded = new Set();
@@ -379,6 +686,7 @@ function applyEventPage(page, target) {
   historySource = 'server';
   historyStatus = 'ready';
   historyErrorText = '';
+  historySyncSlow = false;
   if (target.lastSeq < seq) target.lastSeq = seq;
   target.historyEpoch = epoch;
   updateOlderUI();
@@ -539,6 +847,7 @@ setInterval(tickQueueCountdowns, 250);
 
 function applyStreamMessage(msg) {
   if (msg?.type === 'connect_progress') { updateConnectProgress(msg.payload); return; }
+  if (msg?.type === 'update_state') { applyUpdateState(msg.payload); return; }
   if (msg?.type === 'delta' && msg.payload?.delta?.kind === 'queue' && state?.sessions) {
     const d = msg.payload.delta;
     const s = state.sessions.find(item => item.id === msg.payload.sessionId);
@@ -617,10 +926,27 @@ function updateOlderUI() {
 function clearSlowLoadTimer() {
   if (slowLoadTimer) { clearTimeout(slowLoadTimer); slowLoadTimer = null; }
 }
+function isTimelineVisible(view = $('timeline')) {
+  return Boolean(view && !view.hidden && !$('chat').hidden && !$('app').hidden);
+}
+function isTimelinePinned(view = $('timeline')) {
+  return view.scrollHeight - view.clientHeight - view.scrollTop < 72;
+}
+function scrollTimelineToBottom(view = $('timeline')) {
+  if (!isTimelineVisible(view)) {
+    pendingScrollBottom = true;
+    return;
+  }
+  pendingScrollBottom = false;
+  view.scrollTop = view.scrollHeight;
+  lastTimelineScrollTop = view.scrollTop;
+}
 function updateHistoryUI() {
   const s = thread();
   const inThread = Boolean(s && tab === 'chat');
   const hasRows = rows.length > 0;
+  const view = $('timeline');
+  const visibleView = isTimelineVisible(view);
   const showLoading = inThread && historyStatus === 'loading' && !hasRows;
   const showError = inThread && historyStatus === 'error' && !hasRows;
   const showEmpty = inThread && historyStatus === 'ready' && !hasRows && !s?.activeTurn && !live.text && !live.thinking;
@@ -632,20 +958,30 @@ function updateHistoryUI() {
     $('retry-history').disabled = !online;
   }
   const syncBar = $('history-sync');
+  const wasSyncHidden = syncBar.hidden;
+  const wasPinned = visibleView && isTimelinePinned(view);
   const showSyncing = inThread && hasRows && historyStatus === 'syncing';
   const showSyncWarn = inThread && hasRows && !showSyncing && (historyProblem || !online);
+  const hasNewerOnServer = Boolean(s && Number.isSafeInteger(s.lastSeq) && s.lastSeq > seq);
   syncBar.hidden = !showSyncing && !showSyncWarn;
   if (!syncBar.hidden) {
     syncBar.classList.toggle('warn', showSyncWarn);
     $('history-sync-spinner').hidden = !showSyncing;
     $('history-sync-text').textContent = showSyncing
-      ? '正在同步最新记录…'
+      ? historySyncSlow
+        ? '网络响应较慢，仍在同步最新消息…'
+        : hasNewerOnServer
+          ? '正在加载最新消息…'
+          : '正在同步最新记录…'
       : !online
         ? '当前离线，显示本地缓存记录'
         : historySource === 'cache'
           ? '当前显示本地缓存，暂时无法同步最新记录'
           : '暂时无法同步最新记录';
     $('history-sync-retry').hidden = !showSyncWarn || !online;
+  }
+  if (inThread && (pendingScrollBottom || (visibleView && wasSyncHidden && !syncBar.hidden && wasPinned))) {
+    scrollTimelineToBottom(view);
   }
   updateOlderUI();
 }
@@ -687,7 +1023,8 @@ function resetHistory() {
   clearLive();
   rows = []; seq = 0; firstSeq = 0; hasOlder = false; loadingOlder = false; epoch = null;
   historyProblem = historyDirty = false;
-  historyStatus = 'idle'; historySource = 'none'; historyErrorText = '';
+  historyStatus = 'idle'; historySource = 'none'; historyErrorText = ''; historySyncSlow = false;
+  pendingScrollBottom = false; lastTimelineScrollTop = 0;
   $('history-loading-text').textContent = '正在加载会话记录…';
   $('events').replaceChildren();
   updateHistoryUI();
@@ -832,6 +1169,7 @@ function select(id, { forceReload = false } = {}) {
         hasOlder = Boolean(cached.hasOlder ?? (firstSeq > 1));
         historySource = 'cache';
         historyStatus = 'syncing';
+        historySyncSlow = false;
         historyDirty = !drawHistory(rows, true);
       } else if ((s.lastSeq ?? 0) > 0) {
         historyStatus = 'loading';
@@ -930,6 +1268,7 @@ function loginView(localName, restore = false, detail) {
   $('app').hidden = true; $('signin').hidden = false;
   $('entry').textContent = localName ? '连接设备 · ' + localName : native ? '登录后继续本机项目的对话。' : '使用你的 AnywhereMesh 账号继续。';
   updatePwaInstallUI();
+  renderUpdateUI();
 }
 
 function sidebar() {
@@ -1704,6 +2043,7 @@ function render() {
   controls(); sidebar();
   renderQuotaSummary();
   updatePwaInstallUI();
+  renderUpdateUI();
   if ($('devices-dialog').open) renderDevices();
   if ($('search-dialog').open) searchResults();
   if ($('quota-dialog').open) renderQuotaDialog();
@@ -1719,9 +2059,9 @@ function render() {
 function drawHistory(next, fromStart = false) {
   const selection = document.getSelection(), events = $('events'), view = $('timeline');
   if (native && selection?.rangeCount && !selection.isCollapsed && selection.getRangeAt(0).intersectsNode(events)) return false;
-  const pinned = fromStart || view.scrollHeight - view.clientHeight - view.scrollTop < 72;
+  const pinned = fromStart || pendingScrollBottom || (isTimelineVisible(view) && isTimelinePinned(view));
   renderThread(events, next, { sessionId: selected, isWeb: !native, liveToolOutput: live.toolOutput });
-  if (pinned) view.scrollTop = view.scrollHeight;
+  if (pinned) scrollTimelineToBottom(view);
   return true;
 }
 document.addEventListener('selectionchange', () => {
@@ -1749,12 +2089,13 @@ function applyHistoryState(nextState, target, { fromStart = false, persist = tru
   historySource = 'server';
   historyStatus = 'ready';
   historyErrorText = '';
+  historySyncSlow = false;
   historyProblem = false;
   target.historyEpoch = epoch;
   if (target.lastSeq < seq) target.lastSeq = seq;
   clearSlowLoadTimer();
-  historyDirty = !drawHistory(rows, fromStart);
   updateHistoryUI();
+  historyDirty = !drawHistory(rows, fromStart);
   ensureStream();
   if (persist) persistCurrentSession(target);
 }
@@ -1800,6 +2141,7 @@ async function syncHistory({ forceCheck = false, manualRetry = false } = {}) {
         hasOlder = Boolean(cached.hasOlder ?? (firstSeq > 1));
         historySource = 'cache';
         historyStatus = 'syncing';
+        historySyncSlow = false;
         historyDirty = !drawHistory(rows, true);
         updateHistoryUI();
       }
@@ -1827,12 +2169,20 @@ async function syncHistory({ forceCheck = false, manualRetry = false } = {}) {
     const hadRows = rows.length > 0;
     historyStatus = hadRows ? 'syncing' : 'loading';
     historyErrorText = '';
+    historySyncSlow = false;
+    clearSlowLoadTimer();
     if (!hadRows) {
       $('history-loading-text').textContent = '正在加载会话记录…';
-      clearSlowLoadTimer();
       slowLoadTimer = setTimeout(() => {
         if (generation === stamp && historyStatus === 'loading' && !rows.length) {
           $('history-loading-text').textContent = '网络响应较慢，仍在加载会话记录…';
+        }
+      }, 5000);
+    } else {
+      slowLoadTimer = setTimeout(() => {
+        if (generation === stamp && historyStatus === 'syncing' && rows.length) {
+          historySyncSlow = true;
+          updateHistoryUI();
         }
       }, 5000);
     }
@@ -1906,6 +2256,7 @@ async function syncHistory({ forceCheck = false, manualRetry = false } = {}) {
       if (error.message === 'REQUEST_ABORTED') return;
       if (error.message.includes('LOGIN_REQUIRED')) { loginView(); return; }
       clearSlowLoadTimer();
+      historySyncSlow = false;
       historyProblem = true;
       historyErrorText = message(error) || '会话记录加载失败，请稍后重试。';
       historyStatus = rows.length ? 'ready' : 'error';
@@ -2762,7 +3113,6 @@ $('apply').onclick = () => perform(saveProject);
 $('load-older').onclick = () => void loadOlderHistory();
 $('retry-history').onclick = () => void syncHistory({ forceCheck: true, manualRetry: true });
 $('history-sync-retry').onclick = () => void syncHistory({ forceCheck: true, manualRetry: true });
-let lastTimelineScrollTop = 0;
 $('timeline').addEventListener('scroll', () => {
   const view = $('timeline');
   const scrollingUp = view.scrollTop < lastTimelineScrollTop;
@@ -3093,6 +3443,47 @@ $('pwa-dismiss-btn').onclick = () => {
   try { localStorage.setItem('anywhere-pwa-dismissed', '1'); } catch {}
   updatePwaInstallUI();
 };
+$('check-updates-menu').onclick = () => openUpdateDialog(true);
+$('update-rail-btn').onclick = () => {
+  if (updateState?.status === 'ready') triggerUpdateRestart(true);
+  else openUpdateDialog(false);
+};
+$('topbar-update-btn').onclick = () => {
+  if (updateState?.status === 'ready') triggerUpdateRestart(true);
+  else openUpdateDialog(false);
+};
+$('signin-update-btn').onclick = () => openUpdateDialog(false);
+$('update-check-btn').onclick = () => void runUpdateAction(() => action('updateCheck', { manual: true }));
+$('update-download-btn').onclick = () => void runUpdateAction(() => action('updateDownload'));
+$('update-cancel-btn').onclick = () => void runUpdateAction(() => action('updateCancel'));
+$('update-install-btn').onclick = () => triggerUpdateRestart(false);
+$('update-later-btn').onclick = () => {
+  void runUpdateAction(async () => {
+    const snap = await action('updateSettings', { installOnQuit: true });
+    $('update-dialog').close();
+    return snap;
+  });
+};
+$('update-dismiss-btn').onclick = () => {
+  const ver = updateState?.update?.version;
+  if (!ver) return;
+  void runUpdateAction(async () => {
+    const snap = await action('updateDismiss', { version: ver });
+    $('update-dialog').close();
+    return snap;
+  });
+};
+$('pref-auto-update').onchange = e => {
+  const on = Boolean(e.target.checked);
+  void runUpdateAction(() => action('updateSettings', { autoCheck: on, autoDownload: on }));
+};
+$('pref-install-on-quit').onchange = e => {
+  const on = Boolean(e.target.checked);
+  void runUpdateAction(() => action('updateSettings', { installOnQuit: on }));
+};
+if (native) {
+  void action('updateStatus').then(applyUpdateState).catch(() => {});
+}
 if (!native) {
   window.addEventListener('beforeinstallprompt', e => {
     e.preventDefault();
