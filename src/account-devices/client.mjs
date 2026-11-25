@@ -246,14 +246,20 @@ export class DeviceClient {
   }
   async login(p) {
     if (this.signed || this.remembered()) throw Error('SIGN_OUT_FIRST');
-    const signed = await this.authenticate({ ...p, installation: this.profile.secret, name: this.cfg.name,
-      projects: this.profile.projects.map(({ localId, label }) => ({ localId, label })) });
+    const authInput = {
+      username: p.username,
+      password: p.password,
+      installation: this.profile.secret,
+      name: this.cfg.name,
+      projects: this.profile.projects.map(({ localId, label }) => ({ localId, label })),
+    };
+    const signed = await this.authenticate(authInput, p.serverUrl);
     this.signed = signed;
     try {
       this.attachProjects(signed, true);
-      this.saved = this.loginFile.save(signed);
+      this.saved = this.loginFile.save({ ...signed, ...(this.serverUrl ? { serverUrl: this.serverUrl } : {}) });
       this.connect(signed);
-      return { user: signed.user, deviceId: signed.deviceId };
+      return { user: signed.user, deviceId: signed.deviceId, ...(this.serverUrl ? { serverUrl: this.serverUrl } : {}) };
     } catch (error) { await this.signout(); throw error; }
   }
   verifiedState(saved) {
@@ -261,12 +267,12 @@ export class DeviceClient {
   }
   currentState() { return this.api('GET', '/api/state'); }
   async restore() {
-    const signedOut = { user: null, localName: this.cfg.name };
-    const pending = () => ({ ...signedOut, restoring: true, connectionError: this.restoreIssue });
+    const signedOut = () => ({ user: null, localName: this.cfg.name, ...(this.serverUrl ? { serverUrl: this.serverUrl } : {}) });
+    const pending = () => ({ ...signedOut(), restoring: true, connectionError: this.restoreIssue });
     if (Date.now() < this.nextRestore) return pending();
     try {
       const saved = this.remembered();
-      if (!saved) return signedOut;
+      if (!saved) return signedOut();
       const state = await this.verifiedState(saved);
       if (state.deviceId !== saved.deviceId || state.user.id !== saved.userId) throw Error('LOGIN_BINDING_MISMATCH');
       const signed = { token: saved.token, deviceId: state.deviceId, user: state.user, projects: state.projects };
@@ -277,7 +283,7 @@ export class DeviceClient {
     } catch (error) {
       if (['LOGIN_REQUIRED', 'DEVICE_DISABLED', 'LOGIN_BINDING_MISMATCH'].includes(error.message)) {
         await this.signout(false);
-        return signedOut;
+        return signedOut();
       }
       await this.disconnect(false);
       // A failed transport or an unavailable key store leaves the saved login intact.
@@ -493,6 +499,7 @@ export class DeviceClient {
     return {
       ...state,
       localName: this.cfg.name,
+      ...(this.serverUrl ? { serverUrl: this.serverUrl } : {}),
       ...(clientVersion ? { clientVersion } : {}),
       ...(this.cfg.workspacePicker ? { workspacePicker: true } : {}),
     };

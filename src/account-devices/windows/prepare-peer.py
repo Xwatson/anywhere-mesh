@@ -12,7 +12,7 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 
 source = tomllib.loads(Path(sys.argv[1]).read_text())
 peer, = source["peer"]
-if peer["uri"] != "wss://awc.xbxbe.com/easytier" or not source["secure_mode"]["enabled"]:
+if not peer["uri"].startswith("wss://") or not peer["uri"].endswith("/easytier") or not source["secure_mode"]["enabled"]:
     raise SystemExit("Expected the secure WAN domain deployment")
 
 def encode(data):

@@ -1147,7 +1147,7 @@ function thinkingStep(id, text, expanded, openDefault = false) {
   return details;
 }
 
-export function renderThread(container, rows, { sessionId, isWeb = false, liveToolOutput = new Map() } = {}) {
+export function renderThread(container, rows, { sessionId, isWeb = false, liveToolOutput = new Map(), hasActiveTurn = false } = {}) {
   const latest = new Map();
   const expandedTools = new Set([...container.querySelectorAll('details.tool-step[open]')].map(d => d.dataset.call));
   const expandedThink = new Set([...container.querySelectorAll('details.thinking-step[open]')].map(d => d.dataset.think));
@@ -1212,6 +1212,25 @@ export function renderThread(container, rows, { sessionId, isWeb = false, liveTo
       }
       div.append(icon('compress'), element('span', label));
       output.append(div);
+    } else if (event.type === 'turn_notice') {
+      const div = element('div', undefined, 'turn-notice');
+      div.setAttribute('role', 'status');
+      if (event.code) div.dataset.noticeCode = event.code;
+      const body = element('div', undefined, 'turn-notice-body');
+      body.append(element('strong', event.title || '回合提示'));
+      if (event.detail) body.append(element('span', event.detail));
+      div.append(icon('alert'), body);
+      const laterRows = rows.slice(i + 1);
+      const hasLaterUserMessage = laterRows.some(r => r?.event?.type === 'user_message');
+      const hasLaterTurnEnd = laterRows.some(r => r?.event?.type === 'turn_end');
+      if (event.canContinue && !hasLaterUserMessage) {
+        const btn = element('button', '继续执行', 'secondary turn-continue-btn');
+        btn.type = 'button';
+        btn.dataset.continuePrompt = event.continuePrompt || '请从上次暂停的位置继续完成剩余任务。';
+        if (hasActiveTurn && !hasLaterTurnEnd) btn.disabled = true;
+        div.append(btn);
+      }
+      output.append(div);
     } else if (event.type === 'turn_end') {
       if (!event.ok) {
         output.append(element('p', event.error || '本次回复中断。', 'turn-error'));
@@ -1219,6 +1238,7 @@ export function renderThread(container, rows, { sessionId, isWeb = false, liveTo
         const parts = [];
         if (event.model) parts.push(event.model);
         if (event.durationMs) parts.push(fmtDuration(event.durationMs));
+        if (event.toolCalls?.total) parts.push(`${event.toolCalls.total} 次工具`);
         if (event.usage?.inputTokens || event.usage?.outputTokens) {
           parts.push(`in ${event.usage.inputTokens ?? 0} / out ${event.usage.outputTokens ?? 0}`);
         }

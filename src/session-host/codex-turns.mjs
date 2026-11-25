@@ -13,6 +13,14 @@ import {
   buildMemoryInstructions,
   executeMemoryTool,
 } from './memory.mjs';
+import {
+  TurnToolGuard,
+  appendCodexWarning,
+  boundEventInput,
+  isMutationTool,
+  resolveToolBudget,
+  summarizeCallArgs,
+} from './tool-budget.mjs';
 
 const IMAGE_MIMES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
 const DEFAULT_MODELS = {
@@ -166,11 +174,12 @@ export function normalizeCodexQuota(raw, acct = null) {
 }
 
 export class CodexTurns {
-  constructor(host, socketPath, cwd) {
+  constructor(host, socketPath, cwd, { toolBudget } = {}) {
     this.host = host;
     this.db = host.store;
     this.socketPath = socketPath;
     this.cwd = cwd;
+    this.toolBudget = resolveToolBudget(toolBudget);
     this.active = new Map();
     this.modelCache = null;
     this.modelCacheAt = 0;
@@ -182,6 +191,34 @@ export class CodexTurns {
   save(id, changes) { this.db.put('turns', id, { ...this.turn(id), ...changes }); }
   event(t, event) { this.db.append(t.sessionId, { ...event, engine: 'codex' }); this.host.emit('events', t.sessionId); }
   broker(t, method, args) { return this.host.broker(this.host.workspace(t.workspaceId), method, args); }
+  emitNoticeOnce(t, guard, notice) {
+    if (!notice || !guard?.markNoticeEmitted(notice.code)) return;
+    this.event(t, { type: 'turn_notice', ...notice });
+  }
+  listTurnCallsWithLegacy(t) {
+    const dbCalls = this.db.listTurnCalls(t.id);
+    if (!t.calls?.length) return dbCalls;
+    const seen = new Set(dbCalls.map(c => c.callId));
+    const legacy = t.calls
+      .filter(c => c?.id && !seen.has(c.id))
+      .map((c, idx) => ({
+        turnId: t.id,
+        sessionId: t.sessionId,
+        seq: dbCalls.length + idx + 1,
+        callId: c.id,
+        tool: c.tool,
+        effectiveTool: c.tool,
+        inputHash: c.inputHash ?? '',
+        argsSummary: c.args ?? {},
+        operationId: null,
+        state: 'pending',
+        ok: null,
+        consumed: false,
+        counted: true,
+        legacy: true,
+      }));
+    return [...dbCalls, ...legacy];
+  }
 
   refreshModels() {
     if (this.modelRefresh) return this.modelRefresh;
@@ -326,16 +363,28 @@ export class CodexTurns {
     string(callId);
     if (!run.tools.has(tool)) return failure('Tool unavailable on this device.');
     if (tool === 'session_read_attachment') {
-      this.event(t, { type: 'tool_call', id: callId, name: tool, input: args, status: 'running' });
+      const localVerdict = run.guard.checkLocal();
+      if (!localVerdict.allowed) {
+        this.emitNoticeOnce(t, run.guard, localVerdict.notice);
+        return failure(localVerdict.modelMessage);
+      }
+      run.guard.recordLocal();
+      this.event(t, { type: 'tool_call', id: callId, name: tool, input: boundEventInput(args), status: 'running' });
       const res = await this.handleSessionReadAttachment(current, args);
       const out = res.contentItems.filter(x => x.type === 'inputText').map(x => x.text).join('\n');
-      this.event(t, { type: 'tool_call', id: callId, name: tool, input: args, status: res.success ? 'completed' : 'failed', output: out.slice(0, 4500) });
+      this.event(t, { type: 'tool_call', id: callId, name: tool, input: boundEventInput(args), status: res.success ? 'completed' : 'failed', output: out.slice(0, 4500) });
       return res;
     }
     if (MEMORY_TOOL_NAMES.has(tool)) {
-      this.event(t, { type: 'tool_call', id: callId, name: tool, input: args, status: 'running' });
+      const localVerdict = run.guard.checkLocal();
+      if (!localVerdict.allowed) {
+        this.emitNoticeOnce(t, run.guard, localVerdict.notice);
+        return failure(localVerdict.modelMessage);
+      }
+      run.guard.recordLocal();
+      this.event(t, { type: 'tool_call', id: callId, name: tool, input: boundEventInput(args), status: 'running' });
       const res = executeMemoryTool(this.db, t.workspaceId, tool, args);
-      this.event(t, { type: 'tool_call', id: callId, name: tool, input: args, status: res.ok ? 'completed' : 'failed', output: res.text.slice(0, 4500) });
+      this.event(t, { type: 'tool_call', id: callId, name: tool, input: boundEventInput(args), status: res.ok ? 'completed' : 'failed', output: res.text.slice(0, 4500) });
       return { success: res.ok, contentItems: [{ type: 'inputText', text: res.text }] };
     }
     let effectiveTool = tool, effectiveArgs = args;
@@ -350,61 +399,127 @@ export class CodexTurns {
     }
     try { normalize(effectiveTool, effectiveArgs); }
     catch { return failure(effectiveTool === 'workspace_read_file' ? 'Invalid arguments. Use a relative path, integer line offset, and 1 to 500 lines.' : 'Invalid arguments. Follow the advertised schema.'); }
-    const previous = current.calls.find(call => call.id === callId);
-    if (previous && previous.inputHash !== hash({ tool: effectiveTool, args: effectiveArgs })) return failure('Conflicting tool call.');
-    if (!previous && current.calls.length >= 60) return failure('Tool limit reached for this turn.');
+    const inputHash = hash({ tool: effectiveTool, args: effectiveArgs });
+    const existingDb = this.db.getTurnCall(t.id, callId);
+    const legacyPrev = !existingDb ? current.calls?.find(call => call.id === callId) : null;
+    const previous = existingDb ?? (legacyPrev ? { callId: legacyPrev.id, inputHash: legacyPrev.inputHash, counted: true } : null);
+    if (previous && previous.inputHash !== inputHash) return failure('Conflicting tool call.');
+    if (!previous?.counted) {
+      const verdict = run.guard.checkWorkspace(effectiveTool, inputHash);
+      if (!verdict.allowed) {
+        this.emitNoticeOnce(t, run.guard, verdict.notice);
+        return failure(verdict.modelMessage);
+      }
+    }
+    const eventInput = boundEventInput(args);
     if (!previous) {
       this.db.tx(() => {
-        this.save(t.id, { calls: [...current.calls, { id: callId, tool: effectiveTool, args: effectiveArgs, inputHash: hash({ tool: effectiveTool, args: effectiveArgs }) }] });
-        this.db.append(t.sessionId, { type: 'tool_call', id: callId, name: tool, input: args, status: 'running', engine: 'codex' });
+        this.db.upsertTurnCall({
+          turnId: t.id,
+          sessionId: t.sessionId,
+          callId,
+          tool,
+          effectiveTool,
+          inputHash,
+          argsSummary: summarizeCallArgs(args),
+          state: 'pending',
+          counted: false,
+        });
+        this.db.append(t.sessionId, { type: 'tool_call', id: callId, name: tool, input: eventInput, status: 'running', engine: 'codex' });
       });
       this.host.emit('events', t.sessionId);
     }
+    const abortPreDispatch = (message, uiOutput = message) => {
+      if (!previous?.counted) {
+        this.db.tx(() => {
+          this.db.updateTurnCall(t.id, callId, { state: 'aborted', ok: false, consumed: true, counted: false });
+          this.db.append(t.sessionId, { type: 'tool_call', id: callId, name: tool, input: eventInput, status: 'failed', output: uiOutput, engine: 'codex' });
+        });
+        this.host.emit('events', t.sessionId);
+      }
+      return failure(message);
+    };
     const h = await this.host.host(current);
     // Check live authorization again before issuing or returning a previously stored result.
-    if (run.ending || this.turn(t.id).cancelRequested) return failure('Turn stopped.');
+    if (run.ending || this.turn(t.id).cancelRequested) return abortPreDispatch('Turn stopped.', '已停止。');
     const waitAlive = setInterval(() => run.touch?.(), 15000);
     waitAlive.unref?.();
     return this.host.withWorkspaceLock(t.workspaceId, async () => {
       clearInterval(waitAlive);
-      if (run.ending || this.turn(t.id).cancelRequested) return failure('Turn stopped.');
+      if (run.ending || this.turn(t.id).cancelRequested) return abortPreDispatch('Turn stopped.', '已停止。');
       await this.waitForWorkspaceReady(current, run, 20000);
       run.touch?.();
-      if (!(await this.workspaceTools(current)).some(item => item.name === effectiveTool)) return failure('Workspace permission changed.');
-      const ticket = await h.executor.issue(callId, effectiveTool, effectiveArgs);
-      this.save(t.id, { operationId: ticket.operationId });
+      let allowedTools;
+      try { allowedTools = await this.workspaceTools(current); }
+      catch (err) {
+        return abortPreDispatch(err?.message === 'LOCAL_PERMISSION_CHANGED' ? 'Workspace permission changed.' : 'Workspace unavailable.');
+      }
+      if (!allowedTools.some(item => item.name === effectiveTool)) {
+        return abortPreDispatch('Workspace permission changed.');
+      }
+      let ticket;
+      try {
+        ticket = await h.executor.issue(callId, effectiveTool, effectiveArgs);
+      } catch (err) {
+        if (!run.ending && !this.turn(t.id)?.cancelRequested) {
+          const outcome = run.guard.recordWorkspaceOutcome(effectiveTool, inputHash, false);
+          if (outcome.circuitTrippedNow) this.emitNoticeOnce(t, run.guard, outcome.notice);
+        }
+        throw err;
+      }
+      const alreadyCounted = Boolean(this.db.getTurnCall(t.id, callId)?.counted || legacyPrev);
+      this.db.tx(() => {
+        this.db.updateTurnCall(t.id, callId, { operationId: ticket.operationId, state: 'dispatched', counted: true });
+        this.save(t.id, { operationId: ticket.operationId });
+      });
+      if (!alreadyCounted) run.guard.recordWorkspaceDispatched(effectiveTool);
       const saved = this.db.get('codexResults', ticket.operationId);
       if (saved) {
         await h.executor.consumeAfterPersist(saved.receipt);
-        return saved.reply;
+        this.db.updateTurnCall(t.id, callId, {
+          operationId: ticket.operationId,
+          state: saved.reply?.success === false ? 'failed' : 'completed',
+          ok: saved.reply?.success !== false,
+          consumed: true,
+          counted: true,
+        });
+        return appendCodexWarning(saved.reply, run.guard.softWarning(effectiveTool));
       }
       if (run.ending || this.turn(t.id).cancelRequested) {
         await this.broker(current, 'stopTurn', turnScope(current));
         return failure('Turn stopped.');
       }
-      let result = await h.client.callTool({ name: effectiveTool, arguments: effectiveArgs, _meta: { 'anywhere/callTicket': ticket.ticket } });
-      const until = Date.now() + 180000;
-      let outputSeq = 0;
-      while (result.structuredContent?.task && !result.structuredContent.task.resultReady) {
-        run.touch?.();
-        if (run.ending || result.structuredContent.task.state === 'unknown' || Date.now() > until) throw Error('WORKSPACE_RESULT_PENDING');
-        const receivedSeq = result.structuredContent.task.receivedSeq ?? 0;
-        if (receivedSeq > outputSeq) {
-          try {
-            const out = await h.executor.output(ticket.operationId, outputSeq);
-            const chunk = out.rows.map(r => r.data).join('');
-            if (chunk) this.host.delta(t.sessionId, { kind: 'tool_output', id: callId, text: chunk });
-            outputSeq = out.nextSeq;
-          } catch {}
+      try {
+        let result = await h.client.callTool({ name: effectiveTool, arguments: effectiveArgs, _meta: { 'anywhere/callTicket': ticket.ticket } });
+        const until = Date.now() + 180000;
+        let outputSeq = 0;
+        while (result.structuredContent?.task && !result.structuredContent.task.resultReady) {
+          run.touch?.();
+          if (run.ending || result.structuredContent.task.state === 'unknown' || Date.now() > until) throw Error('WORKSPACE_RESULT_PENDING');
+          const receivedSeq = result.structuredContent.task.receivedSeq ?? 0;
+          if (receivedSeq > outputSeq) {
+            try {
+              const out = await h.executor.output(ticket.operationId, outputSeq);
+              const chunk = out.rows.map(r => r.data).join('');
+              if (chunk) this.host.delta(t.sessionId, { kind: 'tool_output', id: callId, text: chunk });
+              outputSeq = out.nextSeq;
+            } catch {}
+          }
+          await delay(250);
+          result = await h.client.callTool({ name: 'workspace_task_status', arguments: { operationId: ticket.operationId } });
         }
-        await delay(250);
-        result = await h.client.callTool({ name: 'workspace_task_status', arguments: { operationId: ticket.operationId } });
+        return await this.capture(current, { id: callId, tool, effectiveTool, args, inputHash }, h, ticket.operationId, result, { guard: run.guard });
+      } catch (err) {
+        if (!run.ending && !this.turn(t.id)?.cancelRequested) {
+          const outcome = run.guard.recordWorkspaceOutcome(effectiveTool, inputHash, false);
+          if (outcome.circuitTrippedNow) this.emitNoticeOnce(t, run.guard, outcome.notice);
+        }
+        throw err;
       }
-      return this.capture(current, { id: callId, tool, args }, h, ticket.operationId, result);
     }).finally(() => clearInterval(waitAlive));
   }
 
-  async capture(t, call, h, operationId, result) {
+  async capture(t, call, h, operationId, result, { guard } = {}) {
     const data = result.structuredContent, task = data?.task;
     if (!task?.resultReady || task.operationId !== operationId || data.workspaceId !== t.workspaceId) throw Error('WORKSPACE_RESULT_PENDING');
     const items = result.content ?? data.result?.response?.content ?? [];
@@ -419,16 +534,26 @@ export class CodexTurns {
     contentItems.push({ type: 'inputText', text: text || task.state });
     const reply = { success: ok, contentItems };
     const receipt = { operationId, resultDigest: task.resultDigest, receiptId: 'codex:' + operationId };
+    const eventInput = boundEventInput(call.args);
     this.db.tx(() => {
-      if (this.db.get('codexResults', operationId)) return;
-      this.db.put('codexResults', operationId, { receipt, reply, task, callId: call.id, fileVersions: data.result?.fileVersions });
-      for (const version of data.result?.fileVersions ?? []) {
-        this.db.put('revisions', hash({ sessionId: t.sessionId, workspaceId: t.workspaceId, path: version.path }), version);
+      if (!this.db.get('codexResults', operationId)) {
+        this.db.put('codexResults', operationId, { receipt, reply, task, callId: call.id, fileVersions: data.result?.fileVersions });
+        for (const version of data.result?.fileVersions ?? []) {
+          this.db.put('revisions', hash({ sessionId: t.sessionId, workspaceId: t.workspaceId, path: version.path }), version);
+        }
+        this.db.append(t.sessionId, { type: 'tool_call', id: call.id, name: call.tool, input: eventInput, status: ok ? 'completed' : 'failed', output: text.slice(0, 8000), engine: 'codex' });
       }
-      this.db.append(t.sessionId, { type: 'tool_call', id: call.id, name: call.tool, input: call.args, status: ok ? 'completed' : 'failed', output: text.slice(0, 8000), engine: 'codex' });
+      this.db.updateTurnCall(t.id, call.id, { operationId, state: ok ? 'completed' : 'failed', ok, counted: true });
     });
     this.host.emit('events', t.sessionId);
     await h.executor.consumeAfterPersist(receipt);
+    this.db.updateTurnCall(t.id, call.id, { consumed: true });
+    if (guard) {
+      const effectiveTool = call.effectiveTool ?? call.tool;
+      const outcome = guard.recordWorkspaceOutcome(effectiveTool, call.inputHash ?? '', ok);
+      if (outcome.circuitTrippedNow) this.emitNoticeOnce(t, guard, outcome.notice);
+      return appendCodexWarning(reply, guard.softWarning(effectiveTool));
+    }
     return reply;
   }
 
@@ -461,7 +586,7 @@ export class CodexTurns {
     const socket = createConnection(this.socketPath);
     const connected = once(socket, 'connect');
     socket.on('error', () => {});
-    const run = { socket, ready: Promise.withResolvers(), end: Promise.withResolvers(), queue: Promise.resolve(), messages: [], thoughts: [], usage: null, context: null, model: null, tools: new Set() };
+    const run = { socket, ready: Promise.withResolvers(), end: Promise.withResolvers(), queue: Promise.resolve(), messages: [], thoughts: [], usage: null, context: null, model: null, tools: new Set(), guard: new TurnToolGuard(this.toolBudget, this.db.listTurnCalls(t.id)) };
     run.end.promise.catch(() => {});
     this.active.set(t.id, run);
     const app = new CodexAppServer({
@@ -620,39 +745,66 @@ export class CodexTurns {
       // interrupt can race turn/completed. The persisted cancel flag governs final status.
       await run.app.call('turn/interrupt', { threadId: run.threadId, turnId: run.turnId }).catch(() => {});
     }
-    if (t?.modelTurnId && t.calls.length) await this.broker(t, 'stopTurn', turnScope(t)).catch(() => {});
+    if (t?.modelTurnId && (this.db.hasTurnCalls(id) || t.calls?.length)) {
+      await this.broker(t, 'stopTurn', turnScope(t)).catch(() => {});
+    }
   }
 
   // On restart reconcile original call IDs only. Never resubmit the user's model turn.
   async reconcile(t) {
     if (t.consumed) return;
-    let hasOperation = false;
-    if (t.calls.length) {
+    const allCalls = this.listTurnCallsWithLegacy(t);
+    const pendingCalls = allCalls.filter(call => !call.consumed);
+    let hasOperation = allCalls.some(call => Boolean(call.operationId));
+    const opIds = new Set(allCalls.map(call => call.operationId).filter(Boolean));
+    if (pendingCalls.length) {
       const h = await this.host.host(t);
-      for (const call of t.calls) {
-        const found = await h.executor.recover(call.id);
+      for (const call of pendingCalls) {
+        const found = await h.executor.recover(call.callId);
         if (!found) {
-          if (!this.db.get('codexUnsubmitted', t.id + ':' + call.id)) this.db.tx(() => {
-            this.db.append(t.sessionId, { type: 'tool_call', id: call.id, name: call.tool, input: call.args, status: 'failed', output: '未提交到设备。', engine: 'codex' });
-            this.db.put('codexUnsubmitted', t.id + ':' + call.id, true);
+          this.db.tx(() => {
+            if (!this.db.get('codexUnsubmitted', t.id + ':' + call.callId)) {
+              this.db.append(t.sessionId, { type: 'tool_call', id: call.callId, name: call.tool, input: boundEventInput(call.argsSummary), status: 'failed', output: '未提交到设备。', engine: 'codex' });
+              this.db.put('codexUnsubmitted', t.id + ':' + call.callId, true);
+            }
+            if (!call.legacy) this.db.updateTurnCall(t.id, call.callId, { state: 'unsubmitted', ok: false, consumed: true, counted: false });
           });
           continue;
         }
         hasOperation = true;
-        const opId = found.operationId, saved = this.db.get('codexResults', opId);
-        if (saved) { await h.executor.consumeAfterPersist(saved.receipt); continue; }
+        const opId = found.operationId;
+        opIds.add(opId);
+        const saved = this.db.get('codexResults', opId);
+        if (saved) {
+          await h.executor.consumeAfterPersist(saved.receipt);
+          if (!call.legacy) {
+            this.db.updateTurnCall(t.id, call.callId, {
+              operationId: opId,
+              state: saved.reply?.success === false ? 'failed' : 'completed',
+              ok: saved.reply?.success !== false,
+              consumed: true,
+              counted: true,
+            });
+          }
+          continue;
+        }
         const result = await h.executor.status(opId);
         if (!result.structuredContent.task.resultReady) {
           await this.broker(t, 'stopTurn', turnScope(t));
           this.save(t.id, { state: result.structuredContent.task.state });
           return;
         }
-        await this.capture(t, call, h, opId, result);
+        await this.capture(t, { id: call.callId, tool: call.tool, effectiveTool: call.effectiveTool, args: call.argsSummary, inputHash: call.inputHash }, h, opId, result);
       }
     }
     if (hasOperation) await this.broker(t, 'reasoningIdle', turnScope(t));
     const latest = this.turn(t.id);
     const state = latest.cancelRequested ? 'cancelled' : latest.modelFinished ? 'succeeded' : 'interrupted';
+    const finalCalls = this.listTurnCallsWithLegacy(latest);
+    const countedCalls = finalCalls.filter(c => c.counted);
+    const toolCalls = countedCalls.length
+      ? { total: countedCalls.length, mutations: countedCalls.filter(c => isMutationTool(c.effectiveTool ?? c.tool)).length }
+      : null;
     this.db.tx(() => {
       if (this.turn(t.id).consumed) return;
       const label = state === 'cancelled' ? '已停止生成。' : 'Codex 回合中断，请查看工具记录后重新发送。';
@@ -663,8 +815,14 @@ export class CodexTurns {
         ...(latest.model ? { model: latest.model } : {}),
         ...(latest.usage ? { usage: latest.usage } : {}),
         ...(latest.context ? { context: latest.context } : {}),
+        ...(toolCalls ? { toolCalls } : {}),
       });
       this.save(t.id, { state, done: true, consumed: true });
+      for (const opId of opIds) this.db.deleteRecord('codexResults', opId);
+      for (const call of finalCalls) {
+        if (call.operationId) this.db.deleteRecord('codexResults', call.operationId);
+        this.db.deleteRecord('codexUnsubmitted', t.id + ':' + call.callId);
+      }
       const s = this.host.session(t.sessionId);
       const contextUsage = latest.context
         ? { used: latest.context.used, window: latest.context.window ?? s.contextUsage?.window ?? null, engine: 'codex', model: latest.model ?? s.contextUsage?.model ?? null, updatedAt: Date.now() }

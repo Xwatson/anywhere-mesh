@@ -968,7 +968,7 @@ D3 的第一轮在同一 Ubuntu VM 内运行两个预置项目、两个 Linux �
 
 ### 12.16 域名入口与当前线路时延（2026-11-18，本地时间）
 
-浏览器直接访问 `https://awc.xbxbe.com/`，飞牛 VM 的 EasyTier 客户端主动连接 `wss://awc.xbxbe.com/easytier`。两者经 Cloudflare 代理到源站 Nginx 的 443 端口。Nginx 将 WebSocket 升级请求转发到源站回环上的 EasyTier 接入服务，将网页和 API 转发到独立的 HTTPS 服务。管理网页使用浏览器系统信任库，设备之间仍使用原有对端公钥固定和隧道内的业务 TLS。SSH 用于部署和运维。
+浏览器直接访问 `https://mesh.example.com/`，飞牛 VM 的 EasyTier 客户端主动连接 `wss://mesh.example.com/easytier`。两者经 Cloudflare 代理到源站 Nginx 的 443 端口。Nginx 将 WebSocket 升级请求转发到源站回环上的 EasyTier 接入服务，将网页和 API 转发到独立的 HTTPS 服务。管理网页使用浏览器系统信任库，设备之间仍使用原有对端公钥固定和隧道内的业务 TLS。SSH 用于部署和运维。
 
 VM 定期在隔离网络外解析指定域名，更新专用容器的 hosts 和允许连接的 IPv4 地址。现场观测到的外层 TCP 对端是 Cloudflare 的 `172.67.219.130:443`，内层访问 `10.203.73.2:18443` 校验证书成功。原来的 31483 端口现仅监听源站回环。公网匿名访问设备管理 API 返回 401，管理员登录后可获取设备列表，WebSocket 握手返回 101。
 
@@ -984,7 +984,7 @@ VM 定期在隔离网络外解析指定域名，更新专用容器的 hosts 和�
 
 ### 12.17 Windows 执行设备只读验收（2026-11-19，本地时间）
 
-飞牛 Windows 10 Enterprise LTSC 2021 x64 虚拟机（192.168.8.210）以普通用户权限运行 Electron 实验客户端。用同一账号登录后，服务端登记设备「Windows · DESKTOP-L0OT7AS」。客户端主动通过 `wss://awc.xbxbe.com/easytier` 连接，使用 EasyTier 无 TUN 模式将本机回环端口转发到美国端的业务 HTTPS/WSS。SSH 负责安装与测试控制。实际文件读取走美国端模拟 CLI、Workspace MCP 和 Windows 本地授权。
+飞牛 Windows 10 Enterprise LTSC 2021 x64 虚拟机（192.168.8.210）以普通用户权限运行 Electron 实验客户端。用同一账号登录后，服务端登记设备「Windows · DESKTOP-L0OT7AS」。客户端主动通过 `wss://mesh.example.com/easytier` 连接，使用 EasyTier 无 TUN 模式将本机回环端口转发到美国端的业务 HTTPS/WSS。SSH 负责安装与测试控制。实际文件读取走美国端模拟 CLI、Workspace MCP 和 Windows 本地授权。
 
 两轮验收均在 Windows 桌面创建或重新打开「Windows VM 只读验收」。Windows 先读取本机生成的随机文本，本机再更新同一个文件。已登录的 Linux 设备 A 向原会话发送相同读取指令，返回内容的 SHA-256 与 Windows 上的新值一致。两次独立启动沿用同一个设备、工作区与会话编号。设备 A 尝试更改 Windows 项目权限时收到拒绝。Windows 退出后，A 看到目标离线，再发送会被拒绝。
 
@@ -1009,7 +1009,7 @@ Windows 每次在项目中生成一行新的随机文本，提示词只包含文
 
 美国实验服务按 Anywhere 会话保存 Codex 线程编号。用户在桌面或网页向已绑定设备的会话发消息，首问创建线程，后续消息恢复原线程。服务端验证账号、设备、项目和当前本机授权，再用 Codex 返回的调用编号签发 Workspace MCP 票据。操作结果持久化后向设备确认消费。独立的普通系统用户运行已登录的 Codex，通过 Unix 套接字接收实验服务的请求。桌面客户端只需登录 Anywhere 账号。[Codex app-server 协议](https://learn.chatgpt.com/docs/app-server)
 
-Windows 10 Enterprise LTSC 2021 x64 虚拟机通过 NSIS 安装了 **Anywhere Coding Lab 0.2.0**。程序、桌面与开始菜单快捷方式、当前用户卸载项均已核对。可执行文件放在 `%LOCALAPPDATA%\Programs\Anywhere Coding Lab`，设备身份和工作区沿用 `%LOCALAPPDATA%\AnywhereCodingLab`。该机已配置连接 `awc.xbxbe.com` 的 EasyTier 实验网络。全新机器仍需单独的网络配置，安装包目前未签名。
+Windows 10 Enterprise LTSC 2021 x64 虚拟机通过 NSIS 安装了 **Anywhere Coding Lab 0.2.0**。程序、桌面与开始菜单快捷方式、当前用户卸载项均已核对。可执行文件放在 `%LOCALAPPDATA%\Programs\Anywhere Coding Lab`，设备身份和工作区沿用 `%LOCALAPPDATA%\AnywhereCodingLab`。该机已配置连接 `mesh.example.com` 的 EasyTier 实验网络。全新机器仍需单独的网络配置，安装包目前未签名。
 
 Windows 验收通过系统 UI Automation 从桌面快捷方式启动普通窗口，填写账号密码、授予只读、新建绑定本机的会话。首问只发临时文件名，核对模型答复与本机随机原文一致。随后删除文件，再要求从上一条回答取末八个字符，核对命中同一线程且设备没有第二次读取。Linux 另外验证了在服务重启后继续已有线程，并在真实模型开始生成后停止回合。发生中断的回合对已有操作编号做核对，模型中途断连后的完整输出续传仍待验证。[安装与复测](../experimental/account-devices/windows/README.md)
 

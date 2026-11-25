@@ -186,6 +186,8 @@ input:focus-visible, select:focus-visible { border-color: var(--accent); box-sha
 #app.folded .topbar-update-pill:not([hidden]) { display: inline-flex; }
 .signin-update-btn { margin-top: 10px; min-height: 36px; font-size: 12.5px; color: var(--accent); border-color: color-mix(in srgb, var(--accent) 35%, var(--line)); background: var(--accent-fill); }
 .signin-update-btn .icon { width: 15px; height: 15px; color: var(--accent); }
+.server-url-field { display: grid; }
+.server-url-field[hidden] { display: none; }
 .menu-badge { margin-left: auto; padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 580; background: var(--bubble); color: var(--muted); }
 .menu-badge.accent { background: var(--accent-fill); color: var(--accent); }
 .menu-row .menu-badge + .icon { margin-left: 6px; }
@@ -414,6 +416,12 @@ input:focus-visible, select:focus-visible { border-color: var(--accent); box-sha
 .ctx-compact-status.ok { color: var(--online); }
 .context-compacted { display: flex; align-items: center; justify-content: center; gap: 6px; margin: 4px 0; padding: 5px 12px; border-radius: 999px; background: var(--bubble); border: 1px solid var(--soft-line); color: var(--muted); font-size: 12px; width: fit-content; justify-self: center; }
 .context-compacted .icon { width: 13px; height: 13px; color: var(--accent); }
+.turn-notice { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 10px; background: var(--warning-bg); border: 1px solid color-mix(in srgb, var(--warning) 28%, transparent); color: var(--warning); font-size: 12.5px; line-height: 1.5; }
+.turn-notice .icon { flex: none; width: 16px; height: 16px; }
+.turn-notice-body { display: grid; gap: 2px; flex: 1 1 auto; min-width: 0; }
+.turn-notice-body strong { font-weight: 600; color: var(--warning); }
+.turn-notice-body span { color: var(--text); font-size: 12px; }
+.turn-continue-btn { flex: none; min-height: 30px; padding: 4px 11px; font-size: 12px; border-radius: 8px; white-space: nowrap; }
 .thinking-step { color: var(--muted); font-size: 12.5px; }
 .thinking-step summary { width: fit-content; display: flex; align-items: center; gap: 6px; cursor: pointer; padding: 3px 6px; margin-left: -6px; border-radius: 6px; list-style: none; }
 .thinking-step summary::-webkit-details-marker { display: none; }

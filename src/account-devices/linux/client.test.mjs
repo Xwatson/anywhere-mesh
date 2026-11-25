@@ -32,7 +32,7 @@ test('LinuxClient workspacePath protects root and private paths, and sessionConf
   const { certPath } = makeCert(dir);
 
   const client = new LinuxClient(
-    { name: 'Linux Test', url: 'https://awc.xbxbe.com', ca: certPath, stateDir: secretSub, projects: [{ label: 'Default', path: defaultProj }] },
+    { name: 'Linux Test', url: 'https://mesh.example.com', ca: certPath, stateDir: secretSub, projects: [{ label: 'Default', path: defaultProj }] },
     linuxWorkspace(),
     { peer: { child: null, stop: async () => {} }, privatePaths: [root] },
   );
@@ -54,9 +54,9 @@ test('LinuxClient workspacePath protects root and private paths, and sessionConf
     { name: 'mesh-net', serverKey: key, credential: key, ipv4: '10.203.73.10/24', expiresAt: Date.now() + 60000 },
     '11111111-2222-3333-4444-555555555555',
     41234,
-    'https://awc.xbxbe.com',
+    'https://mesh.example.com',
   );
-  assert.match(toml, /uri = "wss:\/\/awc\.xbxbe\.com\/easytier"/);
+  assert.match(toml, /uri = "wss:\/\/mesh\.example\.com\/easytier"/);
   assert.match(toml, /no_tun = true/);
   assert.match(toml, /bind_addr = "127\.0\.0\.1:41234"/);
 });
@@ -81,7 +81,7 @@ test('LinuxClient negotiates direct HTTPS/WSS transport without starting EasyTie
   let seenNetworkReq = null;
   const progress = [];
   const client = new LinuxClient(
-    { name: 'Linux Direct', url: 'https://awc.xbxbe.com', ca: certPath, stateDir, projects: [{ label: 'Default', path: defaultProj }] },
+    { name: 'Linux Direct', url: 'https://mesh.example.com', ca: certPath, stateDir, projects: [{ label: 'Default', path: defaultProj }] },
     { ...linuxWorkspace(), onStream: evt => progress.push(evt) },
     {
       peer,
@@ -100,7 +100,7 @@ test('LinuxClient negotiates direct HTTPS/WSS transport without starting EasyTie
   assert.equal(peerStarts, 0);
   assert.equal(client.directMode, true);
   assert.equal(client.tunnelReady, true);
-  assert.equal(client.cfg.url, 'https://awc.xbxbe.com');
+  assert.equal(client.cfg.url, 'https://mesh.example.com');
   assert.ok(progress.some(e => e.type === 'connect_progress' && e.payload?.phase === 'tunnel_readiness' && e.payload?.status === 'done'));
 
   // Transient HTTP failures in direct mode must never fall through to peer.ready()

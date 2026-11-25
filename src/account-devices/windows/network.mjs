@@ -6,20 +6,22 @@ import { dirname, join } from 'node:path';
 import tls from 'node:tls';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { normalizeServerUrl } from '../server-config.mjs';
 
-export const service = 'https://awc.xbxbe.com';
 const key = /^[A-Za-z0-9+/]{43}=$/;
-export function sessionConfig(profile, deviceId, port) {
+export function sessionConfig(profile, deviceId, port, serverUrl) {
   const slot = /^10\.203\.73\.(\d{1,3})\/24$/.exec(profile.ipv4)?.[1];
   if (!/^[\da-f]{8}(-[\da-f]{4}){3}-[\da-f]{12}$/.test(deviceId) ||
       !/^[\w-]{1,64}$/.test(profile.name) || !key.test(profile.serverKey) || !key.test(profile.credential) ||
       !Number.isSafeInteger(profile.expiresAt) || !slot || Number(slot) < 4 || Number(slot) > 254 ||
       !Number.isInteger(port) || port < 1 || port > 65535) throw Error('NETWORK_ENROLLMENT_UNAVAILABLE');
+  const normalizedUrl = normalizeServerUrl(serverUrl);
+  const wsUri = normalizedUrl.replace(/^https:/i, 'wss:') + '/easytier';
   const sections = [
     ['', {credential_file:'network-server.json', instance_name:'win-'+deviceId, instance_id:deviceId, hostname:'win-'+deviceId.slice(0,8),
       dhcp:false, ipv4:profile.ipv4, listeners:[], stun_servers:[], stun_servers_v6:[]}],
     ['[network_identity]', {network_name:profile.name}],
-    ['[[peer]]', {uri:'wss://awc.xbxbe.com/easytier', peer_public_key:profile.serverKey}],
+    ['[[peer]]', {uri:wsUri, peer_public_key:profile.serverKey}],
     ['[[port_forward]]', {bind_addr:'127.0.0.1:'+port, dst_addr:'10.203.73.2:18443', proto:'tcp'}],
     ['[flags]', {default_protocol:'wss', enable_encryption:true, enable_ipv6:false, disable_p2p:true, need_p2p:false,
       disable_udp_hole_punching:true, disable_tcp_hole_punching:true, disable_sym_hole_punching:true, disable_upnp:true,
@@ -56,9 +58,12 @@ function probe(port,ca) {
   });
 }
 export class WindowsPeer {
-  constructor(root,ca) {
-    this.root = root; this.ca = ca;
+  constructor(root,ca,serverUrl=null) {
+    this.root = root; this.ca = ca; this.serverUrl = serverUrl;
     this.legacy = existsSync(join(root,'windows.toml'));
+  }
+  setServerUrl(url) {
+    this.serverUrl = url ? normalizeServerUrl(url) : null;
   }
   async start(profile,deviceId,restart=false) {
     if (!restart && this.child && (!profile || this.credential===profile.credential)) return;
@@ -68,7 +73,7 @@ export class WindowsPeer {
       await freePort(31897);
     } else {
       this.port = await freePort(0);
-      const data = sessionConfig(profile,deviceId,this.port);
+      const data = sessionConfig(profile,deviceId,this.port,this.serverUrl);
       // EasyTier 2.6.4 checks both the connector pin and its local trust store
       // before the first route exchange. This record contains only the server public key.
       const trust = {server:{pubkey:profile.serverKey, groups:[], allow_relay:false, allowed_proxy_cidrs:[],

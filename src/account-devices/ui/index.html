@@ -77,6 +77,10 @@
   <form id="login">
     <div class="hero-mark login-mark" aria-hidden="true"><span class="brand-mark" aria-hidden="true"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-terminal"></use></svg></span></div>
     <h1>登录 AnywhereMesh</h1><p id="entry" class="muted"></p>
+    <div id="server-url-field" class="server-url-field" hidden>
+      <label for="server-url">服务器地址</label>
+      <input id="server-url" type="text" inputmode="url" autocomplete="url" spellcheck="false" maxlength="255" placeholder="例如 https://mesh.example.com">
+    </div>
     <label for="username">账号</label><input id="username" autocomplete="username" required maxlength="32" placeholder="输入账号">
     <label for="password">密码</label><input id="password" type="password" autocomplete="current-password" required maxlength="200" placeholder="输入密码">
     <p id="login-error" role="alert" class="inline-error"></p>

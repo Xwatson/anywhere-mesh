@@ -39,11 +39,14 @@ export async function startServer(config) {
         stateDir, accountId: String(id), requireDeviceBinding: true, workspaces: [],
         mcpPath: config.mcpPath, launchLimiter, workspaceLocks,
       });
-      if (CodexTurns) host.codex = new CodexTurns(host, config.codexSocket, config.codexCwd);
+      if (CodexTurns) host.codex = new CodexTurns(host, config.codexSocket, config.codexCwd, {
+        toolBudget: config.toolBudget,
+      });
       if (AntigravityTurns) host.antigravity = new AntigravityTurns(host, config.antigravitySocket, config.antigravityCwd, {
         bridgePath: config.antigravityMcpBridge,
         nodePath: config.nodePath,
         mcpDir: config.antigravityMcpDir,
+        toolBudget: config.toolBudget,
       });
       accounts.set(id, host);
     }

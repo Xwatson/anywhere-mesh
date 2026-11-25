@@ -8,7 +8,6 @@ import https from 'node:https';
 import { dirname, isAbsolute, join, posix, resolve, sep } from 'node:path';
 import { gunzipSync, gzipSync } from 'node:zlib';
 
-export const DEFAULT_UPDATE_BASE_URL = 'https://awc.xbxbe.com';
 export const DEFAULT_UPDATE_PUBLIC_KEY = [
   '-----BEGIN PUBLIC KEY-----',
   'MCowBQYDK2VwAyEASe+UuqTpJBN7o97l68uoARc5R/TERfZOj09hompXErM=',
@@ -331,7 +330,7 @@ function httpGetRaw(url, { tls = {}, timeoutMs = 20000, signal, allowHttpLocalho
   });
 }
 
-export async function fetchManifest(baseUrl = DEFAULT_UPDATE_BASE_URL, {
+export async function fetchManifest(baseUrl, {
   manifestPath = '/updates/manifest.json',
   publicKeyPem = DEFAULT_UPDATE_PUBLIC_KEY,
   tls = {},
@@ -339,6 +338,7 @@ export async function fetchManifest(baseUrl = DEFAULT_UPDATE_BASE_URL, {
   signal,
   allowHttpLocalhost = false,
 } = {}) {
+  if (typeof baseUrl !== 'string' || !baseUrl.trim()) throw Error('UPDATE_SERVER_UNCONFIGURED');
   const url = resolveSafeArtifactUrl(baseUrl, manifestPath, { allowHttpLocalhost });
   const deadline = AbortSignal.timeout(timeoutMs);
   const combined = signal ? AbortSignal.any([signal, deadline]) : deadline;

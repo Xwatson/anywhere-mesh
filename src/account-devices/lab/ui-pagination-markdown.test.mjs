@@ -358,7 +358,7 @@ test('highlightCode tokenizes TS, JSON, Bash, HTML and Diff while preserving ver
     assert.deepEqual(jsonEl.tokens('tok-string'), ['"0.4.14"']);
     assert.deepEqual(jsonEl.tokens('tok-number'), ['42', 'true']);
 
-    const shSrc = '# deploy\nexport PORT=8080\nssh root@198.84.90.137 "systemctl restart $SVC"';
+    const shSrc = '# deploy\nexport PORT=8080\nssh root@203.0.113.10 "systemctl restart $SVC"';
     const shEl = new MiniNode('code');
     highlightCode(shEl, shSrc, 'bash');
     assert.equal(shEl.textContent, shSrc);
@@ -382,6 +382,83 @@ test('highlightCode tokenizes TS, JSON, Bash, HTML and Diff while preserving ver
     assert.equal(diffEl.tokens('tok-hunk').length, 1);
     assert.equal(diffEl.tokens('tok-del').length, 1);
     assert.equal(diffEl.tokens('tok-add').length, 1);
+  } finally {
+    globalThis.document = prevDoc;
+  }
+});
+
+test('renderThread renders turn_notice banner with latest-only continue button and toolCalls metadata in turn_end', () => {
+  class MiniNode {
+    constructor(tag) {
+      this.localName = tag;
+      this.className = '';
+      this.dataset = {};
+      this.attributes = {};
+      this.children = [];
+      this._text = '';
+    }
+    set textContent(v) { this._text = String(v); this.children = []; }
+    get textContent() { return this._text + this.children.map(c => (typeof c === 'string' ? c : c.textContent)).join(''); }
+    setAttribute(k, v) { this.attributes[k] = String(v); }
+    append(...items) {
+      for (const it of items) {
+        if (typeof it === 'string') { if (it) this.children.push(it); }
+        else if (it?.localName === '#fragment') this.children.push(...it.children);
+        else if (it) this.children.push(it);
+      }
+    }
+    replaceChildren(...items) { this.children = []; this._text = ''; this.append(...items); }
+    querySelectorAll(pred) {
+      if (typeof pred === 'string') return [];
+      const out = [];
+      const visit = n => {
+        if (!n || typeof n === 'string') return;
+        if (pred(n)) out.push(n);
+        for (const c of n.children || []) visit(c);
+      };
+      visit(this);
+      return out;
+    }
+  }
+  const prevDoc = globalThis.document;
+  globalThis.document = {
+    createElement: tag => new MiniNode(tag),
+    createElementNS: (_ns, tag) => new MiniNode(tag),
+    createTextNode: str => String(str),
+    createDocumentFragment: () => new MiniNode('#fragment'),
+  };
+  try {
+    const container = new MiniNode('div');
+    renderThread(container, [
+      { seq: 1, event: { type: 'user_message', text: '旧回合' } },
+      { seq: 2, event: { type: 'turn_notice', code: 'tool_limit', title: '旧上限提示', detail: '旧详情', canContinue: true } },
+      { seq: 3, event: { type: 'turn_end', ok: true, model: 'gpt-5.4', durationMs: 1200, toolCalls: { total: 75, mutations: 12 } } },
+      { seq: 4, event: { type: 'user_message', text: '新回合' } },
+      { seq: 5, event: { type: 'turn_notice', code: 'mutation_limit', title: '写/执行调用已达本回合上限', detail: '已执行 120/120 次写/执行调用', canContinue: true } },
+      { seq: 6, event: { type: 'turn_end', ok: true, model: 'gemini-4-neon', durationMs: 2500, toolCalls: { total: 130, mutations: 120 } } },
+    ], { isWeb: true, hasActiveTurn: false });
+
+    const notices = container.querySelectorAll(n => n.className === 'turn-notice');
+    assert.equal(notices.length, 2);
+    // Older turn notice has a subsequent user_message, so it must NOT render a continue button
+    assert.equal(notices[0].querySelectorAll(n => n.className.includes('turn-continue-btn')).length, 0);
+    // Latest turn notice renders an enabled continue button
+    const latestBtns = notices[1].querySelectorAll(n => n.className.includes('turn-continue-btn'));
+    assert.equal(latestBtns.length, 1);
+    assert.equal(latestBtns[0].disabled, undefined);
+    assert.match(latestBtns[0].dataset.continuePrompt, /继续/);
+
+    const metas = container.querySelectorAll(n => n.className === 'turn-meta').map(n => n.textContent);
+    assert.ok(metas[0].includes('75 次工具'));
+    assert.ok(metas[1].includes('130 次工具'));
+
+    // While turn is still active (no trailing turn_end), button is disabled
+    renderThread(container, [
+      { seq: 1, event: { type: 'user_message', text: '进行中' } },
+      { seq: 2, event: { type: 'turn_notice', code: 'tool_limit', title: '上限', detail: '详情', canContinue: true } },
+    ], { isWeb: true, hasActiveTurn: true });
+    const activeBtn = container.querySelectorAll(n => n.className.includes('turn-continue-btn'))[0];
+    assert.equal(activeBtn.disabled, true);
   } finally {
     globalThis.document = prevDoc;
   }

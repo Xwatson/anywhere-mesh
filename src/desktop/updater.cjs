@@ -90,7 +90,10 @@ class DesktopUpdater {
     this.canInstall = Boolean(opts.canInstall);
     this.platform = opts.platform || process.platform;
     this.arch = opts.arch || process.arch;
-    this.updateBaseUrl = (opts.updateBaseUrl || process.env.ANYWHERE_MESH_UPDATE_URL || 'https://awc.xbxbe.com').replace(/\/+$/, '');
+    const savedServer = readJsonSafe(join(this.dataRoot, 'server.json'))?.serverUrl;
+    const pkg = readJsonSafe(join(this.appDir, 'package.json')) || {};
+    const rawBase = opts.updateBaseUrl || process.env.ANYWHERE_MESH_UPDATE_URL || savedServer || process.env.ANYWHERE_MESH_URL || pkg.defaultServerUrl || '';
+    this.updateBaseUrl = typeof rawBase === 'string' && rawBase.trim() ? rawBase.trim().replace(/\/+$/, '') : null;
     this.publicKeyPem = opts.publicKeyPem || process.env.ANYWHERE_MESH_UPDATE_PUBKEY || null;
     this.allowHttpLocalhost = Boolean(opts.allowHttpLocalhost || process.env.ANYWHERE_MESH_UPDATE_ALLOW_HTTP === '1');
     this.getExtraPids = opts.getExtraPids || (() => []);
@@ -103,7 +106,6 @@ class DesktopUpdater {
     this.runnerDir = join(this.updatesDir, 'runner');
     this.logFile = join(this.updatesDir, 'update.log');
 
-    const pkg = readJsonSafe(join(this.appDir, 'package.json')) || {};
     this.currentVersion = typeof pkg.version === 'string' ? pkg.version.trim() : '0.0.0';
     this.runtimeAbi = typeof pkg.runtimeAbi === 'string' && pkg.runtimeAbi.trim() ? pkg.runtimeAbi.trim() : null;
 
@@ -282,8 +284,28 @@ class DesktopUpdater {
     try { this.onStateChange(this.snapshot()); } catch {}
   }
 
+  setBaseUrl(url) {
+    if (process.env.ANYWHERE_MESH_UPDATE_URL) return;
+    if (typeof url !== 'string' || !url.trim()) return;
+    const next = url.trim().replace(/\/+$/, '');
+    if (next === this.updateBaseUrl) return;
+    this.updateBaseUrl = next;
+    this.emit();
+    if (!this.destroyed && this.persisted?.autoCheck && !this.checkInFlight && !this.downloadInFlight && this.status !== 'ready') {
+      void this.check({ manual: false }).catch(() => {});
+    }
+  }
+
   async check({ manual = false } = {}) {
     if (!this.core) await this.init();
+    if (!this.updateBaseUrl) {
+      if (manual) {
+        this.status = 'error';
+        this.error = 'UPDATE_SERVER_UNCONFIGURED';
+        this.emit();
+      }
+      return this.snapshot();
+    }
     if (this.downloadInFlight) return this.snapshot();
     if (this.checkInFlight) return this.checkInFlight;
 

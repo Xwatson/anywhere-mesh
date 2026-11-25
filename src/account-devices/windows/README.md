@@ -7,7 +7,7 @@
 1. 双击桌面或开始菜单的 **AnywhereMesh**，首次打开即显示账号登录页。账号验证通过后，客户端保存登录并自动配置本机连接。领取连接配置、建立 EasyTier 连接或同步账号状态暂时失败时，会沿用该登录自动重试。
 2. 在首页直接输入「请读取 notes.txt 的第一行」，按 Enter 发送。首次使用时选择项目权限并确认发送，默认选中「只读」。会话绑定本机，并用首条消息命名。取消授权会保留草稿。Shift+Enter 可以换行。
 3. 左侧按项目列出会话，Ctrl+K 可按会话名、项目或设备搜索。标题栏显示执行设备和在线状态。工具操作可展开查看原始返回，选中文字后可右键复制或按 Ctrl+C。在其他电脑打开同一会话时，页面会提示它绑定的设备。
-4. 首次安装的默认项目为 `%LOCALAPPDATA%\AnywhereMesh\project`。新对话中点击输入框下方的项目按钮，再点 **选择文件夹…**，可以登记并选用本机固定磁盘上的其他项目。首条消息把会话绑定到所选项目。新登记的项目初始为「未授权」，可按需授权只读、编辑或完全访问。左下角账户菜单提供退出登录，管理员还可查看所有设备和绑定会话。[打开服务端管理页](https://awc.xbxbe.com/?view=devices)
+4. 首次安装的默认项目为 `%LOCALAPPDATA%\AnywhereMesh\project`。新对话中点击输入框下方的项目按钮，再点 **选择文件夹…**，可以登记并选用本机固定磁盘上的其他项目。首条消息把会话绑定到所选项目。新登记的项目初始为「未授权」，可按需授权只读、编辑或完全访问。左下角账户菜单提供退出登录，管理员还可查看所有设备和绑定会话。[打开服务端管理页](https://mesh.example.com/?view=devices)
 5. 更改密码时，点左下角账号名 → **更改密码**，输入当前密码和两次新密码，再点 **保存密码**。当前登录保留，其他客户端需要用新密码重新登录。
 
 ## 关闭、重开和注销
@@ -26,7 +26,7 @@
 
 ## 传输与文件工具
 
-新安装先通过 `https://awc.xbxbe.com` 登录。服务端只向持有有效设备登录令牌的客户端签发独立的 EasyTier 2.6.4 凭据，分配虚拟地址，并返回服务端公钥。客户端固定该公钥，自动建立到 `wss://awc.xbxbe.com/easytier` 的用户态连接。业务 HTTPS、WSS 和 Workspace MCP 经本机回环端口转发到 `10.203.73.2:18443`，另行验证实验 CA。入网凭据只交给本次网络子进程。退出登录、停用设备或登录到期后，服务端回收该凭据和地址。SSH 用于部署和驱动测试。桌面拥有网络进程的生命周期，后端退出会关闭控制管道，Windows Job Object 负责监督进程异常终止时的回收。[EasyTier 无 TUN 模式](https://easytier.cn/en/guide/network/no-root.html) 和 [端口转发](https://easytier.cn/en/guide/network/port-forward.html)
+新安装先通过 `https://mesh.example.com` 登录。服务端只向持有有效设备登录令牌的客户端签发独立的 EasyTier 2.6.4 凭据，分配虚拟地址，并返回服务端公钥。客户端固定该公钥，自动建立到 `wss://mesh.example.com/easytier` 的用户态连接。业务 HTTPS、WSS 和 Workspace MCP 经本机回环端口转发到 `10.203.73.2:18443`，另行验证实验 CA。入网凭据只交给本次网络子进程。退出登录、停用设备或登录到期后，服务端回收该凭据和地址。SSH 用于部署和驱动测试。桌面拥有网络进程的生命周期，后端退出会关闭控制管道，Windows Job Object 负责监督进程异常终止时的回收。[EasyTier 无 TUN 模式](https://easytier.cn/en/guide/network/no-root.html) 和 [端口转发](https://easytier.cn/en/guide/network/port-forward.html)
 
 客户端复用 Linux 桌面的 Electron 界面、账号协议、设备身份、项目授权和操作日志。美国端 Codex 通过会话绑定的 Workspace MCP 调用工具。Windows 读取器逐段打开本地路径，从已校验的文件句柄读取至多 1 MiB 的 UTF-8 文本。目录联接、重解析点和多硬链接文件会被拒绝。Desktop Commander 0.3.3 的 `TextFileHandler.read` 对私有快照执行分页。服务端按设备实际支持的工具生成 MCP 清单。[Desktop Commander 源码](https://github.com/wonderwhy-er/DesktopCommanderMCP/tree/bce370e9395f5bc74eda34913e5ae1dee48df8f8)
 
@@ -55,7 +55,7 @@ python3 src/account-devices/windows/package-installer.py \
 ```sh
 python3 source/src/account-devices/windows/verify-installed.py --project-access \
   xwatson@192.168.8.210 /home/xwatson/.ssh/id_rsa \
-  secrets/wan-198.84.90.137/accounts.json artifacts/windows-installer/0.3.5
+  secrets/wan-203.0.113.10/accounts.json artifacts/windows-installer/0.3.5
 ```
 
 用 `--remember-login` 可以验证关闭应用后的自动登录、历史恢复、主动注销和服务端撤销。用 `--fresh` 替换 `--project-access` 可以同时复测错误密码的首次登录流程。
@@ -80,7 +80,7 @@ python3 src/account-devices/windows/prepare-peer.py client.toml windows.toml
 ```sh
 python3 source/src/account-devices/windows/verify.py \
   xwatson@192.168.8.210 /home/xwatson/.ssh/id_rsa scripts/ssh-guest.sh \
-  secrets/wan-198.84.90.137/accounts.json artifacts/windows-read
+  secrets/wan-203.0.113.10/accounts.json artifacts/windows-read
 ```
 
 Windows 首先发起真实读取，然后在项目内更新本次测试创建的文件。Linux 设备通过自己的登录连接，在同一会话再次读取。验收比较新内容的 SHA-256，并检查远端提权、只读写入、撤销后的读取及离线发送均被拒绝。每次复测生成独立的 JSON 报告和原生桌面截图。另可运行 `read.test.mjs` 检查 Windows 文件边界、授权、离线 npm 构建、写回冲突和取消，运行 `check-peer.ps1` 验证异常退出后的进程与端口回收。

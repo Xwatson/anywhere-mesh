@@ -154,9 +154,9 @@ test('selectUpdateArtifact chooses bundle on matching runtimeAbi, falls back to 
   assert.equal(blocked.blockedByFailure, true);
 
   // Origin / scheme safety
-  assert.equal(resolveSafeArtifactUrl('https://awc.xbxbe.com', '/updates/a.tar.gz').href, 'https://awc.xbxbe.com/updates/a.tar.gz');
-  assert.throws(() => resolveSafeArtifactUrl('https://awc.xbxbe.com', 'https://evil.example/a.tar.gz'), /UNTRUSTED_UPDATE_ORIGIN/);
-  assert.throws(() => resolveSafeArtifactUrl('http://awc.xbxbe.com', '/updates/a.tar.gz'), /INSECURE_UPDATE_URL/);
+  assert.equal(resolveSafeArtifactUrl('https://mesh.example.com', '/updates/a.tar.gz').href, 'https://mesh.example.com/updates/a.tar.gz');
+  assert.throws(() => resolveSafeArtifactUrl('https://mesh.example.com', 'https://evil.example/a.tar.gz'), /UNTRUSTED_UPDATE_ORIGIN/);
+  assert.throws(() => resolveSafeArtifactUrl('http://mesh.example.com', '/updates/a.tar.gz'), /INSECURE_UPDATE_URL/);
 });
 
 test('extractTarGzStrict extracts valid entries (including PAX long paths) and blocks traversal & symlinks', t => {
@@ -520,4 +520,51 @@ test('linux-agent.mjs --check-update verifies signed manifest and prints update 
   });
   assert.match(out, /Update available:.*-> v9\.9\.9/);
   assert.match(out, /CLI 自动更新测试条目/);
+});
+
+test('server-config normalizes & persists serverUrl, contract validates login.serverUrl, and updater follows dynamic serverUrl', async t => {
+  const { loadSavedServerUrl, normalizeServerUrl, saveServerUrl } = await import('../../account-devices/server-config.mjs');
+  assert.equal(normalizeServerUrl('mesh.example.com'), 'https://mesh.example.com');
+  assert.equal(normalizeServerUrl('https://mesh.example.com:8443/'), 'https://mesh.example.com:8443');
+  assert.throws(() => normalizeServerUrl('http://mesh.example.com'), /INVALID_SERVER_URL/);
+  assert.throws(() => normalizeServerUrl('https://user:pass@mesh.example.com'), /INVALID_SERVER_URL/);
+  assert.throws(() => normalizeServerUrl('https://mesh.example.com/subpath'), /INVALID_SERVER_URL/);
+  assert.throws(() => normalizeServerUrl(''), /INVALID_SERVER_URL/);
+
+  const dir = mkdtempSync(join(tmpdir(), 'anywhere-srvcfg-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  assert.equal(loadSavedServerUrl(dir), null);
+  saveServerUrl(dir, 'mesh.example.com');
+  assert.equal(loadSavedServerUrl(dir), 'https://mesh.example.com');
+
+  // Contract validates optional login.serverUrl strictly
+  assert.doesNotThrow(() => deviceContract.validate('login', { username: 'alice', password: 'secret-password', serverUrl: 'mesh.example.com' }));
+  assert.doesNotThrow(() => deviceContract.validate('login', { username: 'alice', password: 'secret-password', serverUrl: 'https://mesh.example.com:8443' }));
+  assert.throws(() => deviceContract.validate('login', { username: 'alice', password: 'secret-password', serverUrl: 'http://mesh.example.com' }), /INVALID_SERVER_URL/);
+  assert.throws(() => deviceContract.validate('login', { username: 'alice', password: 'secret-password', serverUrl: 'https://mesh.example.com/api' }), /INVALID_SERVER_URL/);
+
+  // DesktopUpdater without configured serverUrl stays quiet in background and reports UPDATE_SERVER_UNCONFIGURED on manual check
+  const appDir = join(dir, 'app');
+  mkdirSync(appDir, { recursive: true });
+  writeFileSync(join(appDir, 'package.json'), JSON.stringify({ name: 'anywhere-mesh', version: '0.4.14', main: 'src/desktop/main.cjs' }));
+  const emptyData = join(dir, 'empty-data');
+  const updater = new DesktopUpdater({
+    dataRoot: emptyData,
+    appDir,
+    nodeBin: process.execPath,
+    relaunchExe: process.execPath,
+    canInstall: false,
+  });
+  await updater.init();
+  assert.equal(updater.updateBaseUrl, null);
+  const bg = await updater.check({ manual: false });
+  assert.equal(bg.status, 'idle');
+  const man = await updater.check({ manual: true });
+  assert.equal(man.status, 'error');
+  assert.equal(man.error, 'UPDATE_SERVER_UNCONFIGURED');
+
+  // Calling setBaseUrl dynamically updates the updater origin
+  updater.setBaseUrl('https://selfhosted.example.com/');
+  assert.equal(updater.updateBaseUrl, 'https://selfhosted.example.com');
+  updater.dispose();
 });

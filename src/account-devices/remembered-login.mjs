@@ -16,7 +16,8 @@ export function rememberedLogin(stateDir, installation, service, protection) {
     return record?.version === 1 && record.binding === binding &&
       typeof record.token === 'string' && token.test(record.token) &&
       typeof record.deviceId === 'string' && deviceId.test(record.deviceId) &&
-      Number.isSafeInteger(record.userId) && record.userId > 0;
+      Number.isSafeInteger(record.userId) && record.userId > 0 &&
+      (record.serverUrl === undefined || (typeof record.serverUrl === 'string' && record.serverUrl.length <= 255 && /^https:\/\/[^/\s]+$/.test(record.serverUrl)));
   }
   return {
     clear,
@@ -34,7 +35,14 @@ export function rememberedLogin(stateDir, installation, service, protection) {
       return null;
     },
     save(signed) {
-      const record = {version:1, binding, deviceId:signed.deviceId, userId:signed.user.id, token:signed.token};
+      const record = {
+        version: 1,
+        binding,
+        deviceId: signed.deviceId,
+        userId: signed.user.id,
+        token: signed.token,
+        ...(signed.serverUrl ? { serverUrl: signed.serverUrl } : {}),
+      };
       if (!valid(record)) throw Error('INVALID_DEVICE_LOGIN');
       const plain = Buffer.from(JSON.stringify(record));
       const bytes = protection ? protection.seal(plain) : plain;

@@ -33,7 +33,7 @@ WIN_FILES = {
     "execution": ["agent.mjs", "grants.mjs", "journal.mjs", "protocol.mjs", "retention.mjs", "rpc.mjs"],
     "workspace": ["patch.mjs"],
     "account-devices": [
-        "client.mjs", "remembered-login.mjs", "contract.cjs", "preload.cjs",
+        "client.mjs", "remembered-login.mjs", "server-config.mjs", "contract.cjs", "preload.cjs",
         "ui/index.html", "ui/app.js", "ui/thread.js", "ui/session-cache.js", "ui/style.css",
         "ui/manifest.webmanifest", "ui/sw.js", "ui/icon-192.png", "ui/icon-512.png",
         "windows/controller.mjs", "windows/client.mjs", "windows/network.mjs", "windows/read.mjs", "windows/tasks.mjs",
@@ -46,7 +46,7 @@ LINUX_FILES = {
     "execution": ["agent.mjs", "grants.mjs", "journal.mjs", "protocol.mjs", "retention.mjs", "rpc.mjs"],
     "workspace": ["patch.mjs", "catalog.mjs"],
     "account-devices": [
-        "client.mjs", "remembered-login.mjs", "contract.cjs", "preload.cjs",
+        "client.mjs", "remembered-login.mjs", "server-config.mjs", "contract.cjs", "preload.cjs",
         "linux-agent.mjs", "linux-workspace.mjs",
         "linux/network.mjs", "linux/client.mjs", "linux/controller.mjs",
         "linux/agent.sh", "linux/anywhere-mesh-agent.service.example",
@@ -201,7 +201,7 @@ def main():
     parser.add_argument("--notes-file", type=Path, default=None, help="Path to release notes markdown file")
     parser.add_argument("--win-installer", type=Path, default=None, help="Optional full Windows Setup.exe")
     parser.add_argument("--linux-archive", type=Path, default=None, help="Optional full Linux x64 tar.gz")
-    parser.add_argument("--deploy-ssh", default=None, help="Optional SSH target (e.g. root@198.84.90.137)")
+    parser.add_argument("--deploy-ssh", default=None, help="Optional SSH target (e.g. root@mesh.example.com)")
     parser.add_argument("--remote-dir", default="/var/lib/anywhere-wan/updates", help="Remote updates directory")
     args = parser.parse_args()
 

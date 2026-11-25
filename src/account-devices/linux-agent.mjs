@@ -7,7 +7,8 @@ import { basename, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { DeviceClient, request } from './client.mjs';
 import { linuxWorkspace } from './linux-workspace.mjs';
-import { LinuxPeer, service } from './linux/network.mjs';
+import { LinuxPeer } from './linux/network.mjs';
+import { loadSavedServerUrl, normalizeServerUrl, readDefaultServerUrl, saveServerUrl } from './server-config.mjs';
 import {
   DEFAULT_UPDATE_PUBLIC_KEY,
   MAX_BUNDLE_ARCHIVE_BYTES,
@@ -23,7 +24,7 @@ import {
 
 function parseArgs(argv) {
   const opts = {
-    url: process.env.ANYWHERE_MESH_URL || service,
+    url: process.env.ANYWHERE_MESH_URL || null,
     updateUrl: process.env.ANYWHERE_MESH_UPDATE_URL || null,
     state: process.env.ANYWHERE_MESH_STATE || join(homedir(), '.anywhere-mesh', 'linux-agent'),
     name: process.env.ANYWHERE_MESH_NAME || ('Linux · ' + hostname()),
@@ -60,13 +61,13 @@ function parseArgs(argv) {
         'AnywhereMesh Linux Device Agent',
         '',
         'Usage:',
-        '  anywhere-mesh-agent --project /path/to/repo [--label my-repo] [--mode read|edit|execute]',
-        '  anywhere-mesh-agent --check-update',
-        '  anywhere-mesh-agent --update [--force]',
+        '  anywhere-mesh-agent --url https://mesh.example.com --project /path/to/repo [--label my-repo] [--mode read|edit|execute]',
+        '  anywhere-mesh-agent --check-update [--url https://mesh.example.com]',
+        '  anywhere-mesh-agent --update [--url https://mesh.example.com] [--force]',
         '  anywhere-mesh-agent --logout',
         '',
         'Options:',
-        '  --url <url>             Server URL (default: https://awc.xbxbe.com)',
+        '  --url <url>             Self-hosted server URL (e.g. https://mesh.example.com; remembered after first sign-in)',
         '  --update-url <url>      Override update manifest base URL',
         '  --ca <file>             Deployment CA certificate path',
         '  --easytier <file>       Path to easytier-core binary',
@@ -80,8 +81,13 @@ function parseArgs(argv) {
       process.exit(0);
     }
   }
+  const appDir = resolve(import.meta.dirname, '../..');
+  const savedUrl = loadSavedServerUrl(opts.state) || readDefaultServerUrl(appDir);
+  if (opts.url) opts.url = normalizeServerUrl(opts.url, { allowHttpLocalhost: process.env.ANYWHERE_MESH_UPDATE_ALLOW_HTTP === '1' });
+  else if (savedUrl) opts.url = savedUrl;
   if (opts.checkUpdate || opts.doUpdate) return opts;
   if (!opts.ca) throw Error('Missing required --ca /path/to/ca.crt');
+  if (!opts.logout && !opts.url) throw Error('Missing required --url https://<your-server-domain> (or set ANYWHERE_MESH_URL)');
   if (!opts.logout && !opts.direct && !opts.easytier) throw Error('Missing required --easytier /path/to/easytier-core (or pass --direct)');
   if (!['revoked', 'read', 'edit', 'execute'].includes(opts.mode)) throw Error('Invalid --mode: ' + opts.mode);
   if (!opts.logout && !opts.projects.length) throw Error('At least one --project /path/to/dir is required');
@@ -233,7 +239,8 @@ async function runCliUpdate(opts) {
   const meta = readInstalledMeta(appDir);
   if (!meta.version) throw Error('Unable to read current client version from ' + join(appDir, 'package.json'));
 
-  const baseUrl = (opts.updateUrl || opts.url || service).replace(/\/+$/, '');
+  const baseUrl = (opts.updateUrl || opts.url || '').replace(/\/+$/, '');
+  if (!baseUrl) throw Error('Missing server URL; pass --url https://<your-server-domain> or --update-url <url>');
   const publicKeyPem = process.env.ANYWHERE_MESH_UPDATE_PUBKEY || DEFAULT_UPDATE_PUBLIC_KEY;
   const allowHttpLocalhost = process.env.ANYWHERE_MESH_UPDATE_ALLOW_HTTP === '1';
 
@@ -329,7 +336,8 @@ async function notifyUpdateIfAvailable(opts) {
     const appDir = resolve(import.meta.dirname, '../..');
     const meta = readInstalledMeta(appDir);
     if (!meta.version) return;
-    const baseUrl = (opts.updateUrl || opts.url || service).replace(/\/+$/, '');
+    const baseUrl = (opts.updateUrl || opts.url || '').replace(/\/+$/, '');
+    if (!baseUrl) return;
     const publicKeyPem = process.env.ANYWHERE_MESH_UPDATE_PUBKEY || DEFAULT_UPDATE_PUBLIC_KEY;
     const allowHttpLocalhost = process.env.ANYWHERE_MESH_UPDATE_ALLOW_HTTP === '1';
     const manifest = await fetchManifest(baseUrl, { publicKeyPem, allowHttpLocalhost, timeoutMs: 8000 });
@@ -352,6 +360,7 @@ async function main() {
     return;
   }
   mkdirSync(opts.state, { recursive: true, mode: 0o700 });
+  if (opts.url) saveServerUrl(opts.state, opts.url);
   const caBytes = readFileSync(opts.ca);
   const peer = opts.direct ? null : new LinuxPeer(opts.state, opts.easytier, caBytes, opts.url);
   const ws = linuxWorkspace();

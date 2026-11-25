@@ -3,15 +3,16 @@ import { realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, isAbsolute, resolve, sep } from 'node:path';
 import { DeviceClient, request } from '../client.mjs';
 import contract from '../contract.cjs';
-import { service } from './network.mjs';
+import { normalizeServerUrl } from '../server-config.mjs';
 
 const knownErrors = new Set([
   'INVALID_CREDENTIALS', 'LOGIN_THROTTLED', 'DEVICE_DISABLED', 'LOGIN_REQUIRED',
+  'INVALID_SERVER_URL', 'SERVER_URL_REQUIRED',
   'NETWORK_ENROLLMENT_UNAVAILABLE', 'NETWORK_ADDRESS_LIMIT',
   'LINUX_NETWORK_EXITED', 'LINUX_TUNNEL_NOT_READY', 'EADDRINUSE',
 ]);
 
-export function makeBootstrap(serverUrl = service) {
+export function makeBootstrap(serverUrl) {
   return (route, data, token) => request(serverUrl, { rejectUnauthorized: true, minVersion: 'TLSv1.2' },
     'POST', route, data, token, { idleMs: 15000, totalMs: 20000 });
 }
@@ -42,17 +43,20 @@ async function phase(name, code, run, logSuccess = true, notify = null) {
 }
 
 export class LinuxClient extends DeviceClient {
-  constructor(cfg, workspace, { peer, privatePaths = [], bootstrap = makeBootstrap(service) }) {
+  constructor(cfg, workspace, { peer, privatePaths = [], bootstrap = null, serverUrl = null, saveServerUrl = null }) {
     super({ ...cfg, workspacePicker: true }, workspace);
     this.peer = peer;
-    this.serverUrl = cfg.url || service;
+    const initial = serverUrl ?? cfg.serverUrl ?? (cfg.url && !/^https:\/\/127\.0\.0\.1(?::|$)/.test(cfg.url) ? cfg.url : null);
+    this.serverUrl = initial ? normalizeServerUrl(initial) : null;
+    this.saveServerUrl = saveServerUrl;
+    if (this.serverUrl && typeof this.peer?.setServerUrl === 'function') this.peer.setServerUrl(this.serverUrl);
     this.tunnelTls = this.tls;
     this.publicTls = { rejectUnauthorized: true, minVersion: 'TLSv1.2' };
     this.directMode = false;
     this.privatePaths = privatePaths.map(p => {
       try { return realpathSync(resolve(p)); } catch { return resolve(p); }
     });
-    this.bootstrap = bootstrap;
+    this.customBootstrap = bootstrap;
     this.httpFailures = 0;
     this.probeFailures = 0;
     this.retryNetworkAt = 0;
@@ -60,6 +64,22 @@ export class LinuxClient extends DeviceClient {
     this.networkToken = null;
     this.tunnelReady = false;
     this.emitProgress = payload => { try { this.onStream?.({ type: 'connect_progress', payload }); } catch {} };
+  }
+  setServerUrl(url, { persist = true } = {}) {
+    const normalized = normalizeServerUrl(url);
+    this.serverUrl = normalized;
+    if (typeof this.peer?.setServerUrl === 'function') this.peer.setServerUrl(normalized);
+    if (persist) {
+      try { this.saveServerUrl?.(normalized); } catch {}
+    }
+    try { this.onStream?.({ type: 'server_url', payload: { serverUrl: normalized } }); } catch {}
+    return normalized;
+  }
+  callBootstrap(route, data, token, overrideUrl = null) {
+    if (this.customBootstrap) return this.customBootstrap(route, data, token);
+    const base = overrideUrl || this.serverUrl;
+    if (!base) throw Error('SERVER_URL_REQUIRED');
+    return makeBootstrap(base)(route, data, token);
   }
   workspacePath(selected) {
     if (typeof selected !== 'string' || !isAbsolute(selected)) throw Error('LOCAL_PROJECT_REQUIRED');
@@ -138,8 +158,13 @@ export class LinuxClient extends DeviceClient {
     this.profile.projects = projects;
     return { ok: true, id: workspaceId };
   }
-  authenticate(params) {
-    return phase('authentication', 'LINUX_BOOTSTRAP_UNAVAILABLE', () => this.bootstrap('/api/auth/login', params), true, this.emitProgress);
+  async authenticate(params, requestedUrl) {
+    const targetUrl = requestedUrl ? normalizeServerUrl(requestedUrl) : this.serverUrl;
+    if (!targetUrl && !this.customBootstrap) throw Error('SERVER_URL_REQUIRED');
+    const signed = await phase('authentication', 'LINUX_BOOTSTRAP_UNAVAILABLE',
+      () => this.callBootstrap('/api/auth/login', params, undefined, targetUrl), true, this.emitProgress);
+    if (targetUrl) this.setServerUrl(targetUrl);
+    return signed;
   }
   connect(signed) {
     if ((this.directMode || this.peer.child) && this.tunnelReady) super.connect(signed);
@@ -152,11 +177,11 @@ export class LinuxClient extends DeviceClient {
         ? { supportsDirect: true, prefer: 'easytier' }
         : { supportsDirect: true };
       const profile = await phase('network_enrollment', 'LINUX_NETWORK_CONFIG_UNAVAILABLE',
-        () => this.bootstrap('/api/device/network', reqBody, signed.token), true, notify);
+        () => this.callBootstrap('/api/device/network', reqBody, signed.token), true, notify);
       if (profile?.transport === 'direct') {
         this.directMode = true;
         this.tls = this.publicTls;
-        this.cfg.url = this.serverUrl;
+        this.cfg.url = this.serverUrl || this.cfg.url;
         this.networkToken = signed.token;
         this.tunnelReady = true;
         this.probeFailures = 0;
@@ -190,6 +215,12 @@ export class LinuxClient extends DeviceClient {
     }
   }
   async verifiedState(saved) {
+    if (saved?.serverUrl && saved.serverUrl !== this.serverUrl) {
+      this.setServerUrl(saved.serverUrl, { persist: false });
+    }
+    if (!this.serverUrl && !this.customBootstrap) {
+      throw Error('LOGIN_REQUIRED');
+    }
     if (Date.now() < this.retryNetworkAt) throw this.networkFailure;
     const notify = !this.presence ? this.emitProgress : null;
     if (notify) notify({ phase: 'authentication', status: 'done' });
@@ -221,7 +252,7 @@ export class LinuxClient extends DeviceClient {
     if (this.peer.child && this.tunnelReady) {
       try { return await super.remoteLogout(signed); } catch {}
     }
-    await this.bootstrap('/api/auth/logout', {}, signed.token);
+    await this.callBootstrap('/api/auth/logout', {}, signed.token);
   }
   async signout(notify = true) {
     try { await super.signout(notify); }

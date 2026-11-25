@@ -3,11 +3,12 @@ import { renameSync, rmSync, writeFileSync } from 'node:fs';
 import { win32 as path } from 'node:path';
 import { DeviceClient, request } from '../client.mjs';
 import contract from '../contract.cjs';
-import { service } from './network.mjs';
+import { normalizeServerUrl } from '../server-config.mjs';
 
 const knownErrors = new Set(['INVALID_CREDENTIALS','LOGIN_THROTTLED','DEVICE_DISABLED','LOGIN_REQUIRED',
+  'INVALID_SERVER_URL','SERVER_URL_REQUIRED',
   'NETWORK_ENROLLMENT_UNAVAILABLE','NETWORK_ADDRESS_LIMIT','WINDOWS_NETWORK_EXITED','WINDOWS_TUNNEL_NOT_READY','EADDRINUSE']);
-const publicRequest = (route,data,token) => request(service,{rejectUnauthorized:true,minVersion:'TLSv1.2'},
+const makePublicRequest = serverUrl => (route,data,token) => request(serverUrl,{rejectUnauthorized:true,minVersion:'TLSv1.2'},
   'POST',route,data,token,{idleMs:15000,totalMs:18000});
 
 async function phase(name, code, run, logSuccess=true, notify=null) {
@@ -34,14 +35,33 @@ async function phase(name, code, run, logSuccess=true, notify=null) {
 }
 
 export class WindowsClient extends DeviceClient {
-  constructor(cfg, workspace, {peer, privatePaths, bootstrap=publicRequest}) {
+  constructor(cfg, workspace, {peer, privatePaths, bootstrap=null, serverUrl=null, saveServerUrl=null}) {
     super({...cfg,workspacePicker:true},workspace);
-    this.peer=peer;this.privatePaths=privatePaths;this.bootstrap=bootstrap;
+    this.peer=peer;this.privatePaths=privatePaths;this.customBootstrap=bootstrap;
+    this.serverUrl=serverUrl ? normalizeServerUrl(serverUrl) : (cfg.serverUrl ? normalizeServerUrl(cfg.serverUrl) : null);
+    this.saveServerUrl=saveServerUrl;
+    if (this.serverUrl && typeof this.peer?.setServerUrl === 'function') this.peer.setServerUrl(this.serverUrl);
     this.tunnelTls=this.tls;
     this.publicTls={rejectUnauthorized:true,minVersion:'TLSv1.2'};
     this.directMode=false;
     this.httpFailures=0;this.probeFailures=0;
     this.emitProgress = payload => { try { this.onStream?.({ type: 'connect_progress', payload }); } catch {} };
+  }
+  setServerUrl(url, { persist = true } = {}) {
+    const normalized = normalizeServerUrl(url);
+    this.serverUrl = normalized;
+    if (typeof this.peer?.setServerUrl === 'function') this.peer.setServerUrl(normalized);
+    if (persist) {
+      try { this.saveServerUrl?.(normalized); } catch {}
+    }
+    try { this.onStream?.({ type: 'server_url', payload: { serverUrl: normalized } }); } catch {}
+    return normalized;
+  }
+  callBootstrap(route, data, token, overrideUrl = null) {
+    if (this.customBootstrap) return this.customBootstrap(route, data, token);
+    const base = overrideUrl || this.serverUrl;
+    if (!base) throw Error('SERVER_URL_REQUIRED');
+    return makePublicRequest(base)(route, data, token);
   }
   workspacePath(selected) {
     if(!/^[A-Za-z]:\\.+/.test(selected)) throw Error('LOCAL_PROJECT_REQUIRED');
@@ -116,14 +136,19 @@ export class WindowsClient extends DeviceClient {
     this.profile.projects=projects;
     return {ok:true,id:workspaceId};
   }
-  async authenticate(params) {
+  async authenticate(params, requestedUrl) {
     // Keep an already-started legacy peer while it negotiates its first route.
     if(this.peer.legacy) {
       await this.ensureNetwork(undefined,40000);
       return phase('authentication','WINDOWS_AUTH_UNAVAILABLE',()=>super.authenticate(params),true,this.emitProgress);
     }
+    const targetUrl = requestedUrl ? normalizeServerUrl(requestedUrl) : this.serverUrl;
+    if (!targetUrl && !this.customBootstrap) throw Error('SERVER_URL_REQUIRED');
     // The device token is saved by login() before attempting network enrollment.
-    return phase('authentication','WINDOWS_BOOTSTRAP_UNAVAILABLE',()=>this.bootstrap('/api/auth/login',params),true,this.emitProgress);
+    const signed = await phase('authentication','WINDOWS_BOOTSTRAP_UNAVAILABLE',
+      ()=>this.callBootstrap('/api/auth/login',params,undefined,targetUrl),true,this.emitProgress);
+    if (targetUrl) this.setServerUrl(targetUrl);
+    return signed;
   }
   connect(signed) {
     if((this.directMode || this.peer.child) && this.tunnelReady) super.connect(signed);
@@ -136,11 +161,11 @@ export class WindowsClient extends DeviceClient {
         ? { supportsDirect: true, prefer: 'easytier' }
         : { supportsDirect: true };
       const profile=await phase('network_enrollment','WINDOWS_NETWORK_CONFIG_UNAVAILABLE',
-        ()=>this.bootstrap('/api/device/network',reqBody,signed.token),true,notify);
+        ()=>this.callBootstrap('/api/device/network',reqBody,signed.token),true,notify);
       if (profile?.transport === 'direct') {
         this.directMode=true;
         this.tls=this.publicTls;
-        this.cfg.url=service;
+        this.cfg.url=this.serverUrl || this.cfg.url;
         this.networkToken=signed.token;
         this.tunnelReady=true;
         this.probeFailures=0;
@@ -175,6 +200,12 @@ export class WindowsClient extends DeviceClient {
     } catch(error) {this.probeFailures++;throw error;}
   }
   async verifiedState(saved) {
+    if (saved?.serverUrl && saved.serverUrl !== this.serverUrl) {
+      this.setServerUrl(saved.serverUrl, { persist: false });
+    }
+    if (!this.serverUrl && !this.peer.legacy && !this.customBootstrap) {
+      throw Error('LOGIN_REQUIRED');
+    }
     if(Date.now()<this.retryNetworkAt) throw this.networkFailure;
     const notify = !this.presence ? this.emitProgress : null;
     if (notify) notify({ phase: 'authentication', status: 'done' });
@@ -206,7 +237,7 @@ export class WindowsClient extends DeviceClient {
     if(this.peer.child && this.tunnelReady) {
       try {return await super.remoteLogout(signed);} catch {}
     }
-    await this.bootstrap('/api/auth/logout',{},signed.token);
+    await this.callBootstrap('/api/auth/logout',{},signed.token);
   }
   async signout(notify=true) {
     try {await super.signout(notify);}

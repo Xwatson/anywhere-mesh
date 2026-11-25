@@ -4,16 +4,20 @@ import { hostname } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
+import { loadSavedServerUrl, readDefaultServerUrl, saveServerUrl } from '../server-config.mjs';
 import { WindowsClient } from './client.mjs';
 import { WindowsPeer } from './network.mjs';
 import { windowsWorkspace } from './read.mjs';
 
 if (process.platform !== 'win32') throw Error('WINDOWS_REQUIRED');
 const root = join(process.env.LOCALAPPDATA,'AnywhereMesh');
+const packageRoot = resolve(import.meta.dirname, '../../..');
+const initialServerUrl = loadSavedServerUrl(root) || readDefaultServerUrl(packageRoot);
 const cfg = {stateDir:join(root,'state'), name:'Windows · '+hostname(), url:'https://127.0.0.1:31844',
+  serverUrl: initialServerUrl,
   ca:join(root,'ca.crt'), projects:[{label:'Windows 本地项目', path:join(root,'project')}]};
 const input = createInterface({input:process.stdin});
-const peer = new WindowsPeer(root,readFileSync(cfg.ca));
+const peer = new WindowsPeer(root,readFileSync(cfg.ca),initialServerUrl);
 const protector=fileURLToPath(new URL('./LoginProtection.exe',import.meta.url));
 function protect(mode, input) {
   const result=spawnSync(protector,[mode],{input,windowsHide:true,timeout:6000,maxBuffer:16384});
@@ -26,7 +30,7 @@ const client=new WindowsClient(cfg,{...workspace,
   onStream:data=>reply({event:'stream',data}),
   loginProtection:{
     seal:bytes=>protect('seal',bytes),open:bytes=>protect('open',bytes)
-  }},{peer,privatePaths:[root,resolve(import.meta.dirname,'../../..'),dirname(process.execPath)]});
+  }},{peer,serverUrl:initialServerUrl,saveServerUrl:url=>saveServerUrl(root,url),privatePaths:[root,packageRoot,dirname(process.execPath)]});
 if (peer.legacy) await peer.start().catch(()=>{});
 // Recover a missing peer even when the window is minimized.
 const repair = setInterval(() => {

@@ -3,8 +3,9 @@ import { homedir, hostname } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { linuxWorkspace } from '../linux-workspace.mjs';
-import { LinuxClient, makeBootstrap } from './client.mjs';
-import { LinuxPeer, service } from './network.mjs';
+import { loadSavedServerUrl, readDefaultServerUrl, saveServerUrl } from '../server-config.mjs';
+import { LinuxClient } from './client.mjs';
+import { LinuxPeer } from './network.mjs';
 
 if (process.platform !== 'linux') throw Error('LINUX_REQUIRED');
 process.umask(0o077);
@@ -16,7 +17,8 @@ const root = realpathSync(dataBase);
 const projectDir = join(root, 'project');
 mkdirSync(projectDir, { recursive: true, mode: 0o700 });
 
-const serverUrl = process.env.ANYWHERE_MESH_URL || service;
+const packageRoot = resolve(import.meta.dirname, '../../..');
+const initialServerUrl = loadSavedServerUrl(root) || readDefaultServerUrl(packageRoot);
 const easytierPath = process.env.ANYWHERE_MESH_EASYTIER || join(dirname(process.execPath), 'easytier-core');
 if (!existsSync(easytierPath)) throw Error('EASYTIER_BINARY_NOT_FOUND');
 
@@ -24,13 +26,14 @@ const caPath = process.env.ANYWHERE_MESH_CA || join(root, 'ca.crt');
 const cfg = {
   stateDir: join(root, 'state'),
   name: process.env.ANYWHERE_MESH_NAME || ('Linux 桌面 · ' + hostname()),
-  url: serverUrl,
+  url: 'https://127.0.0.1:31844',
+  serverUrl: initialServerUrl,
   ca: caPath,
   projects: [{ label: 'Linux 本地项目', path: realpathSync(projectDir) }],
 };
 
 const input = createInterface({ input: process.stdin });
-const peer = new LinuxPeer(root, easytierPath, readFileSync(cfg.ca), serverUrl);
+const peer = new LinuxPeer(root, easytierPath, readFileSync(cfg.ca), initialServerUrl);
 const reply = value => process.stdout.write(JSON.stringify(value) + '\n');
 const workspace = linuxWorkspace();
 const client = new LinuxClient(cfg, {
@@ -38,8 +41,9 @@ const client = new LinuxClient(cfg, {
   onStream: data => reply({ event: 'stream', data }),
 }, {
   peer,
-  bootstrap: makeBootstrap(serverUrl),
-  privatePaths: [root, resolve(import.meta.dirname, '../../..'), dirname(process.execPath)],
+  serverUrl: initialServerUrl,
+  saveServerUrl: url => saveServerUrl(root, url),
+  privatePaths: [root, packageRoot, dirname(process.execPath)],
 });
 
 const repair = setInterval(() => {

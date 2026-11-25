@@ -50,6 +50,26 @@ export class SessionStore extends Journal {
       updated_at INTEGER NOT NULL,
       PRIMARY KEY(scope, scope_id, mem_key)
     )`);
+    this.db.exec(`CREATE TABLE IF NOT EXISTS turn_calls(
+      turn_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      seq INTEGER NOT NULL,
+      call_id TEXT NOT NULL,
+      tool TEXT NOT NULL,
+      effective_tool TEXT NOT NULL,
+      input_hash TEXT NOT NULL,
+      args_summary TEXT NOT NULL,
+      operation_id TEXT,
+      state TEXT NOT NULL DEFAULT 'pending',
+      ok INTEGER,
+      consumed INTEGER NOT NULL DEFAULT 0,
+      counted INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY(turn_id, call_id)
+    )`);
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_turn_calls_turn_seq ON turn_calls(turn_id, seq)');
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_turn_calls_session ON turn_calls(session_id)');
   }
   session(id) { uuid(id); const s = this.get('sessions', id); if (!s) throw Error('SESSION_NOT_FOUND'); return s; }
   request(id, payload) {
@@ -96,6 +116,7 @@ export class SessionStore extends Journal {
       const s = this.session(sessionId);
       if (s.activeTurnId) throw Error('SESSION_BUSY');
       this.db.prepare('DELETE FROM chat_events WHERE session_id=?').run(sessionId);
+      this.db.prepare('DELETE FROM turn_calls WHERE session_id=?').run(sessionId);
       this.db.prepare("DELETE FROM records WHERE bucket='sessions' AND key=?").run(sessionId);
       this.db.prepare("DELETE FROM archive_records WHERE bucket='sessions' AND key=?").run(sessionId);
       for (const att of this.attachments(sessionId)) {
@@ -147,6 +168,7 @@ export class SessionStore extends Journal {
         ev.type === 'assistant_text' ||
         ev.type === 'tool_call' ||
         ev.type === 'context_compacted' ||
+        ev.type === 'turn_notice' ||
         (ev.type === 'thinking' && ev.text) ||
         (ev.type === 'turn_end' && (!ev.ok || ev.model || ev.durationMs || ev.usage?.inputTokens || ev.usage?.outputTokens))
       ),
@@ -268,5 +290,83 @@ export class SessionStore extends Journal {
     return Number(this.db.prepare(
       "DELETE FROM memories WHERE scope='workspace' AND scope_id=?",
     ).run(id).changes ?? 0);
+  }
+  deleteRecord(bucket, key) {
+    this.db.prepare('DELETE FROM records WHERE bucket=? AND key=?').run(bucket, key);
+    this.db.prepare('DELETE FROM archive_records WHERE bucket=? AND key=?').run(bucket, key);
+  }
+  parseTurnCallRow(row) {
+    if (!row) return null;
+    let argsSummary = {};
+    try { argsSummary = JSON.parse(row.args_summary); } catch {}
+    return {
+      turnId: row.turn_id,
+      sessionId: row.session_id,
+      seq: Number(row.seq),
+      callId: row.call_id,
+      tool: row.tool,
+      effectiveTool: row.effective_tool,
+      inputHash: row.input_hash,
+      argsSummary,
+      operationId: row.operation_id ?? null,
+      state: row.state,
+      ok: row.ok === null || row.ok === undefined ? null : Boolean(row.ok),
+      consumed: Boolean(row.consumed),
+      counted: Boolean(row.counted),
+      createdAt: Number(row.created_at),
+      updatedAt: Number(row.updated_at),
+    };
+  }
+  getTurnCall(turnId, callId) {
+    const row = this.db.prepare(
+      'SELECT * FROM turn_calls WHERE turn_id=? AND call_id=?',
+    ).get(turnId, callId);
+    return this.parseTurnCallRow(row);
+  }
+  listTurnCalls(turnId, { onlyUnconsumed = false } = {}) {
+    const sql = onlyUnconsumed
+      ? 'SELECT * FROM turn_calls WHERE turn_id=? AND consumed=0 ORDER BY seq ASC'
+      : 'SELECT * FROM turn_calls WHERE turn_id=? ORDER BY seq ASC';
+    return this.db.prepare(sql).all(turnId).map(row => this.parseTurnCallRow(row));
+  }
+  hasTurnCalls(turnId) {
+    return Boolean(this.db.prepare('SELECT 1 FROM turn_calls WHERE turn_id=? LIMIT 1').get(turnId));
+  }
+  upsertTurnCall({
+    turnId, sessionId, callId, tool, effectiveTool, inputHash, argsSummary,
+    operationId = null, state = 'pending', ok = null, consumed = false, counted = false,
+  }) {
+    const existing = this.getTurnCall(turnId, callId);
+    if (existing) return existing;
+    const now = Date.now();
+    const nextSeq = Number(this.db.prepare(
+      'SELECT COALESCE(MAX(seq), 0) + 1 AS n FROM turn_calls WHERE turn_id=?',
+    ).get(turnId).n);
+    this.db.prepare(
+      `INSERT INTO turn_calls(
+         turn_id, session_id, seq, call_id, tool, effective_tool, input_hash,
+         args_summary, operation_id, state, ok, consumed, counted, created_at, updated_at
+       ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    ).run(
+      turnId, sessionId, nextSeq, callId, tool, effectiveTool ?? tool, inputHash,
+      JSON.stringify(argsSummary ?? {}), operationId, state,
+      ok === null || ok === undefined ? null : (ok ? 1 : 0),
+      consumed ? 1 : 0, counted ? 1 : 0, now, now,
+    );
+    return this.getTurnCall(turnId, callId);
+  }
+  updateTurnCall(turnId, callId, patch = {}) {
+    const sets = [];
+    const params = [];
+    if ('operationId' in patch) { sets.push('operation_id=?'); params.push(patch.operationId ?? null); }
+    if ('state' in patch) { sets.push('state=?'); params.push(patch.state); }
+    if ('ok' in patch) { sets.push('ok=?'); params.push(patch.ok === null || patch.ok === undefined ? null : (patch.ok ? 1 : 0)); }
+    if ('consumed' in patch) { sets.push('consumed=?'); params.push(patch.consumed ? 1 : 0); }
+    if ('counted' in patch) { sets.push('counted=?'); params.push(patch.counted ? 1 : 0); }
+    if (!sets.length) return this.getTurnCall(turnId, callId);
+    sets.push('updated_at=?');
+    params.push(Date.now(), turnId, callId);
+    this.db.prepare(`UPDATE turn_calls SET ${sets.join(', ')} WHERE turn_id=? AND call_id=?`).run(...params);
+    return this.getTurnCall(turnId, callId);
   }
 }

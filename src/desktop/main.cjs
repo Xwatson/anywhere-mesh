@@ -130,7 +130,14 @@ if (single) app.whenReady().then(async () => {
     if (line.length > 2 * 1024 * 1024) { child.stdin.end(); return; }
     let msg; try { msg = JSON.parse(line); } catch { child.stdin.end(); return; }
     if (msg.event === 'ready') { backendReady = true; maybeMarkHealthy(); }
-    if (msg.event === 'stream' && win && !win.isDestroyed()) { win.webContents.send('desktop:event', msg.data); return; }
+    if (msg.event === 'stream') {
+      if (msg.data?.type === 'server_url' && typeof msg.data?.payload?.serverUrl === 'string') {
+        updater?.setBaseUrl(msg.data.payload.serverUrl);
+        return;
+      }
+      if (win && !win.isDestroyed()) win.webContents.send('desktop:event', msg.data);
+      return;
+    }
     if (!msg.id) return;
     const waiter = pending.get(msg.id); if (!waiter) return;
     pending.delete(msg.id); clearTimeout(waiter.timer);

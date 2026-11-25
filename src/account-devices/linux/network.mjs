@@ -5,17 +5,18 @@ import { createServer } from 'node:net';
 import { join } from 'node:path';
 import tls from 'node:tls';
 import { setTimeout as delay } from 'node:timers/promises';
+import { normalizeServerUrl } from '../server-config.mjs';
 
-export const service = 'https://awc.xbxbe.com';
 const KEY_RE = /^[A-Za-z0-9+/]{43}=$/;
 
-export function sessionConfig(profile, deviceId, port, serverUrl = service) {
+export function sessionConfig(profile, deviceId, port, serverUrl) {
   const slot = /^10\.203\.73\.(\d{1,3})\/24$/.exec(profile.ipv4)?.[1];
   if (!/^[\da-f]{8}(-[\da-f]{4}){3}-[\da-f]{12}$/.test(deviceId) ||
       !/^[\w-]{1,64}$/.test(profile.name) || !KEY_RE.test(profile.serverKey) || !KEY_RE.test(profile.credential) ||
       !Number.isSafeInteger(profile.expiresAt) || !slot || Number(slot) < 4 || Number(slot) > 254 ||
       !Number.isInteger(port) || port < 1 || port > 65535) throw Error('NETWORK_ENROLLMENT_UNAVAILABLE');
-  const wsUri = serverUrl.replace(/^https:/i, 'wss:').replace(/\/+$/, '') + '/easytier';
+  const normalizedUrl = normalizeServerUrl(serverUrl);
+  const wsUri = normalizedUrl.replace(/^https:/i, 'wss:') + '/easytier';
   const sections = [
     ['', {
       credential_file: 'network-server.json', instance_name: 'lin-' + deviceId, instance_id: deviceId,
@@ -63,7 +64,7 @@ function probeTls(port, ca) {
 }
 
 export class LinuxPeer {
-  constructor(root, easytierPath, caBytes, serverUrl = service) {
+  constructor(root, easytierPath, caBytes, serverUrl = null) {
     this.root = root;
     this.easytierPath = easytierPath;
     this.ca = caBytes;
@@ -71,6 +72,9 @@ export class LinuxPeer {
     this.child = null;
     this.port = null;
     this.credential = undefined;
+  }
+  setServerUrl(url) {
+    this.serverUrl = url ? normalizeServerUrl(url) : null;
   }
   async start(profile, deviceId, restart = false) {
     if (!restart && this.child && this.credential === profile.credential) return;

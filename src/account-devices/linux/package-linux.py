@@ -27,7 +27,7 @@ APP_FILES = {
     "execution": ["agent.mjs", "grants.mjs", "journal.mjs", "protocol.mjs", "retention.mjs", "rpc.mjs"],
     "workspace": ["patch.mjs", "catalog.mjs"],
     "account-devices": [
-        "client.mjs", "remembered-login.mjs", "contract.cjs", "preload.cjs",
+        "client.mjs", "remembered-login.mjs", "server-config.mjs", "contract.cjs", "preload.cjs",
         "linux-agent.mjs", "linux-workspace.mjs",
         "linux/network.mjs", "linux/client.mjs", "linux/controller.mjs",
         "linux/agent.sh", "linux/anywhere-mesh-agent.service.example",

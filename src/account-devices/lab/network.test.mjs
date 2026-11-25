@@ -36,11 +36,12 @@ test('only active native logins receive separate, revocable network leases', asy
     assert.deepEqual(retry,first); assert.equal(calls,1);
     const second = await network.issue(b.token);
     assert.notEqual(first.credential,second.credential); assert.notEqual(first.ipv4,second.ipv4);
-    const file = sessionConfig(first,a.deviceId,30001);
-    assert.match(file,/127\.0\.0\.1:30001/); assert.match(file,/wss:\/\/awc\.xbxbe\.com\/easytier/);
+    const file = sessionConfig(first,a.deviceId,30001,'https://mesh.example.com');
+    assert.match(file,/127\.0\.0\.1:30001/); assert.match(file,/wss:\/\/mesh\.example\.com\/easytier/);
     assert.ok(!file.includes(first.credential)); assert.doesNotMatch(file,/network_secret|local_private_key/);
-    assert.throws(()=>sessionConfig({...first,ipv4:'10.203.73.3/24'},a.deviceId,30001));
-    assert.throws(()=>sessionConfig({...first,name:'invalid"\n[flags]'},a.deviceId,30001));
+    assert.throws(()=>sessionConfig({...first,ipv4:'10.203.73.3/24'},a.deviceId,30001,'https://mesh.example.com'));
+    assert.throws(()=>sessionConfig({...first,name:'invalid"\n[flags]'},a.deviceId,30001,'https://mesh.example.com'));
+    assert.throws(()=>sessionConfig(first,a.deviceId,30001,'http://mesh.example.com'));
     directory.setDisabled(b.deviceId,true);
     const next = login(id);
     assert.equal(next.deviceId,a.deviceId);

@@ -19,6 +19,7 @@ const routes = {
   updateStatus: [], updateCheck: [], updateDownload: [], updateCancel: [], updateInstall: [], updateSettings: [], updateDismiss: ['version'],
 };
 const optional = {
+  login: ['serverUrl'],
   quota: ['refresh'],
   create: ['options'],
   send: ['attachments'],
@@ -79,6 +80,18 @@ function validate(method, p = {}) {
     if (bk in p && typeof p[bk] !== 'boolean') throw Error('INVALID_FIELDS');
   }
   if ('version' in p && (typeof p.version !== 'string' || p.version.length > 40 || !SEMVER_RE.test(p.version.trim()))) throw Error('INVALID_FIELDS');
+  if ('serverUrl' in p) {
+    if (typeof p.serverUrl !== 'string' || !p.serverUrl.trim() || p.serverUrl.trim().length > 255 || /[\s\0-\x1f\x7f]/.test(p.serverUrl.trim())) {
+      throw Error('INVALID_SERVER_URL');
+    }
+    const raw = p.serverUrl.trim();
+    const withScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(raw) ? raw : 'https://' + raw;
+    let parsed;
+    try { parsed = new URL(withScheme); } catch { throw Error('INVALID_SERVER_URL'); }
+    if (parsed.protocol !== 'https:' || !parsed.hostname || parsed.username || parsed.password || parsed.search || parsed.hash || (parsed.pathname !== '/' && parsed.pathname !== '')) {
+      throw Error('INVALID_SERVER_URL');
+    }
+  }
   if ('mode' in p && !['revoked','read','edit','execute'].includes(p.mode)) throw Error('INVALID_PERMISSION');
   if ('attachments' in p) {
     if (!Array.isArray(p.attachments) || p.attachments.length > 8 || !p.attachments.every(x => typeof x === 'string' && UUID_RE.test(x))) throw Error('INVALID_ID');

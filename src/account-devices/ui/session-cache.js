@@ -18,11 +18,11 @@ export function isValidEventRow(row) {
 
 export function isRenderableEvent(event) {
   if (!event || typeof event !== 'object') return false;
-  if (event.type === 'user_message' || event.type === 'tool_call' || event.type === 'context_compacted') return true;
+  if (event.type === 'user_message' || event.type === 'tool_call' || event.type === 'context_compacted' || event.type === 'turn_notice') return true;
   if (event.type === 'assistant_text') return typeof event.text === 'string';
   if (event.type === 'thinking') return Boolean(event.text);
   if (event.type === 'turn_end') {
-    return Boolean(!event.ok || event.model || event.durationMs || event.usage?.inputTokens || event.usage?.outputTokens);
+    return Boolean(!event.ok || event.model || event.durationMs || event.usage?.inputTokens || event.usage?.outputTokens || event.toolCalls?.total);
   }
   return false;
 }

@@ -18,9 +18,9 @@ node_modules/.bin/esbuild experimental/account-devices/codex/read-turn.mjs \
 lab=/vol1/1000/anywhere-crossborder-lab
 python3 experimental/account-devices/codex/verify.py \
   --windows xwatson@192.168.8.210 --identity "$HOME/.ssh/id_rsa" \
-  --server root@198.84.90.137 --source-ip 192.168.8.2 \
+  --server root@203.0.113.10 --source-ip 192.168.8.2 \
   --server-dir /opt/anywhere-wan/experiments/codex-read/dfe7486f765e79b6 \
-  --accounts "$lab/secrets/wan-198.84.90.137/accounts.json" \
+  --accounts "$lab/secrets/wan-203.0.113.10/accounts.json" \
   --reports "$lab/artifacts/codex-windows"
 ```
 

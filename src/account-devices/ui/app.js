@@ -30,12 +30,15 @@ const errors = {
   TOOL_UNAVAILABLE_ON_DEVICE: '这台设备暂不支持该操作。', UNSUPPORTED_DEVICE_PERMISSION: '这台设备不支持所选权限。',
   NETWORK_ENROLLMENT_UNAVAILABLE: '服务端暂时无法签发设备连接配置。',
   NETWORK_ADDRESS_LIMIT: '设备连接数已满。', WINDOWS_NETWORK_EXITED: '本机连接进程已中断。',
-  WINDOWS_BOOTSTRAP_UNAVAILABLE: '暂时无法连接 awc.xbxbe.com 验证账号，请检查网络后重试。',
+  WINDOWS_BOOTSTRAP_UNAVAILABLE: '暂时无法连接所填写的服务器验证账号，请检查服务器地址与网络后重试。',
   WINDOWS_AUTH_UNAVAILABLE: '暂时无法通过设备连接验证账号，请稍后重试。',
   WINDOWS_NETWORK_CONFIG_UNAVAILABLE: '暂时无法领取设备连接配置。',
   WINDOWS_STATE_UNAVAILABLE: '设备已连接，暂时无法同步账号状态。',
   LINUX_NETWORK_EXITED: '本机连接进程已中断。',
-  LINUX_BOOTSTRAP_UNAVAILABLE: '暂时无法连接 awc.xbxbe.com 验证账号，请检查网络后重试。',
+  LINUX_BOOTSTRAP_UNAVAILABLE: '暂时无法连接所填写的服务器验证账号，请检查服务器地址与网络后重试。',
+  SERVER_URL_REQUIRED: '请先填写服务器地址（例如 https://mesh.example.com）。',
+  INVALID_SERVER_URL: '服务器地址格式无效，请输入有效的 HTTPS 域名或地址（例如 https://mesh.example.com）。',
+  UPDATE_SERVER_UNCONFIGURED: '请先在登录界面填写服务器地址后再检查更新。',
   LINUX_NETWORK_CONFIG_UNAVAILABLE: '暂时无法领取设备连接配置。',
   LINUX_STATE_UNAVAILABLE: '设备已连接，暂时无法同步账号状态。',
   LINUX_TUNNEL_NOT_READY: 'EasyTier 正在建立设备连接。',
@@ -1232,7 +1235,7 @@ function showDialog(id) {
   if (error) error.textContent = '';
   dialog.showModal();
 }
-function loginView(localName, restore = false, detail) {
+function loginView(localName, restore = false, detail, serverUrl) {
   if (state || !$('app').hidden) {
     activeDialog()?.close();
     drawer(false);
@@ -1265,8 +1268,21 @@ function loginView(localName, restore = false, detail) {
     restore === 'waiting' ? '暂时无法恢复登录，稍后会自动重试。' : '正在检查本机登录状态…';
   $('forget-login').hidden = restore !== 'waiting' && !(restore === 'connecting' && detail);
   renderConnectProgress();
+  const serverField = $('server-url-field');
+  const serverInput = $('server-url');
+  if (serverField && serverInput) {
+    serverField.hidden = !native;
+    serverInput.required = Boolean(native);
+    if (native) {
+      let remembered = typeof serverUrl === 'string' && serverUrl.trim() ? serverUrl.trim() : '';
+      if (!remembered) {
+        try { remembered = localStorage.getItem('anywhere-server-url') || ''; } catch {}
+      }
+      if (remembered && !serverInput.value.trim()) serverInput.value = remembered;
+    }
+  }
   $('app').hidden = true; $('signin').hidden = false;
-  $('entry').textContent = localName ? '连接设备 · ' + localName : native ? '登录后继续本机项目的对话。' : '使用你的 AnywhereMesh 账号继续。';
+  $('entry').textContent = localName ? '连接设备 · ' + localName : native ? '填写自建服务器地址并登录，继续本机项目的对话。' : '使用你的 AnywhereMesh 账号继续。';
   updatePwaInstallUI();
   renderUpdateUI();
 }
@@ -2007,7 +2023,12 @@ function render() {
   $('app-version').hidden = !ver.badge;
   $('app-version').title = ver.detail || ver.badge;
   $('account-menu').title = ver.detail ? `${state.user.username}（${ver.detail}）` : state.user.username;
-  $('signed-user').textContent = [state.user.username, state.localName || '网页端', ver.detail || ver.badge].filter(Boolean).join(' · ');
+  let serverHost = '';
+  if (native && state.serverUrl) {
+    try { serverHost = new URL(state.serverUrl).host; } catch { serverHost = state.serverUrl; }
+    try { localStorage.setItem('anywhere-server-url', state.serverUrl); } catch {}
+  }
+  $('signed-user').textContent = [state.user.username, state.localName || '网页端', serverHost, ver.detail || ver.badge].filter(Boolean).join(' · ');
   $('device-count').textContent = online ? state.devices.filter(d => d.online).length + ' 在线' : '';
   $('settings-project').hidden = !state.workspacePicker && !mine().length;
   $('admin-nav').hidden = !state.user.isAdmin;
@@ -2060,7 +2081,7 @@ function drawHistory(next, fromStart = false) {
   const selection = document.getSelection(), events = $('events'), view = $('timeline');
   if (native && selection?.rangeCount && !selection.isCollapsed && selection.getRangeAt(0).intersectsNode(events)) return false;
   const pinned = fromStart || pendingScrollBottom || (isTimelineVisible(view) && isTimelinePinned(view));
-  renderThread(events, next, { sessionId: selected, isWeb: !native, liveToolOutput: live.toolOutput });
+  renderThread(events, next, { sessionId: selected, isWeb: !native, liveToolOutput: live.toolOutput, hasActiveTurn: Boolean(thread()?.activeTurn) });
   if (pinned) scrollTimelineToBottom(view);
   return true;
 }
@@ -2304,7 +2325,7 @@ async function loadOlderHistory() {
       firstSeq = merged.state.firstSeq;
       seq = merged.state.throughSeq;
       hasOlder = merged.state.hasOlder;
-      renderThread($('events'), rows, { sessionId: selected, isWeb: !native, liveToolOutput: live.toolOutput });
+      renderThread($('events'), rows, { sessionId: selected, isWeb: !native, liveToolOutput: live.toolOutput, hasActiveTurn: Boolean(thread()?.activeTurn) });
       view.scrollTop = prevTop + (view.scrollHeight - prevHeight);
       persistCurrentSession(target);
     } else {
@@ -2340,7 +2361,7 @@ async function sync() {
   if (version !== generation) return;
   if (!latest.user) {
     loginView(latest.localName, latest.restoring && (restoring === 'connecting' ? restoring : 'waiting'),
-      latest.connectionError && errors[latest.connectionError]);
+      latest.connectionError && errors[latest.connectionError], latest.serverUrl);
     return;
   }
   if (!native && latest.uiVersion) {
@@ -3001,6 +3022,12 @@ async function submitResetPassword() {
 $('login').onsubmit = e => {
   e.preventDefault();
   if (busy) return;
+  const serverUrl = native ? $('server-url').value.trim() : '';
+  if (native && !serverUrl) {
+    $('login-error').textContent = errors.SERVER_URL_REQUIRED;
+    $('server-url').focus();
+    return;
+  }
   const password = $('password').value;
   $('password').value = '';
   const label = $('login-submit').querySelector('span');
@@ -3009,9 +3036,20 @@ $('login').onsubmit = e => {
     generation++;
     connectState.clear();
     connectState.set('authentication', { status: 'running' });
-    await action('login', { username: $('username').value.trim(), password });
+    const res = await action('login', {
+      username: $('username').value.trim(),
+      password,
+      ...(native ? { serverUrl } : {}),
+    });
+    if (native) {
+      const savedUrl = res?.serverUrl || serverUrl;
+      if (savedUrl) {
+        $('server-url').value = savedUrl;
+        try { localStorage.setItem('anywhere-server-url', savedUrl); } catch {}
+      }
+    }
     connectState.set('authentication', { status: 'done' });
-    loginView(undefined, 'connecting');
+    loginView(undefined, 'connecting', undefined, res?.serverUrl || serverUrl);
   }).finally(() => { label.textContent = '登录'; });
 };
 $('logout').onclick = $('forget-login').onclick = () => perform(async () => {
@@ -3377,8 +3415,34 @@ function handleRichContextMenu(e) {
   menu.hidden = false;
   positionFloatingBox(menu, e.clientX, e.clientY);
 }
+async function sendQuickContinue(promptText) {
+  const s = thread(), p = project();
+  const text = String(promptText || '').trim();
+  if (!s || !p || !text || busy || s.activeTurn) return;
+  if (isLocal(p) && (p.localMode ?? p.mode) === 'revoked') {
+    if (!$('draft').value.trim()) $('draft').value = text;
+    requestSend();
+    return;
+  }
+  const sent = await action('send', { sessionId: s.id, requestId: crypto.randomUUID(), text });
+  if (sent?.activeTurn && state?.sessions) {
+    const target = state.sessions.find(item => item.id === s.id);
+    if (target) {
+      target.activeTurn = sent.activeTurn;
+      syncQueueDeadlines(state.sessions);
+    }
+  }
+  $('timeline').scrollTop = $('timeline').scrollHeight;
+}
 function handleRichContentClick(e) {
   hideLinkMenu();
+  const continueBtn = e.target.closest('.turn-continue-btn');
+  if (continueBtn) {
+    if (!continueBtn.disabled) {
+      void perform(() => sendQuickContinue(continueBtn.dataset.continuePrompt || '请从上次暂停的位置继续完成剩余任务。'));
+    }
+    return;
+  }
   const codeCopyBtn = e.target.closest('.md-code-copy');
   if (codeCopyBtn) {
     const codeText = codeCopyBtn.closest('.md-code-block')?.querySelector('pre code')?.textContent ?? '';

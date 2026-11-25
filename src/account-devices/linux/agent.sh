@@ -5,11 +5,13 @@ set -euo pipefail
 # Works both from a source checkout and from an installed AnywhereMesh Linux package.
 #
 # Usage:
-#   anywhere-mesh-agent --project /path/to/repo [--label my-repo] [--mode read|edit|execute]
+#   anywhere-mesh-agent --url https://mesh.example.com --project /path/to/repo [--label my-repo] [--mode read|edit|execute]
+#   anywhere-mesh-agent --check-update
+#   anywhere-mesh-agent --update
 #   anywhere-mesh-agent --logout
 #
 # Environment overrides:
-#   ANYWHERE_MESH_URL       Server URL (default: https://awc.xbxbe.com)
+#   ANYWHERE_MESH_URL       Server URL (e.g. https://mesh.example.com; saved after first sign-in)
 #   ANYWHERE_MESH_CA        Deployment CA certificate path
 #   ANYWHERE_MESH_EASYTIER  Path to easytier-core binary
 #   ANYWHERE_MESH_NODE      Path to Node.js 24+ binary
@@ -66,8 +68,10 @@ HAS_STATE=0
 HAS_NAME=0
 HAS_USER=0
 HAS_DIRECT=0
+HAS_URL=0
 for arg in "$@"; do
   case "$arg" in
+    --url) HAS_URL=1 ;;
     --project) HAS_PROJECT=1 ;;
     --mode) HAS_MODE=1 ;;
     --ca) HAS_CA=1 ;;
@@ -90,6 +94,10 @@ ARGS+=("$@")
 
 if [[ ! -f "$STATE_DIR/login.json" && "$HAS_USER" -eq 0 && -t 0 ]]; then
   echo "=== AnywhereMesh Linux Agent First-Time Sign-In ==="
+  if [[ "$HAS_URL" -eq 0 && -z "${ANYWHERE_MESH_URL:-}" && ! -f "$STATE_DIR/server.json" ]]; then
+    read -r -p "Server URL (e.g. https://mesh.example.com): " MESH_URL
+    ARGS+=(--url "$MESH_URL")
+  fi
   read -r -p "Username: " MESH_USER
   read -r -s -p "Password: " MESH_PASS
   echo ""
