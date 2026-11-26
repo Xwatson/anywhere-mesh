@@ -115,7 +115,7 @@ export class DeviceClient {
     this.sandbox = sandbox; this.getSandbox = getSandbox; this.onGrantChange = onGrantChange; this.onClose = onClose;
     this.browserManager = browserManager;
     this.onStream = onStream;
-    this.profile = installation(cfg, identifyRoot); this.tls = { ca: readFileSync(cfg.ca), rejectUnauthorized: true, minVersion: 'TLSv1.3' };
+    this.profile = installation(cfg, identifyRoot); this.tls = { ca: cfg.ca === null ? undefined : readFileSync(cfg.ca), rejectUnauthorized: true, minVersion: 'TLSv1.3' };
     this.loginFile = rememberedLogin(cfg.stateDir, this.profile.secret, cfg.url, loginProtection);
     this.locals = new Map(); this.queue = Promise.resolve(); this.nextRestore = 0; this.streamReq = null;
   }

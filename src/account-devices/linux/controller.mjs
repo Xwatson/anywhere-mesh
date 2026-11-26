@@ -8,11 +8,14 @@ import { loadSavedServerUrl, readDefaultServerUrl, saveServerUrl } from '../serv
 import { LinuxClient } from './client.mjs';
 import { LinuxPeer } from './network.mjs';
 
-if (process.platform !== 'linux') throw Error('LINUX_REQUIRED');
+const isMac = process.platform === 'darwin';
+if (process.platform !== 'linux' && !isMac) throw Error('UNSUPPORTED_DESKTOP_PLATFORM');
+const platformName = isMac ? 'Mac' : 'Linux';
 process.umask(0o077);
 
 const dataBase = process.env.ANYWHERE_MESH_DATA_DIR ||
-  join(process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share'), 'AnywhereMesh');
+  (isMac ? join(homedir(), 'Library', 'Application Support', 'AnywhereMesh') :
+    join(process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share'), 'AnywhereMesh'));
 mkdirSync(dataBase, { recursive: true, mode: 0o700 });
 const root = realpathSync(dataBase);
 const projectDir = join(root, 'project');
@@ -23,18 +26,19 @@ const initialServerUrl = loadSavedServerUrl(root) || readDefaultServerUrl(packag
 const easytierPath = process.env.ANYWHERE_MESH_EASYTIER || join(dirname(process.execPath), 'easytier-core');
 if (!existsSync(easytierPath)) throw Error('EASYTIER_BINARY_NOT_FOUND');
 
-const caPath = process.env.ANYWHERE_MESH_CA || join(root, 'ca.crt');
+const defaultCaPath = join(root, 'ca.crt');
+const caPath = process.env.ANYWHERE_MESH_CA || (!isMac || existsSync(defaultCaPath) ? defaultCaPath : null);
 const cfg = {
   stateDir: join(root, 'state'),
-  name: process.env.ANYWHERE_MESH_NAME || ('Linux 桌面 · ' + hostname()),
+  name: process.env.ANYWHERE_MESH_NAME || (platformName + ' 桌面 · ' + hostname()),
   url: 'https://127.0.0.1:31844',
   serverUrl: initialServerUrl,
   ca: caPath,
-  projects: [{ label: 'Linux 本地项目', path: realpathSync(projectDir) }],
+  projects: [{ label: platformName + ' 本地项目', path: realpathSync(projectDir) }],
 };
 
 const input = createInterface({ input: process.stdin });
-const peer = new LinuxPeer(root, easytierPath, readFileSync(cfg.ca), initialServerUrl);
+const peer = new LinuxPeer(root, easytierPath, caPath ? readFileSync(caPath) : undefined, initialServerUrl);
 const reply = value => process.stdout.write(JSON.stringify(value) + '\n');
 let client = null;
 const browserManager = new BrowserManager({

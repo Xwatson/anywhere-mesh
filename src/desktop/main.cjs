@@ -15,7 +15,9 @@ const installedWindows = process.platform === 'win32' && existsSync(resolve(proc
 const windowsDevice = installedWindows || (process.platform === 'win32' && process.argv.includes('--lab-windows'));
 const installedLinux = process.platform === 'linux' && existsSync(resolve(process.resourcesPath, 'tools/node'));
 const linuxDesktop = installedLinux || (process.platform === 'linux' && process.argv.includes('--desktop-linux'));
-const standaloneDevice = windowsDevice || linuxDesktop;
+const installedMac = process.platform === 'darwin' && existsSync(resolve(process.resourcesPath, 'tools/node'));
+const standaloneDevice = windowsDevice || linuxDesktop || installedMac;
+const macRoot = installedMac ? resolve(process.env.ANYWHERE_MESH_DATA_DIR || resolve(homedir(), 'Library/Application Support/AnywhereMesh')) : null;
 const windowsRoot = windowsDevice ? resolve(process.env.LOCALAPPDATA, 'AnywhereMesh') : null;
 const linuxRoot = linuxDesktop ? resolve(process.env.ANYWHERE_MESH_DATA_DIR || resolve(process.env.XDG_DATA_HOME || resolve(homedir(), '.local/share'), 'AnywhereMesh')) : null;
 const wanProfile = deviceSlot && process.argv.includes('--lab-wan');
@@ -45,7 +47,7 @@ if (installedWindows || installedLinux) {
 if (standaloneDevice) {
   if (sessionsProfile || deviceSlot) throw Error('STANDALONE_PROFILE_REQUIRED');
 } else if (process.platform !== 'linux' || !existsSync('/etc/anywhere-crossborder-lab')) throw Error('LAB_LINUX_REQUIRED');
-const profile = windowsDevice ? resolve(windowsRoot,'profile') : linuxDesktop ? resolve(linuxRoot, 'profile') : deviceSlot ? '/srv/anywhere-lab/'+(wanProfile ? 'wan' : 'd3')+'/shell-'+deviceSlot :
+const profile = installedMac ? resolve(macRoot, 'profile') : windowsDevice ? resolve(windowsRoot,'profile') : linuxDesktop ? resolve(linuxRoot, 'profile') : deviceSlot ? '/srv/anywhere-lab/'+(wanProfile ? 'wan' : 'd3')+'/shell-'+deviceSlot :
   sessionsProfile ? '/srv/anywhere-lab/desktop-d2/shell-profile' : '/srv/anywhere-lab/desktop-d/shell-profile';
 mkdirSync(profile, { recursive: true, mode: 0o700 });
 app.setPath('userData', profile);
@@ -109,16 +111,16 @@ if (single) app.whenReady().then(async () => {
   ses.on('will-download', event => event.preventDefault());
   const backend = installedWindows ? resolve(process.resourcesPath,'tools/node.exe') :
     windowsDevice ? resolve(windowsRoot,'runtime/node.exe') :
-    installedLinux ? resolve(process.resourcesPath, 'tools/node') :
+    (installedLinux || installedMac) ? resolve(process.resourcesPath, 'tools/node') :
     linuxDesktop ? (process.env.ANYWHERE_MESH_NODE || process.execPath) : '/usr/local/bin/node';
-  const linuxEnv = Object.fromEntries(
+  const posixEnv = Object.fromEntries(
     ['PATH', 'HOME', 'USER', 'LANG', 'LC_ALL', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME', 'TMPDIR',
       'ANYWHERE_MESH_DATA_DIR', 'ANYWHERE_MESH_URL', 'ANYWHERE_MESH_CA', 'ANYWHERE_MESH_EASYTIER',
-      'ANYWHERE_MESH_NAME', 'ANYWHERE_MESH_USE_PROXY']
+      'ANYWHERE_MESH_NAME', 'ANYWHERE_MESH_USE_PROXY', 'ANYWHERE_MESH_TRANSPORT']
       .filter(k => process.env[k] !== undefined).map(k => [k, process.env[k]])
   );
   const env = windowsDevice ? Object.fromEntries(['SystemRoot','WINDIR','LOCALAPPDATA','USERPROFILE','TEMP','TMP'].map(k=>[k,process.env[k]])) :
-    linuxDesktop ? linuxEnv : { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: '/home/lab', LANG: 'C.UTF-8' };
+    (linuxDesktop || installedMac) ? posixEnv : { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: '/home/lab', LANG: 'C.UTF-8' };
   let builtinEnv = {};
   if (standaloneDevice) {
     builtinBrowser = new BuiltinBrowserBridge();
@@ -128,7 +130,7 @@ if (single) app.whenReady().then(async () => {
       ANYWHERE_BUILTIN_BROWSER_TOKEN: bridgeInfo.token,
     };
   }
-  const controllerScript = windowsDevice ? 'windows/controller.mjs' : linuxDesktop ? 'linux/controller.mjs' : 'controller.mjs';
+  const controllerScript = windowsDevice ? 'windows/controller.mjs' : (linuxDesktop || installedMac) ? 'linux/controller.mjs' : 'controller.mjs';
   child = spawn(backend, [resolve(appDir, controllerScript), ...(deviceSlot ? [deviceSlot] : []), ...(wanProfile ? ['wan'] : [])], {
     stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, env: { ...env, ...builtinEnv, NODE_NO_WARNINGS: '1' },
   });
@@ -154,7 +156,7 @@ if (single) app.whenReady().then(async () => {
     pending.delete(msg.id); clearTimeout(waiter.timer);
     msg.error ? waiter.reject(Error(msg.error)) : waiter.resolve(msg.value);
   });
-  if (standaloneDevice) {
+  if (windowsDevice || linuxDesktop) {
     const dataRoot = windowsDevice ? windowsRoot : linuxRoot;
     const installDir = (installedWindows || installedLinux) ? resolve(process.resourcesPath, '..') : null;
     const relaunchExe = installedWindows ? process.execPath :
@@ -257,6 +259,18 @@ if (single) app.whenReady().then(async () => {
     void builtinBrowser?.dispose?.().catch(() => {});
   });
   await win.loadURL('anywhere-desktop://app/index.html');
+  if (installedMac && process.argv.includes('--macos-package-smoke')) {
+    try {
+      const state = await request('state', {});
+      if (!state) throw Error('DESKTOP_STATE_UNAVAILABLE');
+      console.log('macOS desktop smoke passed');
+      app.quit();
+    } catch (error) {
+      console.error(error);
+      app.exit(1);
+    }
+    return;
+  }
   if (updater && win && !win.isDestroyed()) {
     win.webContents.send('desktop:event', { type: 'update_state', payload: updater.snapshot() });
   }

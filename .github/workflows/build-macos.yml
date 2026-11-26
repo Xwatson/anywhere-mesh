@@ -1,0 +1,42 @@
+name: Build macOS desktop
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/build-macos.yml
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x64
+    name: macOS (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and verify desktop app
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: |
+          case "$EXPECTED_ARCH:$(uname -m)" in
+            arm64:arm64|x64:x86_64) ;;
+            *) exit 1 ;;
+          esac
+          bash src/account-devices/macos/package-macos.sh dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AnywhereMesh-macos-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
