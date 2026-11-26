@@ -54,10 +54,21 @@ export class Broker {
           this.grant = grant; this.workspaceStatus = info;
         }
         // Durable stop intentions always precede status reconciliation/new work.
-        for (const turn of this.journal.all('turns')) if (turn.stopped && !turn.stopConfirmed) {
-          await rpc.request('stopTurn', { scope: turn.scope, cancelId: turn.cancelId });
-          if (this.rpc !== rpc) return;
-          turn.stopConfirmed = true; this.journal.put('turns', turnKey(turn.scope), turn);
+        for (const turn of this.journal.all('turns')) if (turn.stopped) {
+          if (!turn.stopConfirmed) {
+            await rpc.request('stopTurn', { scope: turn.scope, cancelId: turn.cancelId });
+            if (this.rpc !== rpc) return;
+            turn.stopConfirmed = true; this.journal.put('turns', turnKey(turn.scope), turn);
+          }
+          // Ensure ops that never reached the device (`prepared`/`dispatching`/`not_received`)
+          // receive a durable `cancelled` tombstone via the `cancel` RPC loop below instead of
+          // deadlocking `stopTurn` in `stopping` forever.
+          for (const op of this.journal.all('ops')) {
+            if (sameTurn(op.request.scope, turn.scope) && !TERMINAL.has(op.state) && op.state !== 'unknown' && !op.cancelId) {
+              op.cancelId = `${turn.cancelId}:${op.operationId}`;
+              this.journal.put('ops', op.operationId, op);
+            }
+          }
         }
         for (const op of this.journal.all('ops')) if (op.cancelId && !op.cancelConfirmed) {
           const remote = await rpc.request('cancel', { ...envelopeOf(op), cancelId: op.cancelId });
@@ -224,7 +235,15 @@ export class Broker {
       if (method === 'stopTurn') { turn.stopped = true; turn.cancelId ||= id(); }
       else turn.reasoning = 'idle';
       this.journal.tx(() => {
-        if (method === 'stopTurn') this.journal.activate('turns', key);
+        if (method === 'stopTurn') {
+          this.journal.activate('turns', key);
+          for (const op of this.journal.all('ops')) {
+            if (sameTurn(op.request.scope, turn.scope) && !TERMINAL.has(op.state) && op.state !== 'unknown' && !op.cancelId) {
+              op.cancelId = `${turn.cancelId}:${op.operationId}`;
+              this.journal.put('ops', op.operationId, op);
+            }
+          }
+        }
         this.journal.put('turns', key, turn);
       });
       this.kick(); return turn;

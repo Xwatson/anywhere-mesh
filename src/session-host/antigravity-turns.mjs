@@ -655,9 +655,16 @@ export class AntigravityTurns {
         let result = await h.client.callTool({ name: effectiveTool, arguments: effectiveArgs, _meta: { 'anywhere/callTicket': ticket.ticket } });
         const until = Date.now() + 180000;
         let outputSeq = 0;
+        let notReceivedCancelSent = false;
         while (result.structuredContent?.task && !result.structuredContent.task.resultReady) {
           run.touch?.();
-          if (run.ending || result.structuredContent.task.state === 'unknown' || Date.now() > until) throw Error('WORKSPACE_RESULT_PENDING');
+          const taskState = result.structuredContent.task.state;
+          if (run.ending || taskState === 'unknown' || Date.now() > until) throw Error('WORKSPACE_RESULT_PENDING');
+          if (taskState === 'not_received' && !notReceivedCancelSent) {
+            notReceivedCancelSent = true;
+            result = await h.client.callTool({ name: 'workspace_task_cancel', arguments: { operationId: ticket.operationId } });
+            if (result.structuredContent?.task?.resultReady) break;
+          }
           const receivedSeq = result.structuredContent.task.receivedSeq ?? 0;
           if (receivedSeq > outputSeq) {
             try {
