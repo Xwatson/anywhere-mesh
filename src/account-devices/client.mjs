@@ -28,7 +28,7 @@ const clientVersion = (() => {
     return typeof parsed?.version === 'string' && parsed.version.trim() ? parsed.version.trim() : null;
   } catch { return null; }
 })();
-const CONCURRENT_READ_METHODS = new Set(['history', 'historyBefore', 'quota', 'memoriesList', 'admin', 'adminUsers']);
+const CONCURRENT_READ_METHODS = new Set(['history', 'historyBefore', 'quota', 'memoriesList', 'admin', 'adminUsers', 'adminUsage', 'browserStatus']);
 const RETRYABLE_SOCKET_ERR = /ECONNRESET|EPIPE|ERR_SOCKET_CLOSED|socket hang up/i;
 function singleRequest(url, tls, method, path, raw, token, { idleMs, totalMs, freshSocket }) {
   const deadline = AbortSignal.timeout(totalMs);
@@ -110,12 +110,19 @@ function installation(cfg, identifyRoot) {
   return { secret: identity.secret, projects };
 }
 export class DeviceClient {
-  constructor(cfg, { identifyRoot = rootInfo, launcher = makeLauncher, modes, sandbox, loginProtection, onStream } = {}) {
-    this.cfg = cfg; this.identifyRoot = identifyRoot; this.launcher = launcher; this.modes = modes; this.sandbox = sandbox;
+  constructor(cfg, { identifyRoot = rootInfo, launcher = makeLauncher, modes, sandbox, getSandbox, onGrantChange, onClose, browserManager = null, loginProtection, onStream } = {}) {
+    this.cfg = cfg; this.identifyRoot = identifyRoot; this.launcher = launcher; this.modes = modes;
+    this.sandbox = sandbox; this.getSandbox = getSandbox; this.onGrantChange = onGrantChange; this.onClose = onClose;
+    this.browserManager = browserManager;
     this.onStream = onStream;
     this.profile = installation(cfg, identifyRoot); this.tls = { ca: readFileSync(cfg.ca), rejectUnauthorized: true, minVersion: 'TLSv1.3' };
     this.loginFile = rememberedLogin(cfg.stateDir, this.profile.secret, cfg.url, loginProtection);
     this.locals = new Map(); this.queue = Promise.resolve(); this.nextRestore = 0; this.streamReq = null;
+  }
+  notifyWorkspaceChanged() {
+    for (const local of this.locals.values()) {
+      local.agent.emit('changed');
+    }
   }
   api(method, path, data) { return request(this.cfg.url, this.tls, method, path, data, this.signed?.token); }
   ws(path) {
@@ -231,8 +238,19 @@ export class DeviceClient {
     try {
       const grant = grantFor({ deviceId: signed.deviceId, accountId: String(signed.user.id), workspaceId: mapped.id }, 'revoked', 1);
       const launch = this.launcher({ workspaceRoot: root.path, rootIdentity: root.inode, stateDir, guardedFiles: true });
-      const agent = new LocalAgent(store, grant, { stateDir, maxChildren: 1, workspace: { label: root.label, reliability: true, sandbox: this.sandbox },
-        launcher: (op, g) => { if (this.identifyRoot(root.path) !== root.inode) throw Error('WORKSPACE_ROOT_CHANGED'); return launch(op, g); } });
+      const agent = new LocalAgent(store, grant, {
+        stateDir,
+        maxChildren: 1,
+        workspace: {
+          label: root.label,
+          reliability: true,
+          sandbox: this.sandbox,
+          ...(this.getSandbox ? { getSandbox: this.getSandbox } : {}),
+          ...(this.onGrantChange ? { onGrantChange: g => this.onGrantChange(g, stateDir) } : {}),
+          ...(this.onClose ? { onClose: () => this.onClose(stateDir) } : {}),
+        },
+        launcher: (op, g) => { if (this.identifyRoot(root.path) !== root.inode) throw Error('WORKSPACE_ROOT_CHANGED'); return launch(op, g); },
+      });
       const local = { agent, store, id: mapped.id, localId: root.localId, path: root.path, available };
       if (freshLogin) this.setMode(local, 'revoked');
       this.locals.set(mapped.id, local);
@@ -389,6 +407,32 @@ export class DeviceClient {
     return uploadBinary(this.cfg.url, this.tls, `/api/sessions/${sessionId}/attachments`, bytes, name, mime, this.signed.token);
   }
   async act(method, p) {
+    if (method === 'browserStatus') return this.browserManager ? this.browserManager.uiStatus() : { supported: false };
+    if (method === 'browserUpdateSettings') {
+      if (!this.browserManager) throw Error('BROWSER_NOT_AVAILABLE');
+      this.browserManager.updateSettings(p);
+      return this.browserManager.uiStatus();
+    }
+    if (method === 'browserTestDaily') {
+      if (!this.browserManager) throw Error('BROWSER_NOT_AVAILABLE');
+      return this.browserManager.testDailyConnection(p.cdpUrl);
+    }
+    if (method === 'browserLaunchDaily') {
+      if (!this.browserManager) throw Error('BROWSER_NOT_AVAILABLE');
+      return this.browserManager.launchDailyBrowser(p.port ?? 9222);
+    }
+    if (method === 'browserShowBuiltin') {
+      if (!this.browserManager) throw Error('BROWSER_NOT_AVAILABLE');
+      return this.browserManager.showBuiltinWindow();
+    }
+    if (method === 'browserHideBuiltin') {
+      if (!this.browserManager) throw Error('BROWSER_NOT_AVAILABLE');
+      return this.browserManager.hideBuiltinWindow();
+    }
+    if (method === 'browserResetBuiltin') {
+      if (!this.browserManager) throw Error('BROWSER_NOT_AVAILABLE');
+      return this.browserManager.resetBuiltinBrowser();
+    }
     if (method === 'login') return this.login(p);
     if (method === 'logout') { await this.signout(); return { ok: true }; }
     if (!this.signed) { if (method === 'state') return this.restore(); throw Error('LOGIN_REQUIRED'); }
@@ -434,6 +478,12 @@ export class DeviceClient {
     if (method === 'deleteDevice') return this.api('DELETE', '/api/admin/devices/' + p.id);
     if (method === 'pruneDevices') return this.api('POST', '/api/admin/devices/prune', {});
     if (method === 'adminUsers') return this.api('GET', '/api/admin/users');
+    if (method === 'adminUsage') {
+      const q = new URLSearchParams();
+      if (p.range) q.set('range', p.range);
+      if (p.refreshQuota) q.set('refreshQuota', '1');
+      return this.api('GET', '/api/admin/usage' + (q.toString() ? '?' + q.toString() : ''));
+    }
     if (method === 'createUser') return this.api('POST', '/api/admin/users', p);
     if (method === 'resetUserPassword') return this.api('POST', '/api/admin/users/' + p.userId + '/password', { password: p.password });
     if (method === 'setUserAdmin') return this.api('POST', '/api/admin/users/' + p.userId + '/role', { isAdmin: p.isAdmin });
@@ -502,6 +552,7 @@ export class DeviceClient {
       ...(this.serverUrl ? { serverUrl: this.serverUrl } : {}),
       ...(clientVersion ? { clientVersion } : {}),
       ...(this.cfg.workspacePicker ? { workspacePicker: true } : {}),
+      ...(this.browserManager ? { localBrowser: this.browserManager.publicState() } : {}),
     };
   }
   enqueue(work) {

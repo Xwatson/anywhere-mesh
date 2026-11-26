@@ -33,7 +33,7 @@ export class WorkspaceExecutor {
     if (!record) {
       const info = await this.control('workspace'); assertIdentity(info.grant, this.binding);
       if (info.grant.grantVersion !== this.binding.grantVersion) fail('GRANT_CHANGED');
-      if (!allowed(CATALOG.find(t => t.name === toolName), info.grant, info.sandbox?.supportedTools)) fail('CAPABILITY_DENIED');
+      if (!allowed(CATALOG.find(t => t.name === toolName), info.grant, info.sandbox?.supportedTools, info.sandbox)) fail('CAPABILITY_DENIED');
       if (!info.confirmed) fail('DEVICE_RECOVERING');
       expiresAt ??= Date.now() + 120000; integer(expiresAt, 1, Number.MAX_SAFE_INTEGER);
       if (expiresAt <= Date.now() || expiresAt > Date.now() + 120000) fail('INVALID_DEADLINE');
@@ -120,7 +120,7 @@ export class WorkspaceExecutor {
         op = await this.operation(record.operationId);
         if (op.state === 'unknown' || (TERMINAL.has(op.state) && op.receivedSeq === op.lastSeq)) break;
         if (signal?.aborted || Date.now() >= end) break;
-        await sleep(100);
+        await sleep(25);
       } while (true);
       return this.view(op);
     }

@@ -1,16 +1,47 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rm, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { EventEmitter } from 'node:events';
-import { Client } from '../workspace/node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js';
-import { StdioClientTransport } from '../workspace/node_modules/@modelcontextprotocol/sdk/dist/esm/client/stdio.js';
 import { control } from '../execution/control.mjs';
 import { WorkspaceExecutor } from '../workspace/executor.mjs';
-import { hash } from '../execution/protocol.mjs';
+import { LIFECYCLE } from '../workspace/catalog.mjs';
+import { exact, fail, hash } from '../execution/protocol.mjs';
 import { SessionStore, uuid, fields, text } from './store.mjs';
 import { parseMock } from './mock.mjs';
 import { TurnLaunchLimiter } from './launch-limiter.mjs';
 import { PROJECT_DOC_CANDIDATES, extractProjectDocsFromReadResult, normalizeMemoryScope } from './memory.mjs';
+
+function createDirectWorkspaceClient(executor, { waitMs = 0 } = {}) {
+  return {
+    async callTool({ name, arguments: args = {}, _meta } = {}) {
+      try {
+        const lifecycle = LIFECYCLE.find(t => t.name === name);
+        if (lifecycle) {
+          exact(args, Object.keys(lifecycle.inputSchema.properties));
+          if (name === 'workspace_task_status') return await executor.status(args.operationId);
+          if (name === 'workspace_task_cancel') return await executor.cancel(args.operationId);
+          const value = name === 'workspace_capabilities'
+            ? await executor.capabilities()
+            : await executor.output(args.operationId, args.afterSeq ?? 0);
+          return { content: [{ type: 'text', text: JSON.stringify(value) }], structuredContent: value };
+        }
+        const ticket = _meta?.['anywhere/callTicket'];
+        if (typeof ticket !== 'string') fail('CALL_TICKET_REQUIRED');
+        return await executor.invoke(name, args, ticket, { waitMs });
+      } catch (error) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: error.code ?? error.message }],
+          structuredContent: {
+            error: error.code ?? error.message,
+            recovery: 'Use the same host call ticket to reconcile. An error response does not prove that execution did not occur.',
+          },
+        };
+      }
+    },
+    async close() {},
+  };
+}
 
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 const sanitizeFileName = name => basename(String(name || 'file')).replace(/[\x00-\x1f/\\<>:"|?*]/g, '_').trim().slice(0, 120) || 'file';
@@ -24,6 +55,7 @@ export class SessionHost extends EventEmitter {
     this.queued = new Set();
     this.compacting = new Set();
     this.workspaceLocks = config.workspaceLocks ?? new Map();
+    this.projectDocInflight = new Map();
   }
   withWorkspaceLock(workspaceId, fn) {
     const prev = this.workspaceLocks.get(workspaceId) ?? Promise.resolve();
@@ -172,46 +204,62 @@ export class SessionHost extends EventEmitter {
     if (!t?.binding) return [];
     const w = this.workspaces.get(t.workspaceId);
     if (!w) return [];
-    try {
-      return await this.withWorkspaceLock(t.workspaceId, async () => {
-        if (this.closing || this.store.get('turns', t.id)?.cancelRequested) return [];
-        const info = await this.broker(w, 'workspace');
-        if (!info?.confirmed || info.phase !== 'ready' || info.grant?.revoked) return [];
-        if (info.grant.grantVersion !== t.binding.grantVersion) return [];
-        const executor = new WorkspaceExecutor({
-          journal: this.store,
-          binding: t.binding,
-          control: (m, p) => this.broker(w, m, p),
-        });
-        const callId = 'preload-docs:' + t.id;
-        const args = { paths: [...PROJECT_DOC_CANDIDATES] };
-        const ticket = await executor.issue(callId, 'workspace_read_files', args, { expiresAt: Date.now() + 15000 });
-        const result = await executor.invoke('workspace_read_files', args, ticket.ticket, { waitMs: 6000 });
-        const task = result?.structuredContent?.task;
-        if (!task?.resultReady) {
-          await executor.cancel(ticket.operationId).catch(() => {});
-          return [];
+    const cacheKey = `${t.workspaceId}:${t.binding.grantVersion}`;
+    const recordVersions = (fileVersions) => {
+      if (!fileVersions?.length) return;
+      this.store.tx(() => {
+        for (const version of fileVersions) {
+          if (version?.path) {
+            this.store.put('revisions', hash({ sessionId: t.sessionId, workspaceId: t.workspaceId, path: version.path }), version);
+          }
         }
-        const { docs, fileVersions } = extractProjectDocsFromReadResult(PROJECT_DOC_CANDIDATES, result);
-        if (fileVersions.length) {
-          this.store.tx(() => {
-            for (const version of fileVersions) {
-              if (version?.path) {
-                this.store.put('revisions', hash({ sessionId: t.sessionId, workspaceId: t.workspaceId, path: version.path }), version);
-              }
-            }
-          });
-        }
-        await executor.consumeAfterPersist({
-          operationId: ticket.operationId,
-          resultDigest: task.resultDigest,
-          receiptId: 'preload-docs:' + ticket.operationId,
-        });
-        return docs;
       });
-    } catch {
-      return [];
+    };
+    const inflight = this.projectDocInflight.get(cacheKey);
+    if (inflight) {
+      const shared = await inflight;
+      recordVersions(shared.fileVersions);
+      return shared.docs;
     }
+    const work = (async () => {
+      try {
+        return await this.withWorkspaceLock(t.workspaceId, async () => {
+          if (this.closing || this.store.get('turns', t.id)?.cancelRequested) return { docs: [], fileVersions: [] };
+          const info = await this.broker(w, 'workspace');
+          if (!info?.confirmed || info.phase !== 'ready' || info.grant?.revoked) return { docs: [], fileVersions: [] };
+          if (info.grant.grantVersion !== t.binding.grantVersion) return { docs: [], fileVersions: [] };
+          const executor = new WorkspaceExecutor({
+            journal: this.store,
+            binding: t.binding,
+            control: (m, p) => this.broker(w, m, p),
+          });
+          const callId = 'preload-docs:' + t.id;
+          const args = { paths: [...PROJECT_DOC_CANDIDATES] };
+          const ticket = await executor.issue(callId, 'workspace_read_files', args, { expiresAt: Date.now() + 15000 });
+          const result = await executor.invoke('workspace_read_files', args, ticket.ticket, { waitMs: 6000 });
+          const task = result?.structuredContent?.task;
+          if (!task?.resultReady) {
+            await executor.cancel(ticket.operationId).catch(() => {});
+            return { docs: [], fileVersions: [] };
+          }
+          const extracted = extractProjectDocsFromReadResult(PROJECT_DOC_CANDIDATES, result);
+          await executor.consumeAfterPersist({
+            operationId: ticket.operationId,
+            resultDigest: task.resultDigest,
+            receiptId: 'preload-docs:' + ticket.operationId,
+          });
+          return extracted;
+        });
+      } catch {
+        return { docs: [], fileVersions: [] };
+      } finally {
+        if (this.projectDocInflight.get(cacheKey) === work) this.projectDocInflight.delete(cacheKey);
+      }
+    })();
+    this.projectDocInflight.set(cacheKey, work);
+    const extracted = await work;
+    recordVersions(extracted.fileVersions);
+    return extracted.docs;
   }
   async saveAttachment(sessionId, { name, mime, bytes }) {
     this.session(sessionId);
@@ -372,14 +420,20 @@ export class SessionHost extends EventEmitter {
   }
   track(p) { this.work.add(p);p.catch(e=>console.error('host background:',e.message)).finally(()=>this.work.delete(p));return p; }
   async host(t) {
-    if(this.hosts.has(t.id))return this.hosts.get(t.id);
-    const w=this.workspace(t.workspaceId),path=`${this.config.stateDir}/call-${t.id}.json`;
-    await writeFile(path,JSON.stringify({binding:t.binding,journalPath:this.store.path,brokerSocket:w.brokerDir+'/control.sock',waitMs:0}),{mode:0o600});
-    const client=new Client({name:'anywhere-session-'+(t.engine??'mock'),version:'0.2.0'}),transport=new StdioClientTransport({command:process.execPath,args:[this.config.mcpPath,path],stderr:'pipe',env:{PATH:'/usr/local/bin:/usr/bin:/bin',LANG:'C.UTF-8'}});
-    const connecting=client.connect(transport);transport.stderr?.resume();try{await connecting;}catch(e){await client.close().catch(()=>{});throw e;}
-    const h={client,path,executor:new WorkspaceExecutor({journal:this.store,binding:t.binding,control:(m,p)=>this.broker(w,m,p)})};this.hosts.set(t.id,h);return h;
+    if (this.hosts.has(t.id)) return this.hosts.get(t.id);
+    const w = this.workspace(t.workspaceId);
+    const executor = new WorkspaceExecutor({ journal: this.store, binding: t.binding, control: (m, p) => this.broker(w, m, p) });
+    const client = createDirectWorkspaceClient(executor, { waitMs: 250 });
+    const h = { client, executor };
+    this.hosts.set(t.id, h);
+    return h;
   }
-  async closeHost(id){const h=this.hosts.get(id);if(!h)return;this.hosts.delete(id);await h.client.close().catch(()=>{});await unlink(h.path).catch(()=>{});}
+  async closeHost(id) {
+    const h = this.hosts.get(id);
+    if (!h) return;
+    this.hosts.delete(id);
+    await h.client.close().catch(() => {});
+  }
   async dispatch(turn){
     if(this.busy.has(turn.id))return;this.busy.add(turn.id);
     try{

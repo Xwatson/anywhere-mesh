@@ -11,6 +11,7 @@ export const WINDOWS_TOOLS = [
   'workspace_read_file', 'workspace_read_files', 'workspace_file_info', 'workspace_list_directory',
   'workspace_search', 'workspace_create_directory', 'workspace_write_file', 'workspace_edit_file',
   'workspace_delete_file', 'workspace_move_file', 'workspace_apply_patch', 'workspace_run',
+  'workspace_bg_start', 'workspace_bg_list', 'workspace_bg_output', 'workspace_bg_input', 'workspace_bg_stop',
 ];
 
 export const WINDOWS_SANDBOX = {

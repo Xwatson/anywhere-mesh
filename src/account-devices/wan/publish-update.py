@@ -28,10 +28,11 @@ MANIFEST_DOMAIN_PREFIX = "anywhere-mesh-update-v1\n"
 LINUX_RUNTIME_ABI = "e45.3.3-n24.21.0-et2.6.4-lin"
 
 WIN_FILES = {
-    "desktop": ["main.cjs", "package.json", "contract.cjs", "updater-core.mjs", "updater.cjs", "apply-update.mjs"],
+    "desktop": ["main.cjs", "builtin-browser.cjs", "package.json", "contract.cjs", "updater-core.mjs", "updater.cjs", "apply-update.mjs"],
     "desktop-commander": ["adapter.mjs"],
     "execution": ["agent.mjs", "grants.mjs", "journal.mjs", "protocol.mjs", "retention.mjs", "rpc.mjs"],
-    "workspace": ["patch.mjs"],
+    "workspace": ["patch.mjs", "catalog.mjs", "bg-processes.mjs"],
+    "browser": ["settings.mjs", "accessibility.mjs", "cdp-client.mjs", "external-mcp.mjs", "manager.mjs"],
     "account-devices": [
         "client.mjs", "remembered-login.mjs", "server-config.mjs", "contract.cjs", "preload.cjs",
         "ui/index.html", "ui/app.js", "ui/thread.js", "ui/session-cache.js", "ui/style.css",
@@ -41,10 +42,11 @@ WIN_FILES = {
 }
 
 LINUX_FILES = {
-    "desktop": ["main.cjs", "package.json", "contract.cjs", "updater-core.mjs", "updater.cjs", "apply-update.mjs"],
+    "desktop": ["main.cjs", "builtin-browser.cjs", "package.json", "contract.cjs", "updater-core.mjs", "updater.cjs", "apply-update.mjs"],
     "desktop-commander": ["adapter.mjs"],
     "execution": ["agent.mjs", "grants.mjs", "journal.mjs", "protocol.mjs", "retention.mjs", "rpc.mjs"],
-    "workspace": ["patch.mjs", "catalog.mjs"],
+    "workspace": ["patch.mjs", "catalog.mjs", "bg-processes.mjs"],
+    "browser": ["settings.mjs", "accessibility.mjs", "cdp-client.mjs", "external-mcp.mjs", "manager.mjs"],
     "account-devices": [
         "client.mjs", "remembered-login.mjs", "server-config.mjs", "contract.cjs", "preload.cjs",
         "linux-agent.mjs", "linux-workspace.mjs",

@@ -15,7 +15,9 @@ import { fields, uuid } from '../session-host/store.mjs';
 import { register } from '../desktop-commander/adapter.mjs';
 import { CAPABILITIES } from '../execution/protocol.mjs';
 import { NetworkLeases } from './network-leases.mjs';
+import { db } from './auth-db.mjs';
 import * as directory from './directory.mjs';
+import { UsageTracker, VALID_RANGES } from './usage-stats.mjs';
 import pkg from '../../package.json' with { type: 'json' };
 
 const appVersion = typeof pkg?.version === 'string' && pkg.version.trim() ? pkg.version.trim() : null;
@@ -31,6 +33,10 @@ export async function startServer(config) {
   const launchLimiter = new TurnLaunchLimiter(config.launchLimiter);
   const workspaceLocks = new Map();
   let quotaCache = null, quotaCacheAt = 0, quotaInFlight = null;
+  const usageStats = new UsageTracker(db);
+  const quotaObserveTimers = new Map();
+  const lastQuotaObserveAt = new Map();
+  let closing = false;
   const socketServer = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 524288 });
   function account(id) {
     if (!accounts.has(id)) {
@@ -47,6 +53,15 @@ export async function startServer(config) {
         nodePath: config.nodePath,
         mcpDir: config.antigravityMcpDir,
         toolBudget: config.toolBudget,
+      });
+      host.on('turn_start', info => usageStats.recordTurnStart(id, info));
+      host.on('turn_end', info => {
+        usageStats.recordTurnEnd(id, info);
+        scheduleQuotaObserve(info.engine, host);
+      });
+      host.on('quota_update', parsed => {
+        if (parsed?.engine) lastQuotaObserveAt.set(parsed.engine, Date.now());
+        usageStats.observeQuotaSnapshot(parsed);
       });
       accounts.set(id, host);
     }
@@ -100,11 +115,32 @@ export async function startServer(config) {
       const engines = tasks.length ? await Promise.all(tasks) : [];
       const snapshot = { fetchedAt: Date.now(), engines };
       const hasOk = engines.some(e => e.status === 'ok');
+      for (const eng of engines) {
+        if (eng?.status === 'ok') {
+          lastQuotaObserveAt.set(eng.engine, snapshot.fetchedAt);
+          usageStats.observeQuotaSnapshot(eng, snapshot.fetchedAt);
+        }
+      }
       quotaCache = snapshot;
       quotaCacheAt = hasOk || !engines.length ? snapshot.fetchedAt : snapshot.fetchedAt - 50000;
       return snapshot;
     })().finally(() => { quotaInFlight = null; });
     return quotaInFlight;
+  }
+  function scheduleQuotaObserve(engine, host) {
+    if (closing || !engine || (engine !== 'codex' && engine !== 'antigravity')) return;
+    if ((engine === 'codex' && !host?.codex) || (engine === 'antigravity' && !host?.antigravity)) return;
+    if (quotaObserveTimers.has(engine)) return;
+    const scheduledAt = Date.now();
+    const timer = setTimeout(() => {
+      quotaObserveTimers.delete(engine);
+      if (closing) return;
+      const lastObs = lastQuotaObserveAt.get(engine) ?? 0;
+      if (lastObs >= scheduledAt || Date.now() - lastObs < 10000) return;
+      readQuota(host, true).catch(() => {});
+    }, 2000);
+    timer.unref?.();
+    quotaObserveTimers.set(engine, timer);
   }
 
   function detach(id, current = online.get(id)) {
@@ -123,11 +159,13 @@ export async function startServer(config) {
     return directory.workspaces(userId).map(p => {
       const broker = projects.get(p.id)?.broker;
       const unknownOps = broker?.workspaceStatus?.unknownOperations ?? [];
+      const browser = broker?.workspaceStatus?.sandbox?.browser ?? null;
       return {
         id: p.id, label: p.label, deviceId: p.deviceId,
         ready: online.has(p.deviceId) && broker?.phase === 'ready',
         mode: broker?.grant.mode ?? 'revoked',
         unknownCount: unknownOps.length,
+        ...(browser ? { browser } : {}),
         ...(p.deviceId === thisDevice ? { localId: p.localId } : {}),
       };
     });
@@ -142,10 +180,82 @@ export async function startServer(config) {
     res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
     res.end(JSON.stringify(value));
   }
+  function estimateReqHeaderBytes(req) {
+    let bytes = Buffer.byteLength(`${req.method || 'GET'} ${req.url || '/'} HTTP/${req.httpVersion || '1.1'}\r\n`);
+    const raw = req.rawHeaders;
+    if (Array.isArray(raw)) {
+      for (let i = 0; i < raw.length; i += 2) {
+        bytes += Buffer.byteLength(raw[i] ?? '') + Buffer.byteLength(raw[i + 1] ?? '') + 4;
+      }
+    }
+    return bytes + 2;
+  }
+  function byteLen(chunk, encoding) {
+    if (chunk == null) return 0;
+    if (Buffer.isBuffer(chunk) || chunk instanceof Uint8Array) return chunk.byteLength;
+    if (chunk instanceof ArrayBuffer) return chunk.byteLength;
+    if (Array.isArray(chunk)) return chunk.reduce((sum, item) => sum + byteLen(item), 0);
+    return Buffer.byteLength(String(chunk), typeof encoding === 'string' ? encoding : 'utf8');
+  }
+  function createHttpMeter(req, res) {
+    let userId = null;
+    let pendingIn = estimateReqHeaderBytes(req);
+    let pendingOut = 0;
+    let headersCounted = false;
+    const addIn = n => {
+      if (!n || n <= 0) return;
+      if (userId) usageStats.recordTraffic(userId, { httpIn: n });
+      else pendingIn += n;
+    };
+    const addOut = n => {
+      if (!n || n <= 0) return;
+      if (userId) usageStats.recordTraffic(userId, { httpOut: n });
+      else pendingOut += n;
+    };
+    const bindUser = uid => {
+      if (!uid || userId) return;
+      userId = uid;
+      usageStats.recordTraffic(uid, { httpIn: pendingIn, httpOut: pendingOut, requests: 1 });
+      pendingIn = 0;
+      pendingOut = 0;
+    };
+    const origWriteHead = res.writeHead.bind(res);
+    const origWrite = res.write.bind(res);
+    const origEnd = res.end.bind(res);
+    res.writeHead = (...args) => {
+      if (!headersCounted) { headersCounted = true; addOut(180); }
+      return origWriteHead(...args);
+    };
+    res.write = (chunk, encoding, cb) => {
+      if (!headersCounted) { headersCounted = true; addOut(180); }
+      addOut(byteLen(chunk, encoding));
+      return origWrite(chunk, encoding, cb);
+    };
+    res.end = (chunk, encoding, cb) => {
+      if (!headersCounted) { headersCounted = true; addOut(180); }
+      if (typeof chunk !== 'function') addOut(byteLen(chunk, encoding));
+      return origEnd(chunk, encoding, cb);
+    };
+    const meter = { addIn, addOut, bindUser };
+    req._usageMeter = meter;
+    return meter;
+  }
+  function instrumentWebSocket(ws, userId) {
+    ws.on('message', data => {
+      const n = byteLen(data);
+      if (n > 0) usageStats.recordTraffic(userId, { wsIn: n });
+    });
+    const origSend = ws.send.bind(ws);
+    ws.send = (data, options, cb) => {
+      const n = byteLen(data);
+      if (n > 0) usageStats.recordTraffic(userId, { wsOut: n });
+      return origSend(data, options, cb);
+    };
+  }
   async function rawBody(req, limit = 262144) {
     const parts = []; let bytes = 0;
     for await (const part of req) {
-      bytes += part.length; if (bytes > limit) throw Error('BODY_LIMIT'); parts.push(part);
+      bytes += part.length; req._usageMeter?.addIn(part.length); if (bytes > limit) throw Error('BODY_LIMIT'); parts.push(part);
     }
     return Buffer.concat(parts);
   }
@@ -254,18 +364,26 @@ export async function startServer(config) {
     stream.on('error', () => { if (!res.destroyed) res.destroy(); });
     stream.pipe(res);
   }
-  async function handle(req, res) {
+  async function handle(req, res, meter) {
     const url = new URL(req.url, 'https://local.invalid'), path = url.pathname;
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('Content-Security-Policy', "default-src 'self'; img-src 'self' data: blob:; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
     if (req.headers.origin && req.headers.origin !== 'https://' + req.headers.host) throw Error('FORBIDDEN');
+    const bindOptionalUser = () => {
+      try {
+        const tok = credential(req);
+        if (tok) meter.bindUser(directory.authenticate(tok).user.id);
+      } catch {}
+    };
     const updateMatch = (req.method === 'GET' || req.method === 'HEAD') && UPDATE_FILE_RE.exec(path);
     if (updateMatch) {
+      bindOptionalUser();
       serveUpdateFile(req, res, updateMatch[1]);
       return;
     }
     if (req.method === 'GET' && assets.has(path)) {
+      bindOptionalUser();
       const [name, type] = assets.get(path);
       const contentType = type.startsWith('text/') || type.includes('json') ? type + '; charset=utf-8' : type;
       res.writeHead(200, { 'Content-Type': contentType, 'Cache-Control': 'no-store' });
@@ -273,6 +391,7 @@ export async function startServer(config) {
     }
     if (path === '/api/auth/login' && req.method === 'POST') {
       const signed = directory.login(await body(req), req.socket.remoteAddress);
+      meter.bindUser(signed.user.id);
       if (signed.deviceId) {
         detach(signed.deviceId);
         await prepare(signed.user.id);
@@ -283,6 +402,7 @@ export async function startServer(config) {
         projects: directory.workspaces(signed.user.id).filter(p => p.deviceId === signed.deviceId) } : {}) }); return;
     }
     const token = credential(req), { user, deviceId } = directory.authenticate(token);
+    meter.bindUser(user.id);
     if (req.method === 'POST' && path === '/api/device/network') {
       if (!deviceId || !req.headers.authorization?.startsWith('Bearer ')) throw Error('FORBIDDEN');
       const input = await body(req);
@@ -366,6 +486,24 @@ export async function startServer(config) {
         for (const p of online.values()) onlineByUser.set(p.userId, (onlineByUser.get(p.userId) ?? 0) + 1);
         const users = directory.listUsers().map(u => ({ ...u, onlineDevices: onlineByUser.get(u.id) ?? 0 }));
         json(res, 200, users); return;
+      }
+      if (req.method === 'GET' && path === '/api/admin/usage') {
+        const range = url.searchParams.get('range') || '7d';
+        if (!VALID_RANGES.has(range)) throw Error('INVALID_FIELDS');
+        const refreshQuota = url.searchParams.get('refreshQuota') === '1';
+        const users = directory.listUsers();
+        usageStats.backfillFromStateDir(config.stateDir, users.map(u => u.id), uid => accounts.get(uid)?.store?.db);
+        let quotaSnapshot = quotaCache;
+        if (refreshQuota || (!quotaSnapshot && (CodexTurns || AntigravityTurns))) {
+          try {
+            quotaSnapshot = await readQuota(account(user.id), refreshQuota);
+          } catch {}
+        }
+        const onlineByUser = new Map();
+        for (const p of online.values()) onlineByUser.set(p.userId, (onlineByUser.get(p.userId) ?? 0) + 1);
+        const report = usageStats.summary({ users, onlineByUser, range, quotaSnapshot });
+        json(res, 200, report);
+        return;
       }
       if (req.method === 'POST' && path === '/api/admin/users') {
         const created = directory.createUserAccount(await body(req));
@@ -571,7 +709,8 @@ export async function startServer(config) {
     throw Error('NOT_FOUND');
   }
   const server = https.createServer({ cert: readFileSync(config.cert), key: readFileSync(config.key), minVersion: 'TLSv1.3' }, (req, res) => {
-    handle(req, res).catch(e => {
+    const meter = createHttpMeter(req, res);
+    handle(req, res, meter).catch(e => {
       const message = e.code ?? e.message;
       const status = { LOGIN_REQUIRED: 401, INVALID_CREDENTIALS: 401, FORBIDDEN: 403, DEVICE_DISABLED: 403, CREATE_ON_THIS_DEVICE: 403,
         NETWORK_ENROLLMENT_UNAVAILABLE: 503, NETWORK_ADDRESS_LIMIT: 503, NOT_FOUND: 404, SESSION_NOT_FOUND: 404, ATTACHMENT_NOT_FOUND: 404,
@@ -587,9 +726,11 @@ export async function startServer(config) {
       if (req.headers.origin || !req.headers.authorization?.startsWith('Bearer ')) throw Error('FORBIDDEN');
       const token = credential(req), { user, deviceId } = directory.authenticate(token);
       if (!deviceId) throw Error('FORBIDDEN');
+      usageStats.recordTraffic(user.id, { httpIn: estimateReqHeaderBytes(req), requests: 1 });
       if (req.url === '/ws/device') {
         socketServer.handleUpgrade(req, socket, head, ws => {
           ws._socket?.setKeepAlive?.(true, 15000);
+          instrumentWebSocket(ws, user.id);
           detach(deviceId);
           const current = { socket: ws, token, userId: user.id, lastSeen: Date.now(), saved: Date.now(), tools: new Set() };
           online.set(deviceId, current); directory.seen(deviceId);
@@ -608,6 +749,7 @@ export async function startServer(config) {
       const broker = projects.get(w.id).broker;
       socketServer.handleUpgrade(req, socket, head, ws => {
         ws._socket?.setKeepAlive?.(true, 15000);
+        instrumentWebSocket(ws, user.id);
         current.tools.add(ws);
         const rpc = new Rpc(ws, (method, params, frame) => {
           if (current !== online.get(deviceId)) throw Error('STALE_CONNECTION');
@@ -637,7 +779,10 @@ export async function startServer(config) {
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(config.port, config.host, resolve); });
   const reap = network && setInterval(() => network.sweep().catch(() => {}), 5000);
   return { port: server.address().port, async close() {
+    closing = true;
     clearInterval(heartbeat); clearInterval(reap);
+    for (const timer of quotaObserveTimers.values()) clearTimeout(timer);
+    quotaObserveTimers.clear();
     for (const closeStream of [...streams]) closeStream();
     await network?.sweeping?.catch(() => {});
     for (const id of online.keys()) detach(id);
@@ -646,5 +791,6 @@ export async function startServer(config) {
     for (const host of accounts.values()) await host.close();
     for (const p of projects.values()) { p.broker.close(); p.control.close(); p.store.close(); }
     socketServer.close();
+    usageStats.close();
   } };
 }

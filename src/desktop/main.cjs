@@ -8,6 +8,7 @@ const { pathToFileURL } = require('node:url');
 const { createInterface } = require('node:readline');
 const { trustedSender } = require('./contract.cjs');
 const { DesktopUpdater, checkStartupRollbackSync } = require('./updater.cjs');
+const { BuiltinBrowserBridge } = require('./builtin-browser.cjs');
 const sessionsProfile = process.argv.includes('--lab-sessions');
 const deviceSlot = process.argv.find(arg => /^--lab-device=[ab]$/.test(arg))?.at(-1);
 const installedWindows = process.platform === 'win32' && existsSync(resolve(process.resourcesPath, 'tools/node.exe'));
@@ -26,6 +27,7 @@ const validatePublic = contract.publicValidate ?? contract.validate;
 let testPickerPath;
 let pickingWorkspace=false;
 let updater = null;
+let builtinBrowser = null;
 let windowLoaded = false;
 
 if (installedWindows || installedLinux) {
@@ -117,9 +119,18 @@ if (single) app.whenReady().then(async () => {
   );
   const env = windowsDevice ? Object.fromEntries(['SystemRoot','WINDIR','LOCALAPPDATA','USERPROFILE','TEMP','TMP'].map(k=>[k,process.env[k]])) :
     linuxDesktop ? linuxEnv : { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: '/home/lab', LANG: 'C.UTF-8' };
+  let builtinEnv = {};
+  if (standaloneDevice) {
+    builtinBrowser = new BuiltinBrowserBridge();
+    const bridgeInfo = await builtinBrowser.start();
+    builtinEnv = {
+      ANYWHERE_BUILTIN_BROWSER_URL: bridgeInfo.url,
+      ANYWHERE_BUILTIN_BROWSER_TOKEN: bridgeInfo.token,
+    };
+  }
   const controllerScript = windowsDevice ? 'windows/controller.mjs' : linuxDesktop ? 'linux/controller.mjs' : 'controller.mjs';
   child = spawn(backend, [resolve(appDir, controllerScript), ...(deviceSlot ? [deviceSlot] : []), ...(wanProfile ? ['wan'] : [])], {
-    stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, env: { ...env, NODE_NO_WARNINGS: '1' },
+    stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, env: { ...env, ...builtinEnv, NODE_NO_WARNINGS: '1' },
   });
   child.stderr.on('data', chunk => process.stderr.write(chunk));
   const lines = createInterface({ input: child.stdout });
@@ -241,7 +252,10 @@ if (single) app.whenReady().then(async () => {
     win.show();
   });
   win.on('focus', () => updater?.onWindowFocus());
-  win.on('closed', () => { win = null; });
+  win.on('closed', () => {
+    win = null;
+    void builtinBrowser?.dispose?.().catch(() => {});
+  });
   await win.loadURL('anywhere-desktop://app/index.html');
   if (updater && win && !win.isDestroyed()) {
     win.webContents.send('desktop:event', { type: 'update_state', payload: updater.snapshot() });
@@ -281,6 +295,7 @@ app.on('before-quit', event => {
   if (stopping) return;
   if (win && !win.isDestroyed()) win.hide();
   updater?.dispose();
+  void builtinBrowser?.dispose?.().catch(() => {});
   stop().then(async () => {
     try {
       if (updater) {

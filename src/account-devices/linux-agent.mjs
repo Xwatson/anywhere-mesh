@@ -6,6 +6,7 @@ import { homedir, hostname } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { DeviceClient, request } from './client.mjs';
+import { BrowserManager } from '../browser/manager.mjs';
 import { linuxWorkspace } from './linux-workspace.mjs';
 import { LinuxPeer } from './linux/network.mjs';
 import { loadSavedServerUrl, normalizeServerUrl, readDefaultServerUrl, saveServerUrl } from './server-config.mjs';
@@ -31,6 +32,9 @@ function parseArgs(argv) {
     mode: process.env.ANYWHERE_MESH_MODE || 'read',
     projects: [],
     direct: false,
+    browserBuiltin: process.env.ANYWHERE_BROWSER_BUILTIN === '1',
+    browserDaily: process.env.ANYWHERE_BROWSER_DAILY === '1',
+    browserCdpUrl: process.env.ANYWHERE_BROWSER_CDP_URL || 'auto',
     checkUpdate: false,
     doUpdate: false,
     forceUpdate: false,
@@ -49,6 +53,9 @@ function parseArgs(argv) {
     else if (a === '--password-stdin') opts.passwordStdin = true;
     else if (a === '--logout') opts.logout = true;
     else if (a === '--direct') opts.direct = true;
+    else if (a === '--browser-builtin') opts.browserBuiltin = true;
+    else if (a === '--browser-daily') opts.browserDaily = true;
+    else if (a === '--browser-cdp-url') opts.browserCdpUrl = argv[++i];
     else if (a === '--check-update') opts.checkUpdate = true;
     else if (a === '--update') opts.doUpdate = true;
     else if (a === '--force') opts.forceUpdate = true;
@@ -363,10 +370,19 @@ async function main() {
   if (opts.url) saveServerUrl(opts.state, opts.url);
   const caBytes = readFileSync(opts.ca);
   const peer = opts.direct ? null : new LinuxPeer(opts.state, opts.easytier, caBytes, opts.url);
-  const ws = linuxWorkspace();
+  const browserManager = new BrowserManager({
+    stateDir: opts.state,
+    initialSettings: (opts.browserBuiltin || opts.browserDaily)
+      ? {
+          builtin: { enabled: opts.browserBuiltin, autoShow: false },
+          daily: { enabled: opts.browserDaily, access: 'full', backend: 'cdp', cdpUrl: opts.browserCdpUrl },
+        }
+      : null,
+  });
+  const ws = linuxWorkspace({ browserManager });
   const client = new LinuxAgentClient(
     { name: opts.name, url: opts.url, ca: opts.ca, stateDir: opts.state, projects: opts.projects },
-    ws,
+    { ...ws, browserManager },
     { serverUrl: opts.url, peer, direct: opts.direct },
   );
 
@@ -375,6 +391,7 @@ async function main() {
     if (closing) return;
     closing = true;
     console.log(`[linux-agent] Received ${sig}, shutting down cleanly...`);
+    await browserManager.close().catch(() => {});
     await client.stopAll().catch(() => {});
     process.exit(0);
   };

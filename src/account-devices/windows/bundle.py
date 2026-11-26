@@ -27,10 +27,11 @@ with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as bundle:
         bundle.writestr(entry, data)
 
     files = {
-        "desktop": ["main.cjs", "package.json", "contract.cjs", "updater-core.mjs", "updater.cjs", "apply-update.mjs"],
+        "desktop": ["main.cjs", "builtin-browser.cjs", "package.json", "contract.cjs", "updater-core.mjs", "updater.cjs", "apply-update.mjs"],
         "desktop-commander": ["adapter.mjs"],
         "execution": ["agent.mjs", "grants.mjs", "journal.mjs", "protocol.mjs", "retention.mjs", "rpc.mjs"],
-        "workspace": ["patch.mjs"],
+        "workspace": ["patch.mjs", "catalog.mjs", "bg-processes.mjs"],
+        "browser": ["settings.mjs", "accessibility.mjs", "cdp-client.mjs", "external-mcp.mjs", "manager.mjs"],
         "account-devices": ["client.mjs", "remembered-login.mjs", "server-config.mjs", "contract.cjs", "preload.cjs", "ui/index.html", "ui/app.js", "ui/thread.js", "ui/session-cache.js", "ui/style.css", "ui/manifest.webmanifest", "ui/sw.js", "ui/icon-192.png", "ui/icon-512.png",
                             "windows/controller.mjs", "windows/client.mjs", "windows/network.mjs", "windows/read.mjs", "windows/tasks.mjs", "windows/WorkspaceTree.cs", "windows/TaskHost.cs", "windows/WorkspaceSnapshot.cs", "windows/PeerHost.cs", "windows/LoginProtection.cs", "windows/smoke.mjs"],
     }

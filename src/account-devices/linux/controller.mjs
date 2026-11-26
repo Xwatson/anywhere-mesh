@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir, hostname } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
+import { BrowserManager } from '../../browser/manager.mjs';
 import { linuxWorkspace } from '../linux-workspace.mjs';
 import { loadSavedServerUrl, readDefaultServerUrl, saveServerUrl } from '../server-config.mjs';
 import { LinuxClient } from './client.mjs';
@@ -35,9 +36,20 @@ const cfg = {
 const input = createInterface({ input: process.stdin });
 const peer = new LinuxPeer(root, easytierPath, readFileSync(cfg.ca), initialServerUrl);
 const reply = value => process.stdout.write(JSON.stringify(value) + '\n');
-const workspace = linuxWorkspace();
-const client = new LinuxClient(cfg, {
+let client = null;
+const browserManager = new BrowserManager({
+  stateDir: cfg.stateDir,
+  builtinBridgeUrl: process.env.ANYWHERE_BUILTIN_BROWSER_URL || null,
+  builtinBridgeToken: process.env.ANYWHERE_BUILTIN_BROWSER_TOKEN || null,
+  onSettingsChange: () => {
+    client?.notifyWorkspaceChanged();
+    reply({ event: 'stream', data: { type: 'browser_state', payload: browserManager.publicState() } });
+  },
+});
+const workspace = linuxWorkspace({ browserManager });
+client = new LinuxClient(cfg, {
   ...workspace,
+  browserManager,
   onStream: data => reply({ event: 'stream', data }),
 }, {
   peer,
@@ -73,5 +85,6 @@ try {
   await Promise.allSettled([...inflight]);
 } finally {
   clearInterval(repair);
+  try { await browserManager.close(); } catch {}
   try { await client.suspend(); } finally { await peer.stop(); }
 }

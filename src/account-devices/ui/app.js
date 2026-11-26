@@ -52,6 +52,12 @@ const errors = {
   LOCAL_PROJECT_REQUIRED: '请选择固定本机磁盘上的现有文件夹。',
   WORKSPACE_REGISTRATION_UNAVAILABLE: '当前服务端版本暂不支持添加文件夹。',
   DESKTOP_REQUEST_TIMEOUT: '连接超时，请重试。', SESSION_BUSY: '请等当前回复结束后再发送。',
+  BROWSER_NOT_AVAILABLE: '当前设备暂不支持浏览器控制。',
+  BROWSER_BINARY_NOT_FOUND: '未在本机找到 Chrome / Edge / Chromium 浏览器可执行文件。',
+  BROWSER_LAUNCH_TIMEOUT: '启动调试浏览器超时，请手动以 --remote-debugging-port=9222 启动后重试。',
+  INVALID_CDP_URL: 'CDP 地址格式无效，请填写 auto、端口号（如 9222）或本机 http://127.0.0.1:9222。',
+  CDP_LOOPBACK_REQUIRED: '出于安全限制，CDP 地址仅允许本机回环地址（127.0.0.1 / localhost）。',
+  DAILY_BROWSER_NOT_CONNECTED: '未能连接到本机日常浏览器的调试端口。',
   BODY_LIMIT: '文件或内容超出大小限制。', REVOKE_BEFORE_REVIEW: '请先撤销本项目权限再提交核对。',
   REVIEW_STALE: '核对证据已变化，请刷新后重试。',
   USERNAME_TAKEN: '该用户名已存在，请换一个。',
@@ -87,6 +93,7 @@ const WEB_REQUEST_TIMEOUT_MS = {
   history: 15000,
   historyBefore: 15000,
   quota: 25000,
+  adminUsage: 30000,
   send: 30000,
   uploadAttachment: 45000,
   compactSession: 180000,
@@ -123,6 +130,12 @@ async function action(method, p = {}, opts = {}) {
     case 'deleteDevice': path = '/api/admin/devices/' + p.id; httpMethod = 'DELETE'; break;
     case 'pruneDevices': path = '/api/admin/devices/prune'; body = {}; httpMethod = 'POST'; break;
     case 'adminUsers': path = '/api/admin/users'; break;
+    case 'adminUsage': {
+      const q = new URLSearchParams();
+      if (p.range) q.set('range', p.range);
+      if (p.refreshQuota) q.set('refreshQuota', '1');
+      path = '/api/admin/usage' + (q.toString() ? '?' + q.toString() : ''); break;
+    }
     case 'createUser': path = '/api/admin/users'; body = p; httpMethod = 'POST'; break;
     case 'resetUserPassword': path = '/api/admin/users/' + p.userId + '/password'; body = { password: p.password }; httpMethod = 'POST'; break;
     case 'setUserAdmin': path = '/api/admin/users/' + p.userId + '/role'; body = { isAdmin: p.isAdmin }; httpMethod = 'POST'; break;
@@ -187,11 +200,12 @@ const CONNECT_STEPS = [
 ];
 let connectState = new Map();
 let localConnectUntil = 0;
-let rows = [], seq = 0, firstSeq = 0, hasOlder = false, loadingOlder = false, epoch, sidebarKey, searchKey, fleetKey, usersKey, deviceKey, historyProblem = false, historyDirty = false;
+let rows = [], seq = 0, firstSeq = 0, hasOlder = false, loadingOlder = false, epoch, sidebarKey, searchKey, fleetKey, usersKey, usageKey, deviceKey, historyProblem = false, historyDirty = false;
 let historyStatus = 'idle', historySource = 'none', historyErrorText = '', historySyncSlow = false, historySyncPromise = null, historySyncGen = 0;
 let historyAbort = null, slowLoadTimer = null, cacheSaveTimer = null, prunedSessionsKey = null, pendingScrollBottom = false, lastTimelineScrollTop = 0;
 let remoteToastTimer = null, remoteToastHideTimer = null, remoteToastShownFor = null;
 let fleet = [], adminUsers = [], adminTab = 'users', resetTargetUser = null, consent, projectSource, restoring = false, reviewWorkspaceId = null;
+let adminUsage = null, usageRange = '7d', usageLoading = false, usageReqSeq = 0;
 let pendingAgent = null, pendingModel = null, pendingEffort = null;
 let quotaData = null, quotaLoading = false, quotaError = '', quotaAutoLoaded = false;
 let projectMemoryToken = 0, userMemoryToken = 0;
@@ -208,6 +222,10 @@ let pwaBannerDismissed = (() => { try { return localStorage.getItem('anywhere-pw
 let updateState = null;
 let updateToastShownFor = null;
 let updateActionBusy = false;
+let browserStatus = null;
+let browserBusy = false;
+let browserFeedbackText = '';
+let browserFeedbackIsError = false;
 
 const MIME_EXT = {
   'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp',
@@ -851,6 +869,12 @@ setInterval(tickQueueCountdowns, 250);
 function applyStreamMessage(msg) {
   if (msg?.type === 'connect_progress') { updateConnectProgress(msg.payload); return; }
   if (msg?.type === 'update_state') { applyUpdateState(msg.payload); return; }
+  if (msg?.type === 'browser_state') {
+    if (state) state.localBrowser = msg.payload;
+    renderBrowserSummary();
+    if ($('browser-dialog')?.open) void refreshBrowserStatus();
+    return;
+  }
   if (msg?.type === 'delta' && msg.payload?.delta?.kind === 'queue' && state?.sessions) {
     const d = msg.payload.delta;
     const s = state.sessions.find(item => item.id === msg.payload.sessionId);
@@ -1246,9 +1270,10 @@ function loginView(localName, restore = false, detail, serverUrl) {
     clearPendingAttachments();
     sidebarKey = searchKey = fleetKey = deviceKey = null;
     queueDeadlines.clear();
-    groups.clear(); unfolded.clear(); fleet = []; adminUsers = []; usersKey = null; fleetKey = null;
+    groups.clear(); unfolded.clear(); fleet = []; adminUsers = []; adminUsage = null; usageLoading = false; usersKey = null; fleetKey = null; usageKey = null;
     quotaData = null; quotaLoading = false; quotaError = ''; quotaAutoLoaded = false;
-    for (const id of ['sessions', 'devices', 'fleet', 'search-results', 'signed-user', 'account', 'notice', 'session-title', 'project', 'mode', 'consent-copy']) $(id).replaceChildren();
+    for (const id of ['sessions', 'devices', 'fleet', 'usage-summary-cards', 'usage-table', 'search-results', 'signed-user', 'account', 'notice', 'session-title', 'project', 'mode', 'consent-copy']) $(id).replaceChildren();
+    $('usage-footnote').textContent = '';
     $('devices-session-note').textContent = '';
     $('devices-session-note').hidden = true;
     $('app-version').textContent = '';
@@ -1393,20 +1418,33 @@ function openSearch() {
   searchResults(); showDialog('search-dialog'); $('search-input').focus();
 }
 
+function deviceBrowserSummary(deviceId) {
+  const b = deviceId === state?.deviceId && state?.localBrowser
+    ? state.localBrowser
+    : state?.projects?.find(p => p.deviceId === deviceId && p.browser)?.browser;
+  if (!b) return '';
+  const tags = [];
+  if (b.builtin?.enabled) tags.push('内置浏览器');
+  if (b.daily?.enabled) tags.push(b.daily.access === 'read' ? '日常浏览器(只读)' : '日常浏览器');
+  return tags.join(' + ');
+}
+
 function renderDevices() {
   const s = thread(), p = project(), targetDev = p ? deviceById(p.deviceId) : null;
   const scopeNote = tab === 'chat' ? remoteScopeText(s, p, targetDev) : '';
   const noteEl = $('devices-session-note');
   noteEl.textContent = scopeNote;
   noteEl.hidden = !scopeNote;
-  const key = JSON.stringify([online, state.deviceId, state.devices.map(d => [d.id, d.name, status(d), d.online ? null : d.lastSeen])]);
+  const key = JSON.stringify([online, state.deviceId, state.devices.map(d => [d.id, d.name, status(d), d.online ? null : d.lastSeen, deviceBrowserSummary(d.id)])]);
   if (key === deviceKey) return;
   deviceKey = key;
   const entries = state.devices.map(d => {
     const box = element('div', undefined, 'device-row');
     const identity = element('div'), badge = element('span', undefined, 'device-state');
-    identity.append(element('strong', d.name + (d.id === state.deviceId ? ' · 本机' : '')),
-      element('small', d.online ? '设备 ' + d.id.slice(0, 6) : lastSeen(d)));
+    const title = element('strong', d.name + (d.id === state.deviceId ? ' · 本机' : ''));
+    const bTag = deviceBrowserSummary(d.id);
+    if (bTag) title.append(element('span', bTag, 'device-browser-tag'));
+    identity.append(title, element('small', d.online ? '设备 ' + d.id.slice(0, 6) : lastSeen(d)));
     badge.append(element('i', undefined, 'dot ' + (d.online && online ? 'online' : 'offline')), document.createTextNode(status(d)));
     box.append(icon('dev'), identity, badge);
     return box;
@@ -1567,14 +1605,40 @@ function showAdminFeedback(text = '') {
 function formatDateTime(ts) {
   return ts ? new Date(ts).toLocaleString('zh-CN', { hour12: false }) : '暂无记录';
 }
+function formatBytes(bytes) {
+  const n = Number(bytes);
+  if (!Number.isFinite(n) || n <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let v = n, idx = 0;
+  while (v >= 1024 && idx < units.length - 1) { v /= 1024; idx++; }
+  return (idx === 0 ? Math.round(v) : v >= 100 ? v.toFixed(0) : v >= 10 ? v.toFixed(1) : v.toFixed(2)) + ' ' + units[idx];
+}
+function formatCount(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v) || v <= 0) return '0';
+  return Math.round(v).toLocaleString('zh-CN');
+}
+function shortQuotaWindowLabel(item) {
+  const group = item.engine === 'codex'
+    ? (item.groupKey === 'codex_spark' ? 'Spark' : 'Codex')
+    : item.engine === 'antigravity'
+      ? (item.groupKey === 'claude_gpt' ? 'Claude/GPT' : 'Gemini')
+      : (item.groupName || item.engineLabel || item.engine);
+  const mins = Number(item.windowMinutes || 0);
+  const win = mins === 300 ? '5h' : mins === 10080 ? '7d' : mins === 1440 ? '24h' : (item.windowLabel || '窗口');
+  return `${group} · ${win}`;
+}
 function renderAdminTabs() {
-  const isUsers = adminTab === 'users';
+  const isUsers = adminTab === 'users', isDevices = adminTab === 'devices', isUsage = adminTab === 'usage';
   $('admin-tab-users').classList.toggle('active', isUsers);
   $('admin-tab-users').setAttribute('aria-selected', String(isUsers));
-  $('admin-tab-devices').classList.toggle('active', !isUsers);
-  $('admin-tab-devices').setAttribute('aria-selected', String(!isUsers));
+  $('admin-tab-devices').classList.toggle('active', isDevices);
+  $('admin-tab-devices').setAttribute('aria-selected', String(isDevices));
+  $('admin-tab-usage').classList.toggle('active', isUsage);
+  $('admin-tab-usage').setAttribute('aria-selected', String(isUsage));
   $('admin-users-panel').hidden = !isUsers;
-  $('admin-devices-panel').hidden = isUsers;
+  $('admin-devices-panel').hidden = !isDevices;
+  $('admin-usage-panel').hidden = !isUsage;
   $('new-user-btn').disabled = busy || !online;
 }
 function renderUsers() {
@@ -1665,6 +1729,206 @@ function renderFleet() {
     row.append(element('td', d.username), element('td', deviceName(d)), presence, element('td', d.sessions.map(s => s.title).join('、') || '—'), op);
   }
   $('fleet').replaceChildren(fleet.length ? table : element('p', '暂无设备记录。', 'list-empty'));
+}
+async function fetchAdminUsage(refreshQuota = false) {
+  if (!state?.user?.isAdmin || !online) return;
+  const stamp = generation;
+  const reqId = ++usageReqSeq;
+  usageLoading = true;
+  renderUsage();
+  try {
+    const data = await action('adminUsage', { range: usageRange, ...(refreshQuota ? { refreshQuota: true } : {}) });
+    if (stamp !== generation || reqId !== usageReqSeq) return;
+    adminUsage = data;
+    $('fleet-error').hidden = true;
+  } catch (error) {
+    if (stamp !== generation || reqId !== usageReqSeq) return;
+    if (String(error?.message || '').includes('LOGIN_REQUIRED')) { loginView(); return; }
+    $('fleet-error').hidden = false;
+  } finally {
+    if (stamp === generation && reqId === usageReqSeq) {
+      usageLoading = false;
+      renderUsage();
+    }
+  }
+}
+function usageTone(usedPercent) {
+  if (usedPercent >= 80) return 'danger';
+  if (usedPercent >= 50) return 'warn';
+  return '';
+}
+function renderUsage() {
+  for (const btn of document.querySelectorAll('.usage-range-btn')) {
+    const active = btn.dataset.range === usageRange;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-pressed', String(active));
+    btn.disabled = !online;
+  }
+  const refreshBtn = $('refresh-usage-btn');
+  refreshBtn.disabled = usageLoading || busy || !online;
+  refreshBtn.classList.toggle('spinning', usageLoading);
+  $('usage-updated').textContent = usageLoading
+    ? '正在刷新用量与额度…'
+    : adminUsage?.generatedAt
+      ? '统计于 ' + new Date(adminUsage.generatedAt).toLocaleTimeString('zh-CN', { hour12: false })
+        + (adminUsage.quotaFetchedAt ? ' · 额度更新于 ' + new Date(adminUsage.quotaFetchedAt).toLocaleTimeString('zh-CN', { hour12: false }) : '')
+      : '';
+
+  const key = JSON.stringify([online, usageLoading, usageRange, state?.user?.id, adminUsage]);
+  if (key === usageKey) return;
+  usageKey = key;
+
+  if (!adminUsage) {
+    $('usage-summary-cards').replaceChildren();
+    $('usage-table').replaceChildren(element('p', usageLoading ? '正在加载各账号的流量、AI 用量与额度数据…' : '暂无用量统计数据。', 'list-empty'));
+    $('usage-footnote').textContent = '';
+    return;
+  }
+
+  const totals = adminUsage.totals ?? { traffic: {}, ai: {} };
+  const trTot = totals.traffic ?? {};
+  const aiTot = totals.ai ?? {};
+  const pools = adminUsage.quotaPools ?? [];
+
+  // Summary cards
+  const trafficCard = element('article', undefined, 'usage-card');
+  trafficCard.append(
+    element('div', '全站网络流量', 'usage-card-title'),
+    element('div', formatBytes(trTot.totalBytes), 'usage-card-value'),
+    element('div', `↑ ${formatBytes(trTot.bytesIn)} · ↓ ${formatBytes(trTot.bytesOut)}`, 'usage-card-meta'),
+    element('div', `HTTP ${formatBytes((trTot.httpIn ?? 0) + (trTot.httpOut ?? 0))} · WS ${formatBytes((trTot.wsIn ?? 0) + (trTot.wsOut ?? 0))} · ${formatCount(trTot.requests)} 次请求`, 'usage-card-sub'),
+  );
+
+  const aiCard = element('article', undefined, 'usage-card');
+  const engineMix = [
+    aiTot.codexTurns ? `Codex ${aiTot.codexTurns} 轮` : '',
+    aiTot.antigravityTurns ? `Antigravity ${aiTot.antigravityTurns} 轮` : '',
+  ].filter(Boolean).join(' · ') || '暂无对话';
+  aiCard.append(
+    element('div', '全站 AI 用量', 'usage-card-title'),
+    element('div', `${formatTokenCount(aiTot.totalTokens ?? 0)} tokens`, 'usage-card-value'),
+    element('div', `共 ${formatCount(aiTot.turns)} 轮 · ${engineMix}`, 'usage-card-meta'),
+    element('div', `输入 ${formatTokenCount(aiTot.inputTokens ?? 0)} · 输出 ${formatTokenCount(aiTot.outputTokens ?? 0)} · 缓存 ${formatTokenCount(aiTot.cachedTokens ?? 0)} · ${formatCount(aiTot.toolCalls)} 次工具`, 'usage-card-sub'),
+  );
+
+  const poolCard = element('article', undefined, 'usage-card usage-card-pools');
+  poolCard.append(element('div', '共享额度池状态', 'usage-card-title'));
+  if (pools.length) {
+    const poolList = element('div', undefined, 'usage-pool-list');
+    for (const p of pools) {
+      const row = element('div', undefined, 'usage-pool-row');
+      if (p.resetsAt) row.title = `${p.groupName} · ${p.windowLabel}（剩余 ${formatPercent(p.remainingPercent)}，${formatResetTime(p.resetsAt)}）`;
+      const head = element('div', undefined, 'usage-pool-head');
+      head.append(
+        element('span', shortQuotaWindowLabel(p), 'usage-pool-label'),
+        element('span', `已用 ${formatPercent(p.usedPercent)}`, 'usage-pool-pct' + (usageTone(p.usedPercent) ? ' ' + usageTone(p.usedPercent) : '')),
+      );
+      const bar = element('div', undefined, 'usage-mini-bar');
+      const fill = element('div', undefined, 'usage-mini-fill' + (usageTone(p.usedPercent) ? ' ' + usageTone(p.usedPercent) : ''));
+      fill.style.width = Math.max(0, Math.min(100, p.usedPercent)) + '%';
+      bar.append(fill);
+      row.append(head, bar);
+      poolList.append(row);
+    }
+    poolCard.append(poolList);
+  } else {
+    poolCard.append(element('div', '暂无活跃额度窗口数据（点击右上角刷新可实时拉取）', 'usage-card-sub'));
+  }
+  $('usage-summary-cards').replaceChildren(trafficCard, aiCard, poolCard);
+
+  // Per-account table (Network Traffic & AI Usage in separate columns + Quota % column)
+  const accounts = adminUsage.accounts ?? [];
+  const table = element('table', undefined, 'usage-data-table');
+  const header = table.createTHead().insertRow();
+  const body = table.createTBody();
+  for (const label of ['账号', '网络流量', 'AI 用量', '额度使用占比']) header.append(element('th', label));
+
+  for (const u of accounts) {
+    const row = body.insertRow();
+    const isSelf = u.id === state?.user?.id;
+
+    // Col 1: Account
+    const nameCell = element('td');
+    const nameLine = element('div', undefined, 'usage-account-name');
+    nameLine.append(element('strong', u.username));
+    nameLine.append(element('span', u.isAdmin ? '超级管理员' : '普通用户', 'role-badge' + (u.isAdmin ? ' admin' : '')));
+    if (isSelf) nameLine.append(element('span', '当前账号', 'role-badge self'));
+    nameCell.append(nameLine, element('small', `${u.onlineDevices ?? 0} 在线 / ${u.deviceCount ?? 0} 台设备`));
+
+    // Col 2: Network Traffic (separate column)
+    const tr = u.traffic ?? {};
+    const trafficCell = element('td', undefined, 'usage-metric-cell');
+    const trMain = element('div', undefined, 'usage-cell-main');
+    trMain.append(element('strong', formatBytes(tr.totalBytes)));
+    if ((tr.sharePercent ?? 0) > 0) trMain.append(element('span', `占 ${formatPercent(tr.sharePercent)}`, 'usage-share-pill'));
+    const trBar = element('div', undefined, 'usage-mini-bar');
+    const trFill = element('div', undefined, 'usage-mini-fill');
+    trFill.style.width = Math.max(0, Math.min(100, tr.sharePercent ?? 0)) + '%';
+    trBar.append(trFill);
+    const trDir = element('small', `↑ ${formatBytes(tr.bytesIn)} · ↓ ${formatBytes(tr.bytesOut)}`);
+    const trBreak = element('small', `HTTP ${formatBytes((tr.httpIn ?? 0) + (tr.httpOut ?? 0))} · WS ${formatBytes((tr.wsIn ?? 0) + (tr.wsOut ?? 0))} · ${formatCount(tr.requests)} 次`);
+    trafficCell.append(trMain, trBar, trDir, trBreak);
+
+    // Col 3: AI Usage (separate column)
+    const ai = u.ai ?? {};
+    const aiCell = element('td', undefined, 'usage-metric-cell');
+    const aiMain = element('div', undefined, 'usage-cell-main');
+    aiMain.append(element('strong', ai.turns > 0 ? `${formatTokenCount(ai.totalTokens)} tokens` : '0'));
+    if (ai.turns > 0) {
+      aiMain.append(element('span', `${formatCount(ai.turns)} 轮`, 'usage-share-pill ai'));
+    }
+    const aiBar = element('div', undefined, 'usage-mini-bar');
+    const aiFill = element('div', undefined, 'usage-mini-fill ai');
+    aiFill.style.width = Math.max(0, Math.min(100, ai.sharePercent ?? 0)) + '%';
+    aiBar.append(aiFill);
+    if (ai.turns > 0) {
+      const tokDetail = element('small', `输入 ${formatTokenCount(ai.inputTokens)} · 输出 ${formatTokenCount(ai.outputTokens)} · 缓存 ${formatTokenCount(ai.cachedTokens)}`);
+      const parts = [];
+      if (ai.codexTurns) parts.push(`Codex ${ai.codexTurns} 轮`);
+      if (ai.antigravityTurns) parts.push(`Antigravity ${ai.antigravityTurns} 轮`);
+      if (ai.toolCalls) parts.push(`${formatCount(ai.toolCalls)} 次工具`);
+      aiCell.append(aiMain, aiBar, tokDetail, element('small', parts.join(' · ') || '—'));
+    } else {
+      aiCell.append(aiMain, aiBar, element('small', '所选时段暂无 AI 对话'));
+    }
+
+    // Col 4: Quota Percentage Consumed
+    const quotaCell = element('td', undefined, 'usage-quota-cell');
+    const qList = u.quota ?? [];
+    if (qList.length) {
+      const wrap = element('div', undefined, 'usage-quota-list');
+      for (const q of qList) {
+        const qRow = element('div', undefined, 'usage-quota-row');
+        const srcLabel = q.source === 'measured' ? '实测增量' : '窗口 Token 归因估算';
+        const resetText = q.resetsAt ? `，${formatResetTime(q.resetsAt)}` : '';
+        qRow.title = `${q.groupName} · ${q.windowLabel}：消耗总额度 ${formatPercent(q.consumedPercent)}（占全服已用 ${formatPercent(q.poolUsedPercent)} 中的 ${formatPercent(q.shareOfUsedPercent)}；${srcLabel}${resetText}）`;
+        const qHead = element('div', undefined, 'usage-quota-head');
+        qHead.append(element('span', shortQuotaWindowLabel(q), 'usage-quota-label'));
+        const valSpan = element('span', undefined, 'usage-quota-val' + (usageTone(q.consumedPercent) ? ' ' + usageTone(q.consumedPercent) : ''));
+        valSpan.append(
+          element('strong', formatPercent(q.consumedPercent)),
+          element('span', ` (占已用 ${formatPercent(q.shareOfUsedPercent)})`, 'usage-quota-share'),
+        );
+        qHead.append(valSpan);
+        const qBar = element('div', undefined, 'usage-mini-bar');
+        const qFill = element('div', undefined, 'usage-mini-fill' + (usageTone(q.consumedPercent) ? ' ' + usageTone(q.consumedPercent) : ''));
+        qFill.style.width = Math.max(0, Math.min(100, q.consumedPercent)) + '%';
+        qBar.append(qFill);
+        qRow.append(qHead, qBar);
+        wrap.append(qRow);
+      }
+      quotaCell.append(wrap);
+    } else {
+      quotaCell.append(
+        element('span', '0%', 'usage-quota-zero'),
+        element('small', pools.length ? '当前额度窗口无消耗' : '暂无额度数据'),
+      );
+    }
+
+    row.append(nameCell, trafficCell, aiCell, quotaCell);
+  }
+  $('usage-table').replaceChildren(accounts.length ? table : element('p', '暂无账号记录。', 'list-empty'));
+  $('usage-footnote').textContent = `网络流量自 ${formatDateTime(adminUsage.trackingSince)} 起实时累计（含 HTTP API、SSE 流、附件传输及 WebSocket 远程工具通道）；额度百分比基于共享订阅当前 5 小时 / 7 天窗口的实测增量与加权 Token 占比计算。`;
 }
 
 function renderModelControls() {
@@ -2065,6 +2329,7 @@ function render() {
   renderQuotaSummary();
   updatePwaInstallUI();
   renderUpdateUI();
+  renderBrowserSummary();
   if ($('devices-dialog').open) renderDevices();
   if ($('search-dialog').open) searchResults();
   if ($('quota-dialog').open) renderQuotaDialog();
@@ -2072,7 +2337,7 @@ function render() {
     quotaAutoLoaded = true;
     void fetchQuota(false);
   }
-  if (tab === 'admin') { renderAdminTabs(); renderUsers(); renderFleet(); }
+  if (tab === 'admin') { renderAdminTabs(); renderUsers(); renderFleet(); renderUsage(); }
   updateHistoryUI();
   ensureStream();
 }
@@ -2399,10 +2664,15 @@ async function sync() {
     renderAdminTabs();
     const stamp = generation;
     try {
-      const [list, users] = await Promise.all([action('admin'), action('adminUsers')]);
+      const [list, users, usageRes] = await Promise.all([
+        action('admin'),
+        action('adminUsers'),
+        adminTab === 'usage' ? action('adminUsage', { range: usageRange }).catch(() => null) : Promise.resolve(null),
+      ]);
       if (stamp !== generation || tab !== 'admin') return;
       fleet = list; adminUsers = users;
-      renderUsers(); renderFleet(); $('fleet-error').hidden = true;
+      if (usageRes) adminUsage = usageRes;
+      renderUsers(); renderFleet(); renderUsage(); $('fleet-error').hidden = true;
     } catch (error) {
       if (stamp !== generation || tab !== 'admin') return;
       if (error.message.includes('LOGIN_REQUIRED')) { loginView(); return; }
@@ -3075,6 +3345,17 @@ $('password-dialog').addEventListener('close', () => {
 $('admin-nav').onclick = () => showAdmin();
 $('admin-tab-users').onclick = () => { adminTab = 'users'; renderAdminTabs(); renderUsers(); };
 $('admin-tab-devices').onclick = () => { adminTab = 'devices'; renderAdminTabs(); renderFleet(); };
+$('admin-tab-usage').onclick = () => {
+  adminTab = 'usage'; renderAdminTabs(); renderUsage();
+  void fetchAdminUsage(false);
+};
+for (const btn of document.querySelectorAll('.usage-range-btn')) {
+  btn.onclick = () => {
+    if (!btn.dataset.range || btn.dataset.range === usageRange) return;
+    usageRange = btn.dataset.range; usageKey = null; renderUsage(); void fetchAdminUsage(false);
+  };
+}
+$('refresh-usage-btn').onclick = () => void fetchAdminUsage(true);
 $('new-user-btn').onclick = openCreateUser;
 $('cancel-create-user').onclick = () => $('create-user-dialog').close();
 $('create-user-form').oninput = () => { $('create-user-error').textContent = ''; };
@@ -3548,6 +3829,224 @@ $('pref-install-on-quit').onchange = e => {
 if (native) {
   void action('updateStatus').then(applyUpdateState).catch(() => {});
 }
+
+function renderBrowserSummary() {
+  const menuBtn = $('browser-control-menu');
+  const badge = $('account-browser-badge');
+  if (!menuBtn || !badge) return;
+  menuBtn.hidden = !native;
+  if (!native) return;
+  const pub = browserStatus?.settings
+    ? {
+        builtin: { enabled: Boolean(browserStatus.settings.builtin?.enabled) },
+        daily: { enabled: Boolean(browserStatus.settings.daily?.enabled), access: browserStatus.settings.daily?.access },
+      }
+    : state?.localBrowser;
+  const parts = [];
+  if (pub?.builtin?.enabled) parts.push('内置');
+  if (pub?.daily?.enabled) parts.push(pub.daily.access === 'read' ? '日常(只读)' : '日常');
+  badge.textContent = parts.length ? parts.join(' + ') : '未开启';
+  badge.className = 'menu-badge' + (parts.length ? ' accent' : '');
+}
+
+function setBrowserFeedback(text, isError = false) {
+  browserFeedbackText = text || '';
+  browserFeedbackIsError = Boolean(isError);
+  const el = $('browser-feedback');
+  if (!el) return;
+  el.textContent = browserFeedbackText;
+  el.className = 'browser-feedback' + (browserFeedbackIsError ? ' error' : '');
+  el.hidden = !browserFeedbackText;
+}
+
+function renderBrowserProbe(dailyInfo) {
+  const box = $('browser-daily-probe');
+  if (!box) return;
+  if (!dailyInfo || dailyInfo.skipped) {
+    box.hidden = true;
+    box.replaceChildren();
+    return;
+  }
+  box.hidden = false;
+  box.className = 'browser-probe-box' + (dailyInfo.connected || dailyInfo.ok ? '' : ' error');
+  const nodes = [];
+  if (dailyInfo.connected || dailyInfo.ok) {
+    nodes.push(element('strong', `已连接：${dailyInfo.browser || 'Chromium'}（${dailyInfo.endpoint || '本机调试端口'} · ${dailyInfo.tabCount ?? 0} 个标签页）`));
+    const tabs = Array.isArray(dailyInfo.tabs) ? dailyInfo.tabs.slice(0, 6) : [];
+    if (tabs.length) {
+      const ul = element('ul', undefined, 'browser-tabs-list');
+      for (const tab of tabs) {
+        const label = tab.title ? `${tab.title} — ${tab.url || ''}` : (tab.url || 'about:blank');
+        ul.append(element('li', label));
+      }
+      nodes.push(ul);
+    }
+  } else {
+    nodes.push(element('strong', '未检测到开启调试端口的日常浏览器'));
+    if (dailyInfo.hint) nodes.push(element('span', dailyInfo.hint));
+    else if (dailyInfo.error) nodes.push(element('span', msg(dailyInfo.error)));
+  }
+  box.replaceChildren(...nodes);
+}
+
+function renderBrowserDialog() {
+  const s = browserStatus?.settings ?? {
+    builtin: { enabled: false, autoShow: true },
+    daily: { enabled: false, access: 'full', backend: 'cdp', cdpUrl: 'auto' },
+  };
+  const bOn = Boolean(s.builtin?.enabled);
+  const dOn = Boolean(s.daily?.enabled);
+  const builtinAvail = browserStatus?.builtin?.available !== false;
+  const isElectronBuiltin = browserStatus?.builtin?.kind === 'electron';
+
+  $('browser-builtin-toggle').checked = bOn;
+  $('browser-builtin-toggle').disabled = browserBusy || !builtinAvail;
+  $('browser-builtin-autoshow').checked = s.builtin?.autoShow !== false;
+  $('browser-builtin-autoshow').disabled = browserBusy || !bOn || !isElectronBuiltin;
+  $('browser-builtin-show').disabled = browserBusy || !bOn || !isElectronBuiltin;
+  $('browser-builtin-hide').disabled = browserBusy || !bOn || !isElectronBuiltin;
+  $('browser-builtin-reset').disabled = browserBusy || !builtinAvail;
+  const bBadge = $('browser-builtin-badge');
+  bBadge.textContent = !builtinAvail ? '不可用' : bOn ? (browserStatus?.builtin?.visible ? '已开启 · 窗口可见' : '已开启') : '未开启';
+  bBadge.className = 'browser-pill' + (bOn ? ' on' : '');
+
+  $('browser-daily-toggle').checked = dOn;
+  $('browser-daily-toggle').disabled = browserBusy;
+  $('browser-daily-access').value = s.daily?.access || 'full';
+  $('browser-daily-access').disabled = browserBusy;
+  $('browser-daily-backend').value = s.daily?.backend || 'cdp';
+  $('browser-daily-backend').disabled = browserBusy;
+  const cdpInput = $('browser-daily-cdp');
+  if (document.activeElement !== cdpInput) cdpInput.value = s.daily?.cdpUrl || 'auto';
+  cdpInput.disabled = browserBusy;
+  $('browser-daily-save-cdp').disabled = browserBusy;
+  $('browser-daily-test').disabled = browserBusy;
+  $('browser-daily-launch').disabled = browserBusy;
+  const dBadge = $('browser-daily-badge');
+  if (!dOn) {
+    dBadge.textContent = '未开启';
+    dBadge.className = 'browser-pill';
+  } else if (browserStatus?.daily?.connected) {
+    dBadge.textContent = s.daily?.access === 'read' ? '已连接 · 只读' : '已连接';
+    dBadge.className = 'browser-pill on';
+  } else {
+    dBadge.textContent = '已开启 · 待连接';
+    dBadge.className = 'browser-pill warn';
+  }
+  renderBrowserProbe(browserStatus?.daily);
+  $('browser-disable-all').disabled = browserBusy || (!bOn && !dOn);
+  renderBrowserSummary();
+}
+
+async function refreshBrowserStatus() {
+  if (!native) return;
+  try {
+    browserStatus = await action('browserStatus');
+    if (browserStatus?.settings && state) {
+      state.localBrowser = {
+        builtin: { enabled: Boolean(browserStatus.settings.builtin?.enabled), available: Boolean(browserStatus.builtin?.available) },
+        daily: { enabled: Boolean(browserStatus.settings.daily?.enabled), access: browserStatus.settings.daily?.access, backend: browserStatus.settings.daily?.backend },
+      };
+    }
+    renderBrowserDialog();
+  } catch (err) {
+    setBrowserFeedback(msg(err), true);
+  }
+}
+
+async function openBrowserDialog() {
+  if (!native || busy) return;
+  $('account-dialog').close();
+  setBrowserFeedback('');
+  renderBrowserDialog();
+  showDialog('browser-dialog');
+  await refreshBrowserStatus();
+}
+
+async function runBrowserAction(fn, okText = '') {
+  if (!native || browserBusy) return;
+  browserBusy = true;
+  setBrowserFeedback('');
+  renderBrowserDialog();
+  try {
+    const res = await fn();
+    if (res && res.settings) browserStatus = res;
+    if (okText) setBrowserFeedback(okText, false);
+    return res;
+  } catch (err) {
+    setBrowserFeedback(msg(err), true);
+  } finally {
+    browserBusy = false;
+    renderBrowserDialog();
+  }
+}
+
+$('browser-control-menu').onclick = () => void openBrowserDialog();
+$('browser-close').onclick = () => $('browser-dialog').close();
+$('browser-builtin-toggle').onchange = e => {
+  const on = Boolean(e.target.checked);
+  void runBrowserAction(() => action('browserUpdateSettings', { builtin: { enabled: on } }), on ? '已开启内置开发浏览器，AI 现在可直接调试并截图查看页面。' : '已关闭内置开发浏览器。');
+};
+$('browser-builtin-autoshow').onchange = e => {
+  const on = Boolean(e.target.checked);
+  void runBrowserAction(() => action('browserUpdateSettings', { builtin: { autoShow: on } }));
+};
+$('browser-builtin-show').onclick = () => {
+  void runBrowserAction(async () => {
+    await action('browserShowBuiltin');
+    return action('browserStatus');
+  }, '已显示内置开发浏览器窗口。');
+};
+$('browser-builtin-hide').onclick = () => {
+  void runBrowserAction(async () => {
+    await action('browserHideBuiltin');
+    return action('browserStatus');
+  }, '已隐藏内置开发浏览器窗口。');
+};
+$('browser-builtin-reset').onclick = () => {
+  if (!confirm('确定清空内置开发浏览器的所有标签页、Cookie 和缓存？')) return;
+  void runBrowserAction(async () => {
+    await action('browserResetBuiltin');
+    return action('browserStatus');
+  }, '已清空内置开发浏览器会话数据。');
+};
+$('browser-daily-toggle').onchange = e => {
+  const on = Boolean(e.target.checked);
+  void runBrowserAction(() => action('browserUpdateSettings', { daily: { enabled: on } }), on ? '已开启日常浏览器接管。' : '已关闭日常浏览器接管并断开连接。');
+};
+$('browser-daily-access').onchange = e => {
+  const access = e.target.value;
+  void runBrowserAction(() => action('browserUpdateSettings', { daily: { access } }), access === 'read' ? '日常浏览器已切换为仅只读查看模式。' : '日常浏览器已切换为完全操作模式。');
+};
+$('browser-daily-backend').onchange = e => {
+  const backend = e.target.value;
+  void runBrowserAction(() => action('browserUpdateSettings', { daily: { backend } }), '已切换日常浏览器驱动。');
+};
+$('browser-daily-save-cdp').onclick = () => {
+  const cdpUrl = $('browser-daily-cdp').value.trim() || 'auto';
+  void runBrowserAction(() => action('browserUpdateSettings', { daily: { cdpUrl } }), '已保存 CDP 地址。');
+};
+$('browser-daily-test').onclick = () => {
+  const cdpUrl = $('browser-daily-cdp').value.trim() || 'auto';
+  void runBrowserAction(async () => {
+    const probe = await action('browserTestDaily', { cdpUrl });
+    if (browserStatus) browserStatus = { ...browserStatus, daily: { ...probe, connected: Boolean(probe.ok) } };
+    else browserStatus = { daily: { ...probe, connected: Boolean(probe.ok) } };
+    setBrowserFeedback(probe.ok ? `连接正常：检测到 ${probe.tabCount ?? 0} 个打开的标签页。` : (probe.hint || '未检测到调试端口。'), !probe.ok);
+    return null;
+  });
+};
+$('browser-daily-launch').onclick = () => {
+  void runBrowserAction(async () => {
+    const res = await action('browserLaunchDaily', { port: 9222 });
+    const st = await action('browserStatus');
+    setBrowserFeedback(`已启动调试浏览器（${res.endpoint}），登录后即可让 AI 接管。`, false);
+    return st;
+  });
+};
+$('browser-disable-all').onclick = () => {
+  void runBrowserAction(() => action('browserUpdateSettings', { builtin: { enabled: false }, daily: { enabled: false } }), '已立即关闭所有浏览器控制授权。');
+};
 if (!native) {
   window.addEventListener('beforeinstallprompt', e => {
     e.preventDefault();

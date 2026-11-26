@@ -171,7 +171,8 @@ export class LocalAgent extends EventEmitter {
     try {
       const perform = spec.perform ?? spec.read;
       tool = await perform(abort.signal,(stream,data) => this.output(op.operationId,stream,data));
-      if (Buffer.byteLength(JSON.stringify(tool)) > 196608) fail(spec.mutates ? 'WORKSPACE_COMMIT_UNCERTAIN' : 'RESULT_TOO_LARGE');
+      const maxResultBytes = spec.mutates ? 196608 : 360000;
+      if (Buffer.byteLength(JSON.stringify(tool)) > maxResultBytes) fail(spec.mutates ? 'WORKSPACE_COMMIT_UNCERTAIN' : 'RESULT_TOO_LARGE');
     } catch (error) {
       const reason = /^[A-Z][A-Z0-9_]{1,60}$/.test(error.code) ? error.code : (spec.read ? 'READ_FAILED' : 'WORKSPACE_OPERATION_FAILED');
       uncertain = reason === 'WORKSPACE_COMMIT_UNCERTAIN';
@@ -313,12 +314,13 @@ export class LocalAgent extends EventEmitter {
   workspaceInfo() {
     if (!this.authority) fail('WORKSPACE_UNMANAGED');
     const ops = this.journal.all('ops');
+    const dynamicSandbox = typeof this.workspace.getSandbox === 'function' ? this.workspace.getSandbox() : this.workspace.sandbox;
     return { grant: this.grant, label: this.workspace.label,
       pendingCancellations: ops.filter((o) => o.state === 'cancelling').map((o) => o.operationId),
       unknownOperations: ops.filter((o) => o.state === 'unknown').map((o) => o.operationId),
       sandbox: { network: false, guardedFileWrites: Boolean(this.workspace.reliability),
         fileWriteProtection: this.workspace.reliability ? 'optimistic-version-check-with-preimage' : null,
-        ...this.workspace.sandbox, readOnly: Boolean(this.workspace.sandbox?.readOnly) || !this.grant.capabilities.includes('workspace.write') }, history: this.journal.storage() };
+        ...dynamicSandbox, readOnly: Boolean(dynamicSandbox?.readOnly) || !this.grant.capabilities.includes('workspace.write') }, history: this.journal.storage() };
   }
   cleanConsumedBackups() {
     // State belongs to the service; never derive a filesystem path from a caller
@@ -373,6 +375,7 @@ export class LocalAgent extends EventEmitter {
     for (const op of this.journal.all('ops')) if (!TERMINAL.has(op.state) && op.request.scope.grantVersion < this.grant.grantVersion) {
       this.cancel({ ...envelopeOf(op), cancelId: `grant:${this.grant.grantVersion}:${op.operationId}` });
     }
+    try { this.workspace?.onGrantChange?.(this.grant); } catch {}
     this.emit('changed');
     return { decisionVersion: decision.grantVersion, ...this.workspaceInfo() };
   }
@@ -382,6 +385,7 @@ export class LocalAgent extends EventEmitter {
       this.cancel({ ...envelopeOf(op), cancelId: `shutdown:${op.operationId}` });
     }
     while (this.children.size) await new Promise((resolve) => setTimeout(resolve, 25));
+    try { await this.workspace?.onClose?.(); } catch {}
   }
 }
 export const envelopeOf = (op) => ({ operationId: op.operationId, requestHash: op.requestHash, request: op.request });

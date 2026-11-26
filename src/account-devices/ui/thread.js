@@ -1107,6 +1107,13 @@ const toolLabels = {
   workspace_file_info: '文件信息', workspace_search: '搜索项目', workspace_create_directory: '创建目录',
   workspace_write_file: '写入文件', workspace_edit_file: '编辑文件', workspace_delete_file: '删除文件',
   workspace_move_file: '移动文件', workspace_apply_patch: '应用补丁', workspace_run: '执行命令',
+  workspace_bg_start: '启动后台进程', workspace_bg_list: '查看后台进程', workspace_bg_output: '读取进程输出',
+  workspace_bg_input: '发送进程输入', workspace_bg_stop: '停止后台进程',
+  browser_status: '浏览器状态', browser_tabs: '查看标签页', browser_snapshot: '网页结构快照',
+  browser_screenshot: '网页截图', browser_logs: '控制台/网络日志', browser_wait: '等待网页元素',
+  browser_navigate: '打开网页', browser_click: '点击网页元素', browser_type: '输入网页内容',
+  browser_press: '网页按键', browser_scroll: '滚动网页', browser_eval: '执行网页脚本',
+  browser_tab_action: '管理标签页',
   session_read_attachment: '读取附件', session_send_attachment: '写入附件',
   memory_save: '保存记忆', memory_list: '查看记忆', memory_delete: '删除记忆',
 };
@@ -1127,11 +1134,20 @@ function toolStep(event, expanded, liveOutput) {
   step.open = expanded.has(event.id);
   const summary = element('summary');
   const label = toolLabels[event.name] ?? event.name;
-  const subject = event.input?.path ?? event.input?.fromPath ?? event.input?.attachment ?? event.input?.key ?? event.input?.pattern ?? event.input?.command?.slice(0, 48) ?? '';
+  const targetBadge = event.name?.startsWith('browser_') && event.input?.target
+    ? (event.input.target === 'daily' ? '日常浏览器' : '内置浏览器')
+    : '';
+  const subject = event.input?.path ?? event.input?.fromPath ?? event.input?.url ?? event.input?.ref ?? event.input?.selector ?? event.input?.processId ?? event.input?.attachment ?? event.input?.key ?? event.input?.pattern ?? event.input?.command?.slice(0, 48) ?? '';
   const status = event.status === 'failed' ? '失败' : event.status === 'running' ? '进行中' : '';
-  const iconName = event.name?.startsWith('memory_') ? 'spark' : event.name?.includes('read') ? 'file' : 'terminal';
+  const iconName = event.name?.startsWith('memory_')
+    ? 'spark'
+    : event.name?.startsWith('browser_')
+      ? 'globe'
+      : event.name?.includes('read')
+        ? 'file'
+        : 'terminal';
   summary.append(icon(iconName),
-    element('span', [label, subject, status].filter(Boolean).join(' · ')), icon('down'));
+    element('span', [label, targetBadge, subject, status].filter(Boolean).join(' · ')), icon('down'));
   const outputText = event.output ?? (event.status === 'running' && liveOutput ? liveOutput : null);
   step.append(summary, element('pre', outputText ?? (event.status === 'running' ? '等待设备返回结果…' : '本次操作已结束。')));
   return step;

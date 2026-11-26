@@ -9,7 +9,7 @@ import { extname, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { CATALOG, listTools, normalize } from '../workspace/catalog.mjs';
+import { CATALOG, browserInstructions, listTools, normalize } from '../workspace/catalog.mjs';
 import { assertIdentity } from '../execution/grants.mjs';
 import { hash } from '../execution/protocol.mjs';
 import {
@@ -168,13 +168,18 @@ function normalizeAgyBucket(bucket, idx) {
     remainingPercent = 0;
   }
   if (remainingPercent === null) return null;
-  remainingPercent = Math.max(0, Math.min(100, Math.round(remainingPercent * 10) / 10));
+  const clampedRemaining = Math.max(0, Math.min(100, remainingPercent));
+  const remainingPercentExact = Math.round(clampedRemaining * 10000) / 10000;
+  const usedPercentExact = Math.round((100 - clampedRemaining) * 10000) / 10000;
+  remainingPercent = Math.max(0, Math.min(100, Math.round(clampedRemaining * 10) / 10));
   const usedPercent = Math.max(0, Math.min(100, Math.round((100 - remainingPercent) * 10) / 10));
   return {
     id: String(bucket.id ?? bucket.bucketId ?? bucket.bucketType ?? bucket.window ?? idx),
     label: agyWindowLabel(bucket),
     usedPercent,
     remainingPercent,
+    usedPercentExact,
+    remainingPercentExact,
     ...(resetsAt ? { resetsAt } : {}),
   };
 }
@@ -462,6 +467,7 @@ export class AntigravityTurns {
       if (tools.some(x => x.name === 'workspace_write_file')) tools.push(SESSION_TOOLS[1]);
     }
     tools.push(...MEMORY_TOOLS);
+    tools.sandbox = remote.sandbox;
     return tools;
   }
 
@@ -674,7 +680,7 @@ export class AntigravityTurns {
               outputSeq = out.nextSeq;
             } catch {}
           }
-          await delay(250);
+          await delay(60);
           result = await h.client.callTool({ name: 'workspace_task_status', arguments: { operationId: ticket.operationId } });
         }
         return await this.capture(current, { id: callId, tool, effectiveTool, args, inputHash }, h, ticket.operationId, result, { guard: run.guard });
@@ -801,6 +807,8 @@ export class AntigravityTurns {
       guard: new TurnToolGuard(this.toolBudget, this.db.listTurnCalls(t.id)),
     };
     this.active.set(t.id, run);
+    const initialModel = (() => { try { return this.host.session(t.sessionId)?.options?.model ?? null; } catch { return null; } })();
+    this.host?.emit?.('turn_start', { turnId: t.id, sessionId: t.sessionId, engine: 'antigravity', model: initialModel, startedAt });
     let outcome = 'interrupted';
     let idleTimer = null;
     const resetIdle = () => {
@@ -883,10 +891,11 @@ export class AntigravityTurns {
           { name: 'ANYWHERE_MCP_TOKEN', value: run.mcpServer.token },
         ],
       }];
+      const browserHint = browserInstructions(tools.sandbox);
       const sessionParams = {
         cwd: this.cwd,
         mcpServers,
-        _meta: { antigravity: { systemPrompt: { append: `${deviceInstructions(hasAtts)}\n\n${memoryInstructions}` } } },
+        _meta: { antigravity: { systemPrompt: { append: [deviceInstructions(hasAtts), browserHint, memoryInstructions].filter(Boolean).join('\n\n') } } },
       };
       if (this.turn(t.id).cancelRequested) throw Error('TURN_STOPPED');
       const acpSession = resume
@@ -941,7 +950,12 @@ export class AntigravityTurns {
       });
       outcome = 'succeeded';
     } catch (error) {
-      this.save(t.id, { error: String(error.message).slice(0, 280), durationMs: Date.now() - startedAt });
+      this.save(t.id, {
+        error: String(error.message).slice(0, 280),
+        durationMs: Date.now() - startedAt,
+        ...(run.context ? { context: run.context } : {}),
+        ...(run.model ? { model: run.model } : {}),
+      });
       if (this.turn(t.id).cancelRequested) outcome = 'cancelled';
     } finally {
       if (idleTimer) clearTimeout(idleTimer);
@@ -1025,11 +1039,13 @@ export class AntigravityTurns {
     const toolCalls = countedCalls.length
       ? { total: countedCalls.length, mutations: countedCalls.filter(c => isMutationTool(c.effectiveTool ?? c.tool)).length }
       : null;
+    let finalized = false;
     this.db.tx(() => {
       if (this.turn(t.id).consumed) return;
+      finalized = true;
       const label = state === 'cancelled' ? '已停止生成。' : (latest.error ? `Antigravity 回合中断：${latest.error}` : 'Antigravity 回合中断，请查看工具记录后重新发送。');
       this.db.append(t.sessionId, {
-        type: 'turn_end', ok: state === 'succeeded', engine: 'antigravity',
+        type: 'turn_end', turnId: t.id, ok: state === 'succeeded', engine: 'antigravity',
         ...(state === 'succeeded' ? {} : { error: label }),
         ...(latest.durationMs ? { durationMs: latest.durationMs } : {}),
         ...(latest.model ? { model: latest.model } : {}),
@@ -1050,6 +1066,19 @@ export class AntigravityTurns {
       const nextSession = { ...s, ...(s.activeTurnId === t.id ? { activeTurnId: null } : {}), ...(contextUsage ? { contextUsage } : {}) };
       if (s.activeTurnId === t.id || latest.context) this.db.put('sessions', s.id, nextSession);
     });
+    if (finalized) {
+      this.host?.emit?.('turn_end', {
+        turnId: t.id,
+        sessionId: t.sessionId,
+        engine: 'antigravity',
+        model: latest.model ?? null,
+        ok: state === 'succeeded',
+        usage: latest.usage ?? null,
+        toolCalls,
+        durationMs: latest.durationMs ?? 0,
+        ts: Date.now(),
+      });
+    }
     await this.host.closeHost(t.id);
     this.host.emit('events', t.sessionId);
     this.host.emit('state');

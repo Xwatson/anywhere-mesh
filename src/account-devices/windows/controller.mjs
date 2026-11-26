@@ -4,6 +4,7 @@ import { hostname } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
+import { BrowserManager } from '../../browser/manager.mjs';
 import { loadSavedServerUrl, readDefaultServerUrl, saveServerUrl } from '../server-config.mjs';
 import { WindowsClient } from './client.mjs';
 import { WindowsPeer } from './network.mjs';
@@ -25,8 +26,19 @@ function protect(mode, input) {
   return result.stdout;
 }
 const reply = value => process.stdout.write(JSON.stringify(value)+'\n');
-const workspace=windowsWorkspace(fileURLToPath(new URL('./WorkspaceSnapshot.exe',import.meta.url)));
-const client=new WindowsClient(cfg,{...workspace,
+let client = null;
+const browserManager = new BrowserManager({
+  stateDir: cfg.stateDir,
+  builtinBridgeUrl: process.env.ANYWHERE_BUILTIN_BROWSER_URL || null,
+  builtinBridgeToken: process.env.ANYWHERE_BUILTIN_BROWSER_TOKEN || null,
+  onSettingsChange: () => {
+    client?.notifyWorkspaceChanged();
+    reply({ event: 'stream', data: { type: 'browser_state', payload: browserManager.publicState() } });
+  },
+});
+const workspace=windowsWorkspace(fileURLToPath(new URL('./WorkspaceSnapshot.exe',import.meta.url)), { browserManager });
+client=new WindowsClient(cfg,{...workspace,
+  browserManager,
   onStream:data=>reply({event:'stream',data}),
   loginProtection:{
     seal:bytes=>protect('seal',bytes),open:bytes=>protect('open',bytes)
@@ -56,5 +68,6 @@ try {
   await Promise.allSettled([...inflight]);
 } finally {
   clearInterval(repair);
+  try { await browserManager.close(); } catch {}
   try { await client.suspend(); } finally { await peer.stop(); }
 }

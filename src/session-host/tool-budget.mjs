@@ -1,7 +1,7 @@
 import { CATALOG } from '../workspace/catalog.mjs';
 import { MEMORY_TOOL_NAMES } from './memory.mjs';
 
-const PERMISSION_BY_TOOL = new Map(CATALOG.map(tool => [tool.name, tool.permission]));
+const TOOL_BY_NAME = new Map(CATALOG.map(tool => [tool.name, tool]));
 
 export const LOCAL_TOOL_NAMES = new Set(['session_read_attachment', ...MEMORY_TOOL_NAMES]);
 
@@ -82,9 +82,8 @@ export function resolveToolBudget(overrides = {}, env = process.env) {
 export function classifyTool(toolName) {
   if (LOCAL_TOOL_NAMES.has(toolName)) return 'local';
   if (toolName === 'session_send_attachment') return 'mutation';
-  const perm = PERMISSION_BY_TOOL.get(toolName);
-  if (perm === 'read') return 'read';
-  if (perm === 'write' || perm === 'execute') return 'mutation';
+  const tool = TOOL_BY_NAME.get(toolName);
+  if (tool) return tool.mutates ? 'mutation' : 'read';
   return 'mutation';
 }
 
@@ -92,11 +91,12 @@ export function isMutationTool(toolName) {
   return classifyTool(toolName) === 'mutation';
 }
 
-const LARGE_TEXT_KEYS = new Set(['content', 'patch', 'oldText', 'newText', 'input']);
+const LARGE_TEXT_KEYS = new Set(['content', 'patch', 'oldText', 'newText', 'input', 'expression', 'text']);
 const IDENTITY_KEYS = [
   'path', 'fromPath', 'toPath', 'mode', 'attachment', 'key', 'scope',
   'pattern', 'searchType', 'cwd', 'offset', 'length', 'depth', 'maxResults',
   'expectedRevision', 'expectedFromRevision', 'expectedToRevision', 'expectedMatches',
+  'processId', 'afterSeq', 'target', 'tabId', 'url', 'action', 'ref', 'selector', 'kind',
 ];
 
 function truncateString(str, maxChars) {

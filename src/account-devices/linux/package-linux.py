@@ -22,10 +22,11 @@ PINNED = {
 }
 
 APP_FILES = {
-    "desktop": ["main.cjs", "package.json", "contract.cjs", "updater-core.mjs", "updater.cjs", "apply-update.mjs"],
+    "desktop": ["main.cjs", "builtin-browser.cjs", "package.json", "contract.cjs", "updater-core.mjs", "updater.cjs", "apply-update.mjs"],
     "desktop-commander": ["adapter.mjs"],
     "execution": ["agent.mjs", "grants.mjs", "journal.mjs", "protocol.mjs", "retention.mjs", "rpc.mjs"],
-    "workspace": ["patch.mjs", "catalog.mjs"],
+    "workspace": ["patch.mjs", "catalog.mjs", "bg-processes.mjs"],
+    "browser": ["settings.mjs", "accessibility.mjs", "cdp-client.mjs", "external-mcp.mjs", "manager.mjs"],
     "account-devices": [
         "client.mjs", "remembered-login.mjs", "server-config.mjs", "contract.cjs", "preload.cjs",
         "linux-agent.mjs", "linux-workspace.mjs",

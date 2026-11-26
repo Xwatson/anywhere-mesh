@@ -4,7 +4,7 @@ import { once } from 'node:events';
 import { extname } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { CodexAppServer } from './codex-app-server.mjs';
-import { CATALOG, listTools, normalize } from '../workspace/catalog.mjs';
+import { CATALOG, browserInstructions, listTools, normalize } from '../workspace/catalog.mjs';
 import { assertIdentity } from '../execution/grants.mjs';
 import { hash, string } from '../execution/protocol.mjs';
 import {
@@ -112,7 +112,10 @@ function normalizeCodexWindow(win, id, fallbackLabel) {
     : typeof win.remaining_percent === 'number' ? 100 - win.remaining_percent
     : null;
   if (rawUsed === null || !Number.isFinite(rawUsed)) return null;
-  const usedPercent = Math.max(0, Math.min(100, Math.round(rawUsed * 10) / 10));
+  const clampedUsed = Math.max(0, Math.min(100, rawUsed));
+  const usedPercentExact = Math.round(clampedUsed * 10000) / 10000;
+  const remainingPercentExact = Math.round((100 - clampedUsed) * 10000) / 10000;
+  const usedPercent = Math.max(0, Math.min(100, Math.round(clampedUsed * 10) / 10));
   const remainingPercent = Math.max(0, Math.min(100, Math.round((100 - usedPercent) * 10) / 10));
   const windowMinutes = Number(win.windowDurationMins ?? win.window_duration_mins ?? win.windowMinutes) || null;
   const resetsAt = parseEpochMs(win.resetsAt ?? win.resets_at ?? win.resetTime);
@@ -121,6 +124,8 @@ function normalizeCodexWindow(win, id, fallbackLabel) {
     label: formatWindowMinutes(windowMinutes, fallbackLabel),
     usedPercent,
     remainingPercent,
+    usedPercentExact,
+    remainingPercentExact,
     ...(windowMinutes ? { windowMinutes } : {}),
     ...(resetsAt ? { resetsAt } : {}),
   };
@@ -310,6 +315,7 @@ export class CodexTurns {
       if (tools.some(x => x.name === 'workspace_write_file')) tools.push(SESSION_TOOLS[1]);
     }
     tools.push(...MEMORY_TOOLS);
+    tools.sandbox = remote.sandbox;
     return tools;
   }
 
@@ -512,7 +518,7 @@ export class CodexTurns {
               outputSeq = out.nextSeq;
             } catch {}
           }
-          await delay(250);
+          await delay(60);
           result = await h.client.callTool({ name: 'workspace_task_status', arguments: { operationId: ticket.operationId } });
         }
         return await this.capture(current, { id: callId, tool, effectiveTool, args, inputHash }, h, ticket.operationId, result, { guard: run.guard });
@@ -596,6 +602,8 @@ export class CodexTurns {
     const run = { socket, ready: Promise.withResolvers(), end: Promise.withResolvers(), queue: Promise.resolve(), messages: [], thoughts: [], usage: null, context: null, model: null, tools: new Set(), guard: new TurnToolGuard(this.toolBudget, this.db.listTurnCalls(t.id)) };
     run.end.promise.catch(() => {});
     this.active.set(t.id, run);
+    const initialModel = (() => { try { return this.host.session(t.sessionId)?.options?.model ?? null; } catch { return null; } })();
+    this.host?.emit?.('turn_start', { turnId: t.id, sessionId: t.sessionId, engine: 'codex', model: initialModel, startedAt });
     const app = new CodexAppServer({
       experimentalApi: true, initializeTimeoutMs: 85000, transport: { input: socket, output: socket },
       onExit: () => run.end.reject(Error('CODEX_DISCONNECTED')),
@@ -638,7 +646,10 @@ export class CodexTurns {
       }
       if (method === 'account/rateLimits/updated' && p.rateLimits) {
         const parsed = normalizeCodexQuota({ rateLimits: p.rateLimits });
-        if (parsed.status === 'ok') this.lastRateLimits = parsed;
+        if (parsed.status === 'ok') {
+          this.lastRateLimits = parsed;
+          this.host?.emit?.('quota_update', parsed);
+        }
       }
       if (method === 'item/completed' && p.item?.type === 'reasoning') {
         const text = Array.isArray(p.item.summary) ? p.item.summary.map(s => (typeof s === 'string' ? s : s.text ?? '')).join('\n').trim() :
@@ -669,10 +680,11 @@ export class CodexTurns {
         projectLabel,
         projectDocs,
       });
+      const browserHint = browserInstructions(tools.sandbox);
       const common = {
         cwd: this.cwd, sandbox: 'read-only', approvalPolicy: 'never',
         ...(opts.model ? { model: opts.model } : {}),
-        developerInstructions: `${deviceInstructions(hasAtts)}\n\n${memoryInstructions}`,
+        developerInstructions: [deviceInstructions(hasAtts), browserHint, memoryInstructions].filter(Boolean).join('\n\n'),
         config: { web_search: 'disabled' },
       };
       if (this.turn(t.id).cancelRequested) throw Error('TURN_STOPPED');
@@ -731,7 +743,14 @@ export class CodexTurns {
       });
       outcome = 'succeeded';
     } catch (error) {
-      this.save(t.id, { error: String(error.message).slice(0, 280), durationMs: Date.now() - startedAt });
+      const usage = run.usage ? { inputTokens: run.usage.inputTokens, outputTokens: run.usage.outputTokens, cachedInputTokens: run.usage.cachedInputTokens } : undefined;
+      this.save(t.id, {
+        error: String(error.message).slice(0, 280),
+        durationMs: Date.now() - startedAt,
+        ...(usage ? { usage } : {}),
+        ...(run.context ? { context: run.context } : {}),
+        ...(run.model ? { model: run.model } : {}),
+      });
       if (this.turn(t.id).cancelRequested) outcome = 'cancelled';
     } finally {
       if (idleTimer) clearTimeout(idleTimer);
@@ -812,11 +831,13 @@ export class CodexTurns {
     const toolCalls = countedCalls.length
       ? { total: countedCalls.length, mutations: countedCalls.filter(c => isMutationTool(c.effectiveTool ?? c.tool)).length }
       : null;
+    let finalized = false;
     this.db.tx(() => {
       if (this.turn(t.id).consumed) return;
+      finalized = true;
       const label = state === 'cancelled' ? '已停止生成。' : 'Codex 回合中断，请查看工具记录后重新发送。';
       this.db.append(t.sessionId, {
-        type: 'turn_end', ok: state === 'succeeded', engine: 'codex',
+        type: 'turn_end', turnId: t.id, ok: state === 'succeeded', engine: 'codex',
         ...(state === 'succeeded' ? {} : { error: label }),
         ...(latest.durationMs ? { durationMs: latest.durationMs } : {}),
         ...(latest.model ? { model: latest.model } : {}),
@@ -837,6 +858,19 @@ export class CodexTurns {
       const nextSession = { ...s, ...(s.activeTurnId === t.id ? { activeTurnId: null } : {}), ...(contextUsage ? { contextUsage } : {}) };
       if (s.activeTurnId === t.id || latest.context) this.db.put('sessions', s.id, nextSession);
     });
+    if (finalized) {
+      this.host?.emit?.('turn_end', {
+        turnId: t.id,
+        sessionId: t.sessionId,
+        engine: 'codex',
+        model: latest.model ?? null,
+        ok: state === 'succeeded',
+        usage: latest.usage ?? null,
+        toolCalls,
+        durationMs: latest.durationMs ?? 0,
+        ts: Date.now(),
+      });
+    }
     await this.host.closeHost(t.id);
     this.host.emit('events', t.sessionId);
     this.host.emit('state');

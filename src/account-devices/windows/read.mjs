@@ -8,7 +8,8 @@ import { TextFileHandler } from './vendor/text.mjs';
 import { fail, hash } from '../../execution/protocol.mjs';
 import { relative } from '../../desktop-commander/adapter.mjs';
 import { applyHunks, parsePatch } from '../../workspace/patch.mjs';
-import { runTask, WINDOWS_SANDBOX } from './tasks.mjs';
+import { BackgroundProcessManager } from '../../workspace/bg-processes.mjs';
+import { resolveTaskCwd, runTask, WINDOWS_SANDBOX } from './tasks.mjs';
 
 const exec = promisify(execFile);
 const snapshotLimit = 1024*1024;
@@ -20,6 +21,10 @@ const revision = bytes => 'file-v1:'+createHash('sha256').update(bytes).digest('
 const response = text => ({version:1,ok:true,calls:1,response:{content:[{type:'text',text}]}});
 const reading = new Set(['read_file','read_multiple_files','get_file_info','list_directory']);
 const writing = new Set(['write_file','edit_block','create_directory','delete_file','move_file','apply_patch']);
+const bgReadTools = new Set(['bg_list','bg_output']);
+const bgWriteTools = new Set(['bg_start','bg_input','bg_stop']);
+const browserReadTools = new Set(['browser_status','browser_tabs','browser_snapshot','browser_screenshot','browser_logs','browser_wait']);
+const browserWriteTools = new Set(['browser_navigate','browser_click','browser_type','browser_press','browser_scroll','browser_eval','browser_tab_action']);
 
 function decode(bytes) {
   try {new TextDecoder('utf-8',{fatal:true}).decode(bytes);} catch {fail('TEXT_FILE_REQUIRED');}
@@ -46,18 +51,48 @@ async function backup(stateDir,operationId,path,bytes) {
   catch(error){if(error.code!=='EEXIST'||await readFile(target,'utf8')!==data)throw error;}
 }
 
-export function windowsWorkspace(executable) {
+export function windowsWorkspace(executable, { browserManager = null } = {}) {
   const identifyRoot = root => {
     const identity=execFileSync(executable,[root],{...options,encoding:'utf8'}).trim();
     if(!/^[A-F0-9]{8}:[A-F0-9]{16}$/.test(identity)) fail('WORKSPACE_ROOT_CHANGED');
     return identity;
   };
+  const bgByWorkspace = new Map();
+  const getBg = (stateDir) => {
+    let mgr = bgByWorkspace.get(stateDir);
+    if (!mgr) {
+      mgr = new BackgroundProcessManager({ stateDir, platform: 'win32' });
+      bgByWorkspace.set(stateDir, mgr);
+    }
+    return mgr;
+  };
+  const buildSandbox = () => {
+    const browserTools = browserManager?.supportedTools?.() ?? [];
+    const browserInfo = browserManager?.publicState?.() ?? null;
+    return {
+      ...WINDOWS_SANDBOX,
+      supportedTools: [...WINDOWS_SANDBOX.supportedTools, ...browserTools],
+      ...(browserInfo ? { browser: browserInfo } : {}),
+    };
+  };
   return {
     modes:['revoked','read','edit','execute'],
-    sandbox:{...WINDOWS_SANDBOX,supportedTools:[...WINDOWS_SANDBOX.supportedTools]},
+    sandbox: buildSandbox(),
+    getSandbox: buildSandbox,
     identifyRoot,
+    onGrantChange(grant, stateDir) {
+      if (!grant?.capabilities?.includes('workspace.exec')) {
+        if (stateDir) void bgByWorkspace.get(stateDir)?.stopAll();
+        else for (const mgr of bgByWorkspace.values()) void mgr.stopAll();
+      }
+    },
+    async onClose(stateDir) {
+      if (stateDir) await bgByWorkspace.get(stateDir)?.stopAll();
+      else await Promise.allSettled([...bgByWorkspace.values()].map(m => m.stopAll()));
+    },
     launcher({workspaceRoot,rootIdentity,stateDir}) {
       const scratch=join(stateDir,'windows-read-snapshots');
+      const bg = getBg(stateDir);
       mkdirSync(scratch,{recursive:true});
       async function guard(args,{signal,bytes,mutating=false,timeout=10000}={}) {
         try {
@@ -229,12 +264,47 @@ export function windowsWorkspace(executable) {
         const version={path,revision:revision(bytes),size:bytes.length};
         return {...response('Saved '+path+'\nFile version: '+version.revision),fileVersions:[version],committed:true};
       }
+      async function bgTool(name, args) {
+        if (identifyRoot(workspaceRoot) !== rootIdentity) fail('WORKSPACE_ROOT_CHANGED');
+        if (name === 'bg_start') {
+          const cwd = resolveTaskCwd(workspaceRoot, args.cwd ?? '.');
+          const info = await bg.start({ cwd, command: args.command, waitMs: args.waitMs ?? 1500 });
+          return { ...response(JSON.stringify(info, null, 2)), committed: true };
+        }
+        if (name === 'bg_list') {
+          return response(JSON.stringify({ processes: bg.list() }, null, 2));
+        }
+        if (name === 'bg_output') {
+          const info = await bg.output({ processId: args.processId, afterSeq: args.afterSeq ?? 0, waitMs: args.waitMs ?? 0 });
+          return response(JSON.stringify(info, null, 2));
+        }
+        if (name === 'bg_input') {
+          const info = bg.input({ processId: args.processId, input: args.input });
+          return { ...response(JSON.stringify(info, null, 2)), committed: true };
+        }
+        if (name === 'bg_stop') {
+          const info = await bg.stop({ processId: args.processId });
+          return { ...response(JSON.stringify(info, null, 2)), committed: true };
+        }
+        fail('TOOL_UNAVAILABLE_ON_DEVICE');
+      }
       return (op,grant)=>{
         const r=op.request,name=r.args.tool;
         if(!['read','edit','execute'].includes(grant.mode))fail('TOOL_UNAVAILABLE_ON_DEVICE');
         if(r.kind==='dc.run'&&grant.mode==='execute')
           return {mutates:true,perform:(signal,output)=>runTask({stateDir,workspaceRoot,rootIdentity,identifyRoot,request:r,signal,output})};
         if(r.cwdRelative!=='.')fail('TOOL_UNAVAILABLE_ON_DEVICE');
+        if(r.kind==='dc.tool'&&(browserReadTools.has(name)||browserWriteTools.has(name))){
+          if(!browserManager)fail('BROWSER_NOT_AVAILABLE');
+          const execBrowser = signal => browserManager.execute(name, r.args.arguments ?? {}, { signal });
+          return browserWriteTools.has(name) ? {mutates:true,perform:execBrowser} : {read:execBrowser};
+        }
+        if(r.kind==='dc.tool'&&(bgReadTools.has(name)||bgWriteTools.has(name))){
+          if(grant.mode!=='execute')fail('EXEC_DENIED');
+          return bgWriteTools.has(name)
+            ? {mutates:true,perform:()=>bgTool(name,r.args.arguments??{})}
+            : {read:()=>bgTool(name,r.args.arguments??{})};
+        }
         if(r.kind==='dc.search'||(r.kind==='dc.tool'&&reading.has(name)))return {read:signal=>readTool(r,signal)};
         if(r.kind==='dc.tool'&&writing.has(name)&&grant.mode!=='read')return {mutates:true,perform:signal=>writeTool(op,signal)};
         fail('TOOL_UNAVAILABLE_ON_DEVICE');

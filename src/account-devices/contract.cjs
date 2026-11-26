@@ -3,7 +3,7 @@ const routes = {
   state: [], login: ['username','password'], changePassword: ['current','password'], logout: [], admin: [], disable: ['id','disabled'],
   quota: [],
   deleteDevice: ['id'], pruneDevices: [],
-  adminUsers: [], createUser: ['username','password','isAdmin'],
+  adminUsers: [], adminUsage: [], createUser: ['username','password','isAdmin'],
   resetUserPassword: ['userId','password'], setUserAdmin: ['userId','isAdmin'], deleteUser: ['userId'],
   chooseWorkspace: [], removeWorkspace: ['workspaceId'], permission: ['workspaceId','mode'],
   create: ['workspaceId','requestId','title'],
@@ -17,10 +17,12 @@ const routes = {
   chooseAttachment: ['sessionId'], uploadAttachment: ['sessionId','name','mime','dataBase64'],
   memoriesList: ['scope'], memoriesSave: ['scope','key','content'], memoriesDelete: ['scope','key'], memoriesClear: ['scope'],
   updateStatus: [], updateCheck: [], updateDownload: [], updateCancel: [], updateInstall: [], updateSettings: [], updateDismiss: ['version'],
+  browserStatus: [], browserUpdateSettings: [], browserTestDaily: [], browserLaunchDaily: [], browserShowBuiltin: [], browserHideBuiltin: [], browserResetBuiltin: [],
 };
 const optional = {
   login: ['serverUrl'],
   quota: ['refresh'],
+  adminUsage: ['range','refreshQuota'],
   create: ['options'],
   send: ['attachments'],
   setSessionOptions: ['agent','model','effort'],
@@ -31,6 +33,9 @@ const optional = {
   updateCheck: ['manual'],
   updateInstall: ['relaunch'],
   updateSettings: ['autoCheck','autoDownload','installOnQuit'],
+  browserUpdateSettings: ['builtin','daily'],
+  browserTestDaily: ['cdpUrl'],
+  browserLaunchDaily: ['port'],
 };
 const AGENTS = new Set(['codex','antigravity']);
 const EFFORTS = new Set(['minimal','low','medium','high','xhigh','max']);
@@ -76,6 +81,8 @@ function validate(method, p = {}) {
   if ('disabled' in p && typeof p.disabled !== 'boolean') throw Error('INVALID_FIELDS');
   if ('isAdmin' in p && typeof p.isAdmin !== 'boolean') throw Error('INVALID_FIELDS');
   if ('refresh' in p && typeof p.refresh !== 'boolean') throw Error('INVALID_FIELDS');
+  if ('refreshQuota' in p && typeof p.refreshQuota !== 'boolean') throw Error('INVALID_FIELDS');
+  if ('range' in p && !['24h','7d','30d','all'].includes(p.range)) throw Error('INVALID_FIELDS');
   for (const bk of ['manual','relaunch','autoCheck','autoDownload','installOnQuit']) {
     if (bk in p && typeof p[bk] !== 'boolean') throw Error('INVALID_FIELDS');
   }
@@ -93,6 +100,29 @@ function validate(method, p = {}) {
     }
   }
   if ('mode' in p && !['revoked','read','edit','execute'].includes(p.mode)) throw Error('INVALID_PERMISSION');
+  if ('port' in p && (!Number.isSafeInteger(p.port) || p.port < 1024 || p.port > 65535)) throw Error('INVALID_FIELDS');
+  if ('cdpUrl' in p) {
+    if (typeof p.cdpUrl !== 'string' || p.cdpUrl.length > 256 || /[\s\0-\x1f\x7f]/.test(p.cdpUrl)) throw Error('INVALID_CDP_URL');
+  }
+  if ('builtin' in p) {
+    const b = p.builtin;
+    if (!b || typeof b !== 'object' || Array.isArray(b)) throw Error('INVALID_FIELDS');
+    for (const k of Object.keys(b)) {
+      if (k !== 'enabled' && k !== 'autoShow') throw Error('INVALID_FIELDS');
+      if (typeof b[k] !== 'boolean') throw Error('INVALID_FIELDS');
+    }
+  }
+  if ('daily' in p) {
+    const d = p.daily;
+    if (!d || typeof d !== 'object' || Array.isArray(d)) throw Error('INVALID_FIELDS');
+    for (const k of Object.keys(d)) {
+      if (!['enabled', 'access', 'backend', 'cdpUrl'].includes(k)) throw Error('INVALID_FIELDS');
+    }
+    if ('enabled' in d && typeof d.enabled !== 'boolean') throw Error('INVALID_FIELDS');
+    if ('access' in d && d.access !== 'full' && d.access !== 'read') throw Error('INVALID_FIELDS');
+    if ('backend' in d && !['cdp', 'chrome-devtools-mcp', 'playwright-mcp'].includes(d.backend)) throw Error('INVALID_FIELDS');
+    if ('cdpUrl' in d && (typeof d.cdpUrl !== 'string' || d.cdpUrl.length > 256 || /[\s\0-\x1f\x7f]/.test(d.cdpUrl))) throw Error('INVALID_CDP_URL');
+  }
   if ('attachments' in p) {
     if (!Array.isArray(p.attachments) || p.attachments.length > 8 || !p.attachments.every(x => typeof x === 'string' && UUID_RE.test(x))) throw Error('INVALID_ID');
   }
