@@ -1163,11 +1163,282 @@ function thinkingStep(id, text, expanded, openDefault = false) {
   return details;
 }
 
-export function renderThread(container, rows, { sessionId, isWeb = false, liveToolOutput = new Map(), hasActiveTurn = false } = {}) {
+const Q_REC_PREFIX_RE = /^\s*\(Recommended\)\s*/i;
+const Q_REC_SUFFIX_RE = /\s*\(Recommended\)\s*$/i;
+const LEGACY_OPT_RE = /^\s*-\s+\[(\d+)\]\s+(.+?)\s*$/;
+
+function parseLegacyOption(raw) {
+  const rawLabel = String(raw ?? '').trim();
+  const recommended = Q_REC_PREFIX_RE.test(rawLabel) || Q_REC_SUFFIX_RE.test(rawLabel);
+  const label = rawLabel.replace(Q_REC_PREFIX_RE, '').replace(Q_REC_SUFFIX_RE, '').trim() || rawLabel;
+  return { label, rawLabel, ...(recommended ? { recommended: true } : {}) };
+}
+
+export function extractLegacyQuestionPrompt(text) {
+  const raw = String(text ?? '').replace(/\r\n/g, '\n');
+  if (!raw.includes('- [1] ')) return null;
+  const lines = raw.split('\n');
+  let inFence = false;
+  let fenceChar = '';
+  let fenceLen = 0;
+  const runs = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const fence = line.match(/^\s*(`{3,}|~{3,})(.*)$/);
+    if (fence) {
+      if (!inFence && !(fence[1][0] === '`' && fence[2].includes('`'))) {
+        inFence = true; fenceChar = fence[1][0]; fenceLen = fence[1].length;
+        continue;
+      } else if (inFence && fence[1][0] === fenceChar && fence[1].length >= fenceLen && !fence[2].trim()) {
+        inFence = false;
+        continue;
+      }
+    }
+    if (inFence) continue;
+    const m = line.match(LEGACY_OPT_RE);
+    if (m && Number(m[1]) === 1) {
+      const options = [parseLegacyOption(m[2])];
+      let j = i + 1;
+      let expected = 2;
+      while (j < lines.length) {
+        const nm = lines[j].match(LEGACY_OPT_RE);
+        if (!nm || Number(nm[1]) !== expected) break;
+        options.push(parseLegacyOption(nm[2]));
+        expected++;
+        j++;
+      }
+      if (options.length >= 2) {
+        let qEnd = i - 1;
+        while (qEnd >= 0 && !lines[qEnd].trim()) qEnd--;
+        let qStart = qEnd;
+        const prevLimit = runs.length ? runs[runs.length - 1].optEnd : -1;
+        while (qStart > prevLimit && lines[qStart].trim() && !/^\s*(?:#{1,6}\s|>|[-*+]\s|\d+[.)]\s|```|~~~)/.test(lines[qStart])) {
+          qStart--;
+        }
+        qStart++;
+        if (qStart <= qEnd) {
+          const question = lines.slice(qStart, qEnd + 1).map(s => s.trim()).join(' ').trim();
+          if (question) {
+            runs.push({ qStart, optStart: i, optEnd: j - 1, question, options });
+            i = j - 1;
+            continue;
+          }
+        }
+      }
+    }
+  }
+  if (!runs.length) return null;
+  const trailing = lines.slice(runs[runs.length - 1].optEnd + 1).join('').trim();
+  if (trailing) return null;
+  for (let k = 1; k < runs.length; k++) {
+    const gap = lines.slice(runs[k - 1].optEnd + 1, runs[k].qStart).join('').trim();
+    if (gap) return null;
+  }
+  const introText = lines.slice(0, runs[0].qStart).join('\n').trim();
+  const questions = runs.map((r, idx) => ({
+    id: `legacy_q${idx + 1}`,
+    question: r.question,
+    multiSelect: false,
+    allowOther: true,
+    options: r.options,
+  }));
+  return { introText, questions };
+}
+
+function makeAssistantActions(text) {
+  const bar = element('div', undefined, 'assistant-actions');
+  const btn = element('button', undefined, 'msg-action-btn msg-copy-btn');
+  btn.type = 'button';
+  btn.dataset.copyText = text;
+  btn.dataset.tooltip = '复制回答';
+  btn.setAttribute('aria-label', '复制回答');
+  btn.append(icon('copy'));
+  bar.append(btn);
+  return bar;
+}
+
+function engineDisplayName(engine) {
+  return engine === 'antigravity' ? 'Antigravity' : engine === 'codex' ? 'Codex' : '助手';
+}
+
+function isQuestionComplete(questions, draft) {
+  const picked = draft?.picked ?? {};
+  const other = draft?.other ?? {};
+  return questions.every(q => {
+    const p = picked[q.id];
+    const o = typeof other[q.id] === 'string' ? other[q.id].trim() : '';
+    return (Array.isArray(p) && p.length > 0) || Boolean(o);
+  });
+}
+
+function makeQuestionCard(prompt, { answerEvent = null, superseded = false, hasActiveTurn = false, draft = null } = {}) {
+  const questions = Array.isArray(prompt?.questions) ? prompt.questions : [];
+  const mode = prompt?.mode || (prompt?.engine === 'codex' ? 'live' : 'next_turn');
+  const resolved = Boolean(answerEvent) || (mode !== 'live' && superseded) || (mode === 'live' && !hasActiveTurn);
+  const card = element('section', undefined, 'ai-question-card' + (resolved ? ' resolved' : ' active'));
+  card.dataset.questionId = prompt.id;
+  card.dataset.questionMode = mode;
+  card.setAttribute('aria-label', 'AI 交互式提问');
+
+  if (resolved) {
+    const head = element('div', undefined, 'q-card-head');
+    const titleWrap = element('div', undefined, 'q-card-title-wrap');
+    const isAnswered = Boolean(answerEvent && !answerEvent.skipped);
+    titleWrap.append(icon(isAnswered ? 'check' : 'info'));
+    const statusText = answerEvent?.cancelled
+      ? '已取消提问'
+      : answerEvent?.skipped
+        ? '已跳过提问'
+        : answerEvent
+          ? '已回答提问'
+          : superseded
+            ? '已通过对话回复'
+            : '提问已结束';
+    titleWrap.append(element('span', statusText, 'q-card-title'));
+    head.append(titleWrap);
+    if (prompt.engine) head.append(element('span', engineDisplayName(prompt.engine), 'q-badge'));
+    card.append(head);
+
+    if (questions.length) {
+      const list = element('div', undefined, 'q-resolved-list');
+      for (let qi = 0; qi < questions.length; qi++) {
+        const q = questions[qi];
+        const row = element('div', undefined, 'q-resolved-row');
+        const qLabel = questions.length > 1 ? `${qi + 1}. ${q.question}` : q.question;
+        row.append(element('div', qLabel, 'q-resolved-q'));
+        const ansWrap = element('div', undefined, 'q-resolved-answers');
+        const rawVals = answerEvent?.answers?.[q.id] ?? answerEvent?.answers?.[q.question];
+        const vals = Array.isArray(rawVals) ? rawVals : (typeof rawVals === 'string' && rawVals ? [rawVals] : []);
+        if (answerEvent?.skipped) {
+          ansWrap.append(element('span', answerEvent.cancelled ? '已取消' : '已跳过', 'q-resolved-chip muted'));
+        } else if (vals.length) {
+          for (const val of vals) {
+            const matchedOpt = (q.options ?? []).find(o => (o.rawLabel ?? o.label) === val || o.label === val);
+            const display = q.secret ? '••••••' : (matchedOpt?.label ?? val);
+            ansWrap.append(element('span', display, 'q-resolved-chip'));
+          }
+        } else if (superseded) {
+          ansWrap.append(element('span', '已在下方消息中回复', 'q-resolved-chip muted'));
+        } else {
+          ansWrap.append(element('span', '未作答', 'q-resolved-chip muted'));
+        }
+        row.append(ansWrap);
+        list.append(row);
+      }
+      card.append(list);
+    }
+    return card;
+  }
+
+  const picked = draft?.picked ?? {};
+  const other = draft?.other ?? {};
+  const submitting = Boolean(draft?.submitting);
+  const complete = isQuestionComplete(questions, draft);
+
+  const head = element('div', undefined, 'q-card-head');
+  const titleWrap = element('div', undefined, 'q-card-title-wrap');
+  const dot = element('span', undefined, 'q-live-dot');
+  dot.setAttribute('aria-hidden', 'true');
+  titleWrap.append(dot, element('span', 'AI 需要你确认以下问题', 'q-card-title'));
+  const badges = element('div', undefined, 'q-head-badges');
+  if (questions.length > 1) badges.append(element('span', `共 ${questions.length} 题`, 'q-badge'));
+  if (prompt.engine) badges.append(element('span', engineDisplayName(prompt.engine), 'q-badge'));
+  head.append(titleWrap, badges);
+  card.append(head);
+
+  const body = element('div', undefined, 'q-card-body');
+  for (let qi = 0; qi < questions.length; qi++) {
+    const q = questions[qi];
+    const item = element('div', undefined, 'q-item');
+    item.dataset.qid = q.id;
+    item.dataset.multi = q.multiSelect ? '1' : '0';
+
+    const itemHead = element('div', undefined, 'q-item-head');
+    if (q.header) itemHead.append(element('span', q.header, 'q-header-chip'));
+    const qTitle = element('div', questions.length > 1 ? `${qi + 1}. ${q.question}` : q.question, 'q-title');
+    itemHead.append(qTitle);
+    itemHead.append(element('span', q.multiSelect ? '可多选' : '单选', 'q-mode-tag'));
+    item.append(itemHead);
+
+    const optList = element('div', undefined, 'q-options');
+    const pickedForQ = Array.isArray(picked[q.id]) ? picked[q.id] : [];
+    const options = Array.isArray(q.options) ? q.options : [];
+    for (let oi = 0; oi < options.length; oi++) {
+      const opt = options[oi];
+      const value = opt.rawLabel ?? opt.label;
+      const selected = pickedForQ.includes(value);
+      const btn = element('button', undefined, 'q-option' + (selected ? ' selected' : ''));
+      btn.type = 'button';
+      btn.dataset.qid = q.id;
+      btn.dataset.value = value;
+      btn.dataset.index = String(oi + 1);
+      btn.setAttribute('aria-pressed', selected ? 'true' : 'false');
+      if (submitting) btn.disabled = true;
+
+      const indicator = element('span', undefined, 'q-opt-indicator' + (q.multiSelect ? ' multi' : ' single'));
+      if (selected) indicator.append(icon('check'));
+      else indicator.textContent = String(oi + 1);
+
+      const content = element('span', undefined, 'q-opt-content');
+      const labelRow = element('span', undefined, 'q-opt-label-row');
+      labelRow.append(element('span', opt.label, 'q-opt-label'));
+      if (opt.recommended) labelRow.append(element('span', '推荐', 'q-rec-badge'));
+      content.append(labelRow);
+      if (opt.description) content.append(element('span', opt.description, 'q-opt-desc'));
+
+      btn.append(indicator, content);
+      optList.append(btn);
+    }
+
+    if (q.allowOther !== false || !options.length) {
+      const otherVal = typeof other[q.id] === 'string' ? other[q.id] : '';
+      const otherWrap = element('div', undefined, 'q-other-wrap' + (otherVal.trim() ? ' filled' : ''));
+      const input = element('input', undefined, 'q-other-input');
+      input.type = q.secret ? 'password' : 'text';
+      input.autocomplete = 'off';
+      input.dataset.qid = q.id;
+      input.placeholder = q.secret
+        ? '输入私密内容（不会明文显示）'
+        : options.length
+          ? '其他（自己填写）'
+          : '输入你的回答';
+      input.value = otherVal;
+      if (submitting) input.disabled = true;
+      otherWrap.append(input);
+      optList.append(otherWrap);
+    }
+
+    item.append(optList);
+    body.append(item);
+  }
+  card.append(body);
+
+  const foot = element('div', undefined, 'q-card-foot');
+  const actions = element('div', undefined, 'q-foot-actions');
+  const submitBtn = element('button', submitting ? '正在提交…' : '提交回答', 'primary q-submit-btn');
+  submitBtn.type = 'button';
+  if (!complete || submitting) submitBtn.disabled = true;
+  const skipBtn = element('button', '跳过', 'secondary q-skip-btn');
+  skipBtn.type = 'button';
+  if (submitting) skipBtn.disabled = true;
+  actions.append(submitBtn, skipBtn);
+  const hint = element('span', complete ? '已选择完成，点击提交继续' : '请选择选项或填写自定义回答', 'q-foot-hint');
+  foot.append(actions, hint);
+  card.append(foot);
+
+  return card;
+}
+
+export function renderThread(container, rows, { sessionId, isWeb = false, liveToolOutput = new Map(), hasActiveTurn = false, questionDrafts = new Map(), questionMeta = null } = {}) {
   const latest = new Map();
+  const questionAnswers = new Map();
   const expandedTools = new Set([...container.querySelectorAll('details.tool-step[open]')].map(d => d.dataset.call));
   const expandedThink = new Set([...container.querySelectorAll('details.thinking-step[open]')].map(d => d.dataset.think));
-  for (const row of rows) if (row.event.type === 'tool_call') latest.set(row.event.id, row.seq);
+  for (const row of rows) {
+    if (row.event.type === 'tool_call') latest.set(row.event.id, row.seq);
+    else if (row.event.type === 'question_answer' && row.event.id) questionAnswers.set(row.event.id, row.event);
+  }
+  questionMeta?.clear?.();
   const output = document.createDocumentFragment();
   for (let i = 0; i < rows.length; i++) {
     const { event, seq } = rows[i];
@@ -1209,12 +1480,35 @@ export function renderThread(container, rows, { sessionId, isWeb = false, liveTo
       while (rows[i + 1]?.event.type === 'assistant_text' && String(rows[i + 1].event.id).replace(/-\d+$/, '') === group) {
         text += rows[++i].event.text;
       }
+      const laterRows = rows.slice(i + 1);
+      const hasLaterInteraction = laterRows.some(r => ['user_message', 'question_prompt', 'question_answer'].includes(r?.event?.type));
+      const legacyParsed = (!hasLaterInteraction && !hasActiveTurn) ? extractLegacyQuestionPrompt(text) : null;
       const message = element('article', undefined, 'assistant-message');
       const author = element('div', undefined, 'author'), mark = element('span', undefined, 'brand-mark');
       mark.append(icon('terminal'));
-      author.append(mark, element('span', event.engine === 'antigravity' ? 'Antigravity' : event.engine === 'codex' ? 'Codex' : '助手'));
-      message.append(author, formatted(text));
-      output.append(message);
+      author.append(mark, element('span', engineDisplayName(event.engine)));
+      if (legacyParsed) {
+        if (legacyParsed.introText) {
+          message.append(author, formatted(legacyParsed.introText), makeAssistantActions(text));
+          output.append(message);
+        }
+        const legacyId = `legacy-${group || seq}`;
+        const legacyPrompt = { id: legacyId, engine: event.engine, mode: 'legacy_text', questions: legacyParsed.questions };
+        questionMeta?.set?.(legacyId, legacyPrompt);
+        output.append(makeQuestionCard(legacyPrompt, { hasActiveTurn, draft: questionDrafts.get(legacyId) }));
+      } else {
+        message.append(author, formatted(text));
+        if (text && text.trim()) message.append(makeAssistantActions(text));
+        output.append(message);
+      }
+    } else if (event.type === 'question_prompt' && Array.isArray(event.questions) && event.questions.length) {
+      const laterRows = rows.slice(i + 1);
+      const superseded = laterRows.some(r => r?.event?.type === 'user_message');
+      const answerEvent = questionAnswers.get(event.id) ?? null;
+      questionMeta?.set?.(event.id, event);
+      output.append(makeQuestionCard(event, { answerEvent, superseded, hasActiveTurn, draft: questionDrafts.get(event.id) }));
+    } else if (event.type === 'question_answer') {
+      // Rendered inline inside the matching question_prompt card.
     } else if (event.type === 'tool_call' && latest.get(event.id) === seq) {
       output.append(toolStep(event, expandedTools, liveToolOutput.get(event.id)));
     } else if (event.type === 'context_compacted') {

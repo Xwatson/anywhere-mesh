@@ -11,6 +11,7 @@ import { SessionStore, uuid, fields, text } from './store.mjs';
 import { parseMock } from './mock.mjs';
 import { TurnLaunchLimiter } from './launch-limiter.mjs';
 import { PROJECT_DOC_CANDIDATES, extractProjectDocsFromReadResult, normalizeMemoryScope } from './memory.mjs';
+import { formatAnswersForPrompt, normalizeSubmittedAnswers } from './questions.mjs';
 
 function createDirectWorkspaceClient(executor, { waitMs = 0 } = {}) {
   return {
@@ -228,10 +229,12 @@ export class SessionHost extends EventEmitter {
   publicTurn(t) {
     if (!t) return null;
     const q = !t.done ? this.launchLimiter?.status(t.id) : null;
+    const pendingQ = !t.done && t.engine === 'codex' ? this.codex?.pendingQuestionForTurn?.(t.id) : null;
     return {
       id: t.id, sessionId: t.sessionId, workspaceId: t.workspaceId, operationId: t.operationId ?? null,
-      state: q ? 'queued' : t.state, done: Boolean(t.done), consumed: Boolean(t.consumed),
+      state: q ? 'queued' : (pendingQ ? 'waiting_input' : t.state), done: Boolean(t.done), consumed: Boolean(t.consumed),
       cancelRequested: Boolean(t.cancelRequested), outcome: t.outcome ?? null,
+      ...(pendingQ ? { waitingForInput: true, pendingQuestionId: pendingQ.id } : {}),
       ...(q ? { queued: true, queuePosition: q.position, queueRemainingMs: q.remainingMs, queueDelayMs: q.delayMs } : {}),
     };
   }
@@ -676,6 +679,141 @@ export class SessionHost extends EventEmitter {
       this.store.tx(()=>{t.done=true;t.consumed=true;this.store.put('turns',t.id,t);const s=this.session(t.sessionId);if(s.activeTurnId===t.id){s.activeTurnId=null;this.store.put('sessions',s.id,s);}});
       await this.closeHost(t.id);this.emit('events',t.sessionId);
     }
+  }
+  findQuestionPrompt(sessionId, questionId) {
+    let cursor = 0;
+    let prompt = null;
+    let answered = false;
+    let superseded = false;
+    while (true) {
+      const page = this.store.page(sessionId, cursor);
+      if (!page.events.length) break;
+      for (const { event } of page.events) {
+        if (!prompt) {
+          if (event.type === 'question_prompt' && event.id === questionId) prompt = event;
+        } else {
+          if (event.type === 'question_answer' && event.id === questionId) answered = true;
+          else if (event.type === 'user_message') superseded = true;
+        }
+      }
+      if (!page.more || page.throughSeq <= cursor) break;
+      cursor = page.throughSeq;
+    }
+    return { prompt, answered, superseded };
+  }
+  async answerQuestion(sessionId, body) {
+    fields(body, ['requestId', 'questionId'], ['answers', 'skipped']);
+    uuid(body.requestId);
+    uuid(body.questionId);
+    if ('skipped' in body && typeof body.skipped !== 'boolean') throw Error('INVALID_FIELDS');
+    const skipped = Boolean(body.skipped);
+    const s = this.session(sessionId);
+    const payload = { kind: 'answer', sessionId, questionId: body.questionId, skipped };
+    const prior = this.store.request(body.requestId, payload);
+    if (prior) return prior;
+
+    // 1. Live in-turn question (Codex item/tool/requestUserInput)
+    if (this.codex?.hasPendingQuestion?.(body.questionId)) {
+      const reply = this.codex.answerQuestion(sessionId, body.questionId, body.answers ?? {}, skipped);
+      this.store.receipt(body.requestId, payload, reply);
+      return reply;
+    }
+
+    // 2. Next-turn question (Antigravity ask_question)
+    const { prompt, answered, superseded } = this.findQuestionPrompt(sessionId, body.questionId);
+    if (!prompt) throw Error('QUESTION_NOT_FOUND');
+    if (answered || superseded) throw Error('QUESTION_ALREADY_ANSWERED');
+    if (prompt.mode === 'live') throw Error('QUESTION_EXPIRED');
+
+    const { answers, displayAnswers } = normalizeSubmittedAnswers(prompt.questions, body.answers ?? {}, skipped);
+    const promptText = formatAnswersForPrompt(prompt.questions, answers, skipped);
+    if (s.activeTurnId) throw Error('SESSION_BUSY');
+
+    const w = this.workspace(s.workspaceId);
+    const requestedAgent = prompt.engine ?? s.options?.agent;
+    const chosenEngine =
+      requestedAgent === 'antigravity' && this.antigravity ? 'antigravity' :
+      requestedAgent === 'codex' && this.codex ? 'codex' :
+      this.antigravity ? 'antigravity' : this.codex ? 'codex' : null;
+
+    let binding = null;
+    if (chosenEngine) {
+      const remote = await this.broker(w, 'workspace');
+      if (this.config.requireDeviceBinding && (remote.grant.accountId !== s.accountId ||
+          remote.grant.deviceId !== s.deviceId || remote.grant.workspaceId !== s.workspaceId)) throw Error('SESSION_TARGET_MISMATCH');
+      const concurrentReceipt = this.store.request(body.requestId, payload);
+      if (concurrentReceipt) return concurrentReceipt;
+      const hasUnknown = Array.isArray(remote.unknownOperations) ? remote.unknownOperations.length > 0 : remote.blockers.length > 0;
+      if (!remote.confirmed || hasUnknown) throw Error('WORKSPACE_NOT_READY');
+      if (!['read', 'edit', 'execute'].includes(remote.grant.mode)) throw Error('LOCAL_PERMISSION_REQUIRED');
+      binding = Object.fromEntries(['accountId', 'deviceId', 'workspaceId', 'grantVersion'].map(k => [k, remote.grant[k]]));
+    }
+
+    this.store.ensureCapacity(1024 * 1024);
+    if (this.store.all('turns').length >= 2000) throw Error('TURN_LIMIT');
+
+    const result = this.store.tx(() => {
+      const existing = this.store.request(body.requestId, payload);
+      if (existing) return existing;
+      const curSession = this.session(s.id);
+      if (curSession.activeTurnId) throw Error('SESSION_BUSY');
+      const check = this.findQuestionPrompt(sessionId, body.questionId);
+      if (check.answered || check.superseded) throw Error('QUESTION_ALREADY_ANSWERED');
+      this.store.append(s.id, {
+        type: 'question_answer',
+        id: body.questionId,
+        engine: chosenEngine ?? prompt.engine ?? 'antigravity',
+        skipped,
+        answers: displayAnswers,
+      });
+      if (!chosenEngine) {
+        const reply = { ok: true, mode: 'next_turn', sessionId: s.id, questionId: body.questionId, skipped };
+        this.store.receipt(body.requestId, payload, reply);
+        return reply;
+      }
+      const id = randomUUID();
+      const latestSession = this.session(s.id);
+      const turn = {
+        id,
+        sessionId: s.id,
+        workspaceId: w.id,
+        createdAt: Date.now(),
+        state: 'preparing',
+        done: false,
+        consumed: false,
+        engine: chosenEngine,
+        text: promptText,
+        attachments: [],
+        calls: [],
+        historyBefore: latestSession.lastSeq,
+        binding: { ...binding, sessionId: s.id, turnId: id, turnEpoch: 1 },
+      };
+      latestSession.activeTurnId = id;
+      this.store.put('sessions', s.id, latestSession);
+      this.store.put('turns', id, turn);
+      const reply = {
+        ok: true,
+        mode: 'next_turn',
+        sessionId: s.id,
+        workspaceId: w.id,
+        historyEpoch: latestSession.historyEpoch,
+        questionId: body.questionId,
+        skipped,
+        turnId: id,
+        acceptedSeq: latestSession.lastSeq,
+      };
+      this.store.receipt(body.requestId, payload, reply);
+      return reply;
+    });
+
+    this.emit('events', s.id);
+    if (result.turnId) {
+      const turn = this.store.get('turns', result.turnId);
+      if (turn && !turn.done) this.scheduleAiTurn(turn);
+      return { ...result, activeTurn: this.publicTurn(this.store.get('turns', result.turnId)) };
+    }
+    this.emit('state');
+    return result;
   }
   async stop(sessionId,body){
     fields(body,['requestId','turnId']);uuid(body.requestId);uuid(body.turnId);

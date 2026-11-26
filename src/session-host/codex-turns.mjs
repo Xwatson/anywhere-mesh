@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { createConnection } from 'node:net';
 import { once } from 'node:events';
 import { extname } from 'node:path';
@@ -21,6 +22,12 @@ import {
   resolveToolBudget,
   summarizeCallArgs,
 } from './tool-budget.mjs';
+import {
+  formatQuestionAnswerTranscript,
+  formatQuestionPromptTranscript,
+  normalizeQuestions,
+  normalizeSubmittedAnswers,
+} from './questions.mjs';
 
 const IMAGE_MIMES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
 const DEFAULT_MODELS = {
@@ -190,6 +197,7 @@ export class CodexTurns {
     this.modelCacheAt = 0;
     this.modelRefresh = null;
     this.lastRateLimits = null;
+    this.pendingQuestions = new Map();
   }
 
   turn(id) { return this.db.get('turns', id); }
@@ -199,6 +207,89 @@ export class CodexTurns {
   emitNoticeOnce(t, guard, notice) {
     if (!notice || !guard?.markNoticeEmitted(notice.code)) return;
     this.event(t, { type: 'turn_notice', ...notice });
+  }
+  hasPendingQuestion(questionId) {
+    return this.pendingQuestions.has(questionId);
+  }
+  pendingQuestionForTurn(turnId) {
+    for (const pending of this.pendingQuestions.values()) {
+      if (pending.turnId === turnId) return { id: pending.id, questions: pending.questions };
+    }
+    return null;
+  }
+  cancelPendingQuestion(turnId, { cancelled = true } = {}) {
+    for (const [qid, pending] of [...this.pendingQuestions.entries()]) {
+      if (pending.turnId !== turnId) continue;
+      this.pendingQuestions.delete(qid);
+      if (pending.run) pending.run.pendingQuestionId = null;
+      try {
+        this.db.append(pending.sessionId, {
+          type: 'question_answer',
+          id: qid,
+          engine: 'codex',
+          skipped: true,
+          ...(cancelled ? { cancelled: true } : {}),
+          answers: Object.fromEntries(pending.questions.map(q => [q.id, []])),
+        });
+        this.host.emit('events', pending.sessionId);
+        this.host.emit('state');
+      } catch {}
+      pending.resolve({ answers: {} });
+    }
+  }
+  answerQuestion(sessionId, questionId, rawAnswers = {}, skipped = false) {
+    const pending = this.pendingQuestions.get(questionId);
+    if (!pending || pending.sessionId !== sessionId) throw Error('QUESTION_NOT_FOUND');
+    const { displayAnswers, codexAnswers } = normalizeSubmittedAnswers(pending.questions, rawAnswers, skipped);
+    this.pendingQuestions.delete(questionId);
+    if (pending.run) {
+      pending.run.pendingQuestionId = null;
+      pending.run.touch?.();
+    }
+    this.db.append(sessionId, {
+      type: 'question_answer',
+      id: questionId,
+      engine: 'codex',
+      skipped: Boolean(skipped),
+      answers: displayAnswers,
+    });
+    this.host.emit('events', sessionId);
+    this.host.emit('state');
+    pending.resolve({ answers: codexAnswers });
+    return { ok: true, mode: 'live', sessionId, questionId, skipped: Boolean(skipped) };
+  }
+  async handleRequestUserInput(t, run, params) {
+    const realTurnId = await run.ready.promise;
+    if (!realTurnId || params?.threadId !== run.threadId || params?.turnId !== realTurnId) throw Error('TOOL_CALL_OUT_OF_SCOPE');
+    const current = this.turn(t.id), session = this.host.session(t.sessionId);
+    if (session.activeTurnId !== t.id || session.codexThreadId !== run.threadId || current.cancelRequested || run.ending) {
+      return { answers: {} };
+    }
+    const questions = normalizeQuestions(params?.questions);
+    if (!questions.length) return { answers: {} };
+    const questionId = randomUUID();
+    run.pendingQuestionId = questionId;
+    run.pauseIdle?.();
+    this.db.append(t.sessionId, {
+      type: 'question_prompt',
+      id: questionId,
+      turnId: t.id,
+      engine: 'codex',
+      mode: 'live',
+      questions,
+    });
+    this.host.emit('events', t.sessionId);
+    this.host.emit('state');
+    return new Promise(resolve => {
+      this.pendingQuestions.set(questionId, {
+        id: questionId,
+        sessionId: t.sessionId,
+        turnId: t.id,
+        run,
+        questions,
+        resolve,
+      });
+    });
   }
   listTurnCallsWithLegacy(t) {
     const dbCalls = this.db.listTurnCalls(t.id);
@@ -613,6 +704,7 @@ export class CodexTurns {
   async restoreConversation(app, threadId, t) {
     const before = t.historyBefore ?? 0;
     let cursor = 0;
+    const promptMap = new Map();
     while (cursor < before) {
       const page = this.db.page(t.sessionId, cursor);
       if (!page.events.length) throw Error('SESSION_HISTORY_INCOMPLETE');
@@ -625,6 +717,13 @@ export class CodexTurns {
         } else if (event.type === 'tool_call' && ['completed', 'failed'].includes(event.status)) {
           items.push({ type: 'function_call', call_id: event.id, name: event.name, arguments: JSON.stringify(event.input ?? {}) },
             { type: 'function_call_output', call_id: event.id, output: event.output || event.status });
+        } else if (event.type === 'question_prompt') {
+          promptMap.set(event.id, event);
+          const txt = formatQuestionPromptTranscript(event);
+          if (txt) items.push({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: txt }] });
+        } else if (event.type === 'question_answer') {
+          const txt = formatQuestionAnswerTranscript(event, promptMap.get(event.id));
+          if (txt) items.push({ type: 'message', role: 'user', content: [{ type: 'input_text', text: txt }] });
         }
       }
       if (items.length) await app.call('thread/inject_items', { threadId, items });
@@ -637,7 +736,7 @@ export class CodexTurns {
     const socket = createConnection(this.socketPath);
     const connected = once(socket, 'connect');
     socket.on('error', () => {});
-    const run = { socket, ready: Promise.withResolvers(), end: Promise.withResolvers(), queue: Promise.resolve(), messages: [], thoughts: [], usage: null, context: null, model: null, tools: new Set(), guard: new TurnToolGuard(this.toolBudget, this.db.listTurnCalls(t.id)) };
+    const run = { socket, ready: Promise.withResolvers(), end: Promise.withResolvers(), queue: Promise.resolve(), messages: [], thoughts: [], usage: null, context: null, model: null, tools: new Set(), pendingQuestionId: null, guard: new TurnToolGuard(this.toolBudget, this.db.listTurnCalls(t.id)) };
     run.end.promise.catch(() => {});
     this.active.set(t.id, run);
     const initialModel = (() => { try { return this.host.session(t.sessionId)?.options?.model ?? null; } catch { return null; } })();
@@ -646,6 +745,11 @@ export class CodexTurns {
       experimentalApi: true, initializeTimeoutMs: 85000, transport: { input: socket, output: socket },
       onExit: () => run.end.reject(Error('CODEX_DISCONNECTED')),
       onRequest: (method, params) => {
+        if (method === 'item/tool/requestUserInput') {
+          const work = run.queue.then(() => this.handleRequestUserInput(t, run, params));
+          run.queue = work.catch(() => {});
+          return work.catch(() => ({ answers: {} }));
+        }
         const work = run.queue.then(() => this.call(t, run, method, params));
         run.queue = work.catch(() => {});
         return work.catch(e => failure(e.message));
@@ -653,11 +757,16 @@ export class CodexTurns {
     });
     run.app = app;
     let idleTimer = null;
+    const pauseIdle = () => {
+      if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+    };
     const resetIdle = () => {
+      if (run.pendingQuestionId) return;
       if (idleTimer) clearTimeout(idleTimer);
       idleTimer = setTimeout(() => run.end.reject(Error('CODEX_TURN_TIMEOUT')), 240000);
     };
     run.touch = resetIdle;
+    run.pauseIdle = pauseIdle;
     resetIdle();
     const maxTimer = setTimeout(() => run.end.reject(Error('CODEX_TURN_TIMEOUT')), 1800000);
     app.onNotification((method, p) => {
@@ -795,6 +904,7 @@ export class CodexTurns {
       clearTimeout(maxTimer);
       run.ending = true;
       run.ready.resolve(null);
+      this.cancelPendingQuestion(t.id, { cancelled: true });
       app.stop(); socket.destroy();
       await run.queue;
       this.save(t.id, { modelOutcome: outcome });
@@ -805,6 +915,7 @@ export class CodexTurns {
 
   async interrupt(id) {
     const run = this.active.get(id), t = this.turn(id);
+    this.cancelPendingQuestion(id, { cancelled: true });
     if (run?.turnId) {
       // interrupt can race turn/completed. The persisted cancel flag governs final status.
       await run.app.call('turn/interrupt', { threadId: run.threadId, turnId: run.turnId }).catch(() => {});

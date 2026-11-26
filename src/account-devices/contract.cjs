@@ -12,6 +12,7 @@ const routes = {
   compactSession: ['sessionId'],
   send: ['sessionId','requestId','text'], history: ['sessionId','afterSeq'], historyBefore: ['sessionId','beforeSeq'],
   stop: ['sessionId','requestId','turnId'],
+  answerQuestion: ['sessionId','requestId','questionId'],
   subscribe: ['sessionId','afterSeq'], unsubscribe: [],
   reviewList: ['workspaceId'], reviewSubmit: ['workspaceId','requestId','operationId','expectedDigest','note'],
   chooseAttachment: ['sessionId'], uploadAttachment: ['sessionId','name','mime','dataBase64'],
@@ -25,6 +26,7 @@ const optional = {
   adminUsage: ['range','refreshQuota'],
   create: ['options'],
   send: ['attachments'],
+  answerQuestion: ['answers','skipped'],
   setSessionOptions: ['agent','model','effort'],
   memoriesList: ['workspaceId'],
   memoriesSave: ['workspaceId'],
@@ -56,7 +58,7 @@ function validate(method, p = {}) {
   const optKeys = optional[method] ?? [];
   const allowed = new Set([...reqKeys, ...optKeys]);
   if (Object.keys(p).some(k => !allowed.has(k)) || !reqKeys.every(k => Object.hasOwn(p, k))) throw Error('INVALID_FIELDS');
-  for (const k of ['workspaceId','sessionId','turnId','requestId','operationId','id']) {
+  for (const k of ['workspaceId','sessionId','turnId','requestId','operationId','id','questionId']) {
     if (k in p && (typeof p[k] !== 'string' || !UUID_RE.test(p[k]))) throw Error('INVALID_ID');
   }
   for (const [k, max] of [['title',80],['text',65536],['username',32],['current',200],['password',200],['note',2048],['name',200],['mime',120]]) {
@@ -82,6 +84,22 @@ function validate(method, p = {}) {
   if ('isAdmin' in p && typeof p.isAdmin !== 'boolean') throw Error('INVALID_FIELDS');
   if ('refresh' in p && typeof p.refresh !== 'boolean') throw Error('INVALID_FIELDS');
   if ('refreshQuota' in p && typeof p.refreshQuota !== 'boolean') throw Error('INVALID_FIELDS');
+  if ('skipped' in p && typeof p.skipped !== 'boolean') throw Error('INVALID_FIELDS');
+  if ('answers' in p) {
+    if (!p.answers || typeof p.answers !== 'object' || Array.isArray(p.answers)) throw Error('INVALID_FIELDS');
+    const entries = Object.entries(p.answers);
+    if (entries.length > 24) throw Error('INVALID_FIELDS');
+    for (const [k, v] of entries) {
+      if (!k || k.length > 1200) throw Error('INVALID_FIELDS');
+      if (typeof v === 'string') {
+        if (v.length > 4000) throw Error('INVALID_TEXT');
+      } else if (Array.isArray(v)) {
+        if (v.length > 16 || !v.every(item => typeof item === 'string' && item.length <= 4000)) throw Error('INVALID_FIELDS');
+      } else {
+        throw Error('INVALID_FIELDS');
+      }
+    }
+  }
   if ('range' in p && !['24h','7d','30d','all'].includes(p.range)) throw Error('INVALID_FIELDS');
   for (const bk of ['manual','relaunch','autoCheck','autoDownload','installOnQuit']) {
     if (bk in p && typeof p[bk] !== 'boolean') throw Error('INVALID_FIELDS');

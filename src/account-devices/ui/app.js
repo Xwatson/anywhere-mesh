@@ -85,6 +85,10 @@ const errors = {
   RUNTIME_ABI_MISMATCH: '需要完整安装包才能升级，但当前清单未提供完整安装包。',
   NEW_VERSION_STARTUP_FAILED: '新版本启动异常，已自动回滚至稳定版本。',
   VERSION_UNCHANGED_AFTER_INSTALL: '上次安装未能升级到目标版本，已暂停自动重试。',
+  QUESTION_NOT_FOUND: '该提问不存在或已失效。',
+  QUESTION_ALREADY_ANSWERED: '该提问已回答，无需重复提交。',
+  QUESTION_EXPIRED: '该提问已随回合结束而失效，请在输入框继续对话。',
+  INVALID_ANSWER: '请先完成所有问题的选择或填写后再提交。',
 };
 const message = e => Object.entries(errors).find(([key]) => String(e.message).includes(key))?.[1] ?? String(e.message);
 
@@ -95,6 +99,7 @@ const WEB_REQUEST_TIMEOUT_MS = {
   quota: 25000,
   adminUsage: 30000,
   send: 30000,
+  answerQuestion: 30000,
   uploadAttachment: 45000,
   compactSession: 180000,
 };
@@ -154,6 +159,7 @@ async function action(method, p = {}, opts = {}) {
     case 'historyBefore': path = '/api/sessions/' + p.sessionId + '/events?beforeSeq=' + p.beforeSeq; break;
     case 'send': path = '/api/sessions/' + p.sessionId + '/messages'; body = { requestId: p.requestId, text: p.text, ...(p.attachments?.length ? { attachments: p.attachments } : {}) }; httpMethod = 'POST'; break;
     case 'stop': path = '/api/sessions/' + p.sessionId + '/stop'; body = { requestId: p.requestId, turnId: p.turnId }; httpMethod = 'POST'; break;
+    case 'answerQuestion': path = '/api/sessions/' + p.sessionId + '/answer'; body = { requestId: p.requestId, questionId: p.questionId, ...(p.answers !== undefined ? { answers: p.answers } : {}), ...(p.skipped !== undefined ? { skipped: p.skipped } : {}) }; httpMethod = 'POST'; break;
     case 'compactSession': path = '/api/sessions/' + p.sessionId + '/compact'; body = {}; httpMethod = 'POST'; break;
     case 'uploadAttachment': path = '/api/sessions/' + p.sessionId + '/attachments'; body = { name: p.name, mime: p.mime, dataBase64: p.dataBase64 }; httpMethod = 'POST'; break;
     default: throw Error('请在桌面客户端操作。');
@@ -216,6 +222,8 @@ let compactingSessionId = null, compactStatusText = '', compactStatusKind = '', 
 let pendingAttachments = [];
 let pasteCounter = 0;
 let live = { text: '', thinking: '', toolOutput: new Map() };
+const questionDrafts = new Map();
+const questionMeta = new Map();
 let eventSource = null, subscribedSessionId = null;
 let deferredInstallPrompt = null;
 let pwaBannerDismissed = (() => { try { return localStorage.getItem('anywhere-pwa-dismissed') === '1'; } catch { return false; } })();
@@ -691,9 +699,12 @@ function applyEventPage(page, target) {
     return;
   }
   const nextState = merged.state;
-  if (page.events?.some(r => r.event?.type === 'assistant_text' || r.event?.type === 'turn_end')) {
+  if (page.events?.some(r => r.event?.type === 'assistant_text' || r.event?.type === 'turn_end' || r.event?.type === 'question_prompt' || r.event?.type === 'question_answer')) {
     live.text = '';
     live.thinking = '';
+  }
+  for (const r of page.events ?? []) {
+    if (r.event?.type === 'question_answer' && r.event.id) questionDrafts.delete(r.event.id);
   }
   for (const r of page.events ?? []) {
     if (r.event?.type === 'tool_call' && r.event.status !== 'running') live.toolOutput.delete(r.event.id);
@@ -2345,8 +2356,39 @@ function render() {
 function drawHistory(next, fromStart = false) {
   const selection = document.getSelection(), events = $('events'), view = $('timeline');
   if (native && selection?.rangeCount && !selection.isCollapsed && selection.getRangeAt(0).intersectsNode(events)) return false;
+  const activeEl = document.activeElement;
+  let focusRestore = null;
+  if (activeEl?.classList?.contains('q-other-input') && events.contains(activeEl)) {
+    const qCard = activeEl.closest('.ai-question-card');
+    if (qCard?.dataset.questionId && activeEl.dataset.qid) {
+      focusRestore = {
+        questionId: qCard.dataset.questionId,
+        qid: activeEl.dataset.qid,
+        start: activeEl.selectionStart,
+        end: activeEl.selectionEnd,
+      };
+    }
+  }
   const pinned = fromStart || pendingScrollBottom || (isTimelineVisible(view) && isTimelinePinned(view));
-  renderThread(events, next, { sessionId: selected, isWeb: !native, liveToolOutput: live.toolOutput, hasActiveTurn: Boolean(thread()?.activeTurn) });
+  renderThread(events, next, {
+    sessionId: selected,
+    isWeb: !native,
+    liveToolOutput: live.toolOutput,
+    hasActiveTurn: Boolean(thread()?.activeTurn),
+    questionDrafts,
+    questionMeta,
+  });
+  if (focusRestore) {
+    const targetInput = events.querySelector(
+      `.ai-question-card[data-question-id="${CSS.escape(focusRestore.questionId)}"] .q-other-input[data-qid="${CSS.escape(focusRestore.qid)}"]`
+    );
+    if (targetInput && !targetInput.disabled) {
+      targetInput.focus({ preventScroll: true });
+      if (typeof focusRestore.start === 'number' && typeof focusRestore.end === 'number') {
+        try { targetInput.setSelectionRange(focusRestore.start, focusRestore.end); } catch {}
+      }
+    }
+  }
   if (pinned) scrollTimelineToBottom(view);
   return true;
 }
@@ -2590,7 +2632,7 @@ async function loadOlderHistory() {
       firstSeq = merged.state.firstSeq;
       seq = merged.state.throughSeq;
       hasOlder = merged.state.hasOlder;
-      renderThread($('events'), rows, { sessionId: selected, isWeb: !native, liveToolOutput: live.toolOutput, hasActiveTurn: Boolean(thread()?.activeTurn) });
+      renderThread($('events'), rows, { sessionId: selected, isWeb: !native, liveToolOutput: live.toolOutput, hasActiveTurn: Boolean(thread()?.activeTurn), questionDrafts, questionMeta });
       view.scrollTop = prevTop + (view.scrollHeight - prevHeight);
       persistCurrentSession(target);
     } else {
@@ -3715,8 +3757,195 @@ async function sendQuickContinue(promptText) {
   }
   $('timeline').scrollTop = $('timeline').scrollHeight;
 }
+function getQuestionDraft(questionId) {
+  let draft = questionDrafts.get(questionId);
+  if (!draft) {
+    draft = { picked: {}, other: {}, submitting: false };
+    questionDrafts.set(questionId, draft);
+  }
+  return draft;
+}
+function buildQuestionAnswers(meta, draft) {
+  const out = {};
+  for (const q of meta?.questions ?? []) {
+    const parts = [];
+    const seen = new Set();
+    for (const v of draft.picked[q.id] ?? []) {
+      const s = String(v ?? '').trim();
+      if (s && !seen.has(s)) { seen.add(s); parts.push(s); }
+    }
+    const otherText = String(draft.other[q.id] ?? '').trim();
+    if (otherText && !seen.has(otherText)) parts.push(otherText);
+    out[q.id] = parts;
+  }
+  return out;
+}
+function formatLegacyQuestionReply(questions, answers, skipped) {
+  if (skipped) return '跳过上述提问，请按推荐方案或自行判断继续。';
+  if (questions.length === 1) {
+    const q = questions[0];
+    return `关于「${q.question}」：\n选择：${(answers[q.id] ?? []).join('；')}`;
+  }
+  return questions.map((q, idx) => `${idx + 1}. ${q.question}\n选择：${(answers[q.id] ?? []).join('；')}`).join('\n\n');
+}
+function syncQuestionCardControls(card, questionId) {
+  const meta = questionMeta.get(questionId);
+  if (!card || !meta) return;
+  const draft = getQuestionDraft(questionId);
+  const complete = meta.questions.every(q => {
+    const p = draft.picked[q.id];
+    const o = typeof draft.other[q.id] === 'string' ? draft.other[q.id].trim() : '';
+    return (Array.isArray(p) && p.length > 0) || Boolean(o);
+  });
+  const submitBtn = card.querySelector('.q-submit-btn');
+  const skipBtn = card.querySelector('.q-skip-btn');
+  const hint = card.querySelector('.q-foot-hint');
+  if (submitBtn) {
+    submitBtn.disabled = !complete || draft.submitting;
+    submitBtn.textContent = draft.submitting ? '正在提交…' : '提交回答';
+  }
+  if (skipBtn) skipBtn.disabled = draft.submitting;
+  if (hint) {
+    hint.textContent = draft.submitting
+      ? '正在发送你的选择…'
+      : complete
+        ? '已选择完成，点击提交继续'
+        : '请选择选项或填写自定义回答';
+  }
+}
+function syncQuestionOptionButton(btn, selected) {
+  btn.classList.toggle('selected', selected);
+  btn.setAttribute('aria-pressed', selected ? 'true' : 'false');
+  const indicator = btn.querySelector('.q-opt-indicator');
+  if (indicator) {
+    if (selected) indicator.replaceChildren(icon('check'));
+    else indicator.textContent = btn.dataset.index || '';
+  }
+}
+async function submitQuestionCard(card, { skipped = false } = {}) {
+  const s = thread();
+  const questionId = card?.dataset?.questionId;
+  const meta = questionId ? questionMeta.get(questionId) : null;
+  if (!s || !questionId || !meta) return;
+  const draft = getQuestionDraft(questionId);
+  if (draft.submitting) return;
+  const answers = skipped ? {} : buildQuestionAnswers(meta, draft);
+  if (!skipped && !meta.questions.every(q => (answers[q.id]?.length ?? 0) > 0)) return;
+  draft.submitting = true;
+  for (const el of card.querySelectorAll('.q-option, .q-other-input')) el.disabled = true;
+  syncQuestionCardControls(card, questionId);
+  try {
+    if (meta.mode === 'legacy_text') {
+      const replyText = formatLegacyQuestionReply(meta.questions, answers, skipped);
+      await sendQuickContinue(replyText);
+      questionDrafts.delete(questionId);
+      return;
+    }
+    const p = project();
+    if (meta.mode !== 'live' && isLocal(p) && (p.localMode ?? p.mode) === 'revoked') {
+      const replyText = formatLegacyQuestionReply(meta.questions, answers, skipped);
+      if (!$('draft').value.trim()) $('draft').value = replyText;
+      draft.submitting = false;
+      for (const el of card.querySelectorAll('.q-option, .q-other-input')) el.disabled = false;
+      syncQuestionCardControls(card, questionId);
+      requestSend();
+      return;
+    }
+    const res = await action('answerQuestion', {
+      sessionId: s.id,
+      requestId: crypto.randomUUID(),
+      questionId,
+      answers,
+      skipped,
+    });
+    questionDrafts.delete(questionId);
+    if (res?.activeTurn && state?.sessions) {
+      const target = state.sessions.find(item => item.id === s.id);
+      if (target) {
+        target.activeTurn = res.activeTurn;
+        syncQueueDeadlines(state.sessions);
+      }
+      render();
+    }
+    $('timeline').scrollTop = $('timeline').scrollHeight;
+    void syncHistory({ forceCheck: true });
+    void refresh();
+  } catch (err) {
+    draft.submitting = false;
+    for (const el of card.querySelectorAll('.q-option, .q-other-input')) el.disabled = false;
+    syncQuestionCardControls(card, questionId);
+    notify(message(err));
+  }
+}
 function handleRichContentClick(e) {
   hideLinkMenu();
+  const qOptBtn = e.target.closest('.q-option');
+  if (qOptBtn && !qOptBtn.disabled) {
+    const card = qOptBtn.closest('.ai-question-card.active');
+    const item = qOptBtn.closest('.q-item');
+    const questionId = card?.dataset.questionId;
+    const qid = qOptBtn.dataset.qid;
+    const val = qOptBtn.dataset.value ?? '';
+    if (card && item && questionId && qid) {
+      const draft = getQuestionDraft(questionId);
+      const multi = item.dataset.multi === '1';
+      if (multi) {
+        const cur = Array.isArray(draft.picked[qid]) ? [...draft.picked[qid]] : [];
+        const idx = cur.indexOf(val);
+        if (idx >= 0) cur.splice(idx, 1);
+        else cur.push(val);
+        draft.picked[qid] = cur;
+        syncQuestionOptionButton(qOptBtn, idx < 0);
+      } else {
+        draft.picked[qid] = [val];
+        draft.other[qid] = '';
+        for (const btn of item.querySelectorAll('.q-option')) {
+          syncQuestionOptionButton(btn, btn === qOptBtn);
+        }
+        const otherInput = item.querySelector('.q-other-input');
+        if (otherInput && otherInput.value) {
+          otherInput.value = '';
+          otherInput.closest('.q-other-wrap')?.classList.remove('filled');
+        }
+      }
+      syncQuestionCardControls(card, questionId);
+    }
+    return;
+  }
+  const qSubmitBtn = e.target.closest('.q-submit-btn');
+  if (qSubmitBtn && !qSubmitBtn.disabled) {
+    const card = qSubmitBtn.closest('.ai-question-card.active');
+    if (card) void submitQuestionCard(card, { skipped: false });
+    return;
+  }
+  const qSkipBtn = e.target.closest('.q-skip-btn');
+  if (qSkipBtn && !qSkipBtn.disabled) {
+    const card = qSkipBtn.closest('.ai-question-card.active');
+    if (card) void submitQuestionCard(card, { skipped: true });
+    return;
+  }
+  const msgCopyBtn = e.target.closest('.msg-copy-btn');
+  if (msgCopyBtn) {
+    const copyText = msgCopyBtn.dataset.copyText ?? '';
+    if (copyText) {
+      void writeClipboard(copyText).then(ok => {
+        if (!ok) return;
+        msgCopyBtn.classList.add('copied');
+        msgCopyBtn.dataset.tooltip = '已复制';
+        msgCopyBtn.setAttribute('aria-label', '已复制');
+        const useEl = msgCopyBtn.querySelector('use');
+        if (useEl) useEl.setAttribute('href', '#i-check');
+        clearTimeout(msgCopyBtn._copyTimer);
+        msgCopyBtn._copyTimer = setTimeout(() => {
+          msgCopyBtn.classList.remove('copied');
+          msgCopyBtn.dataset.tooltip = '复制回答';
+          msgCopyBtn.setAttribute('aria-label', '复制回答');
+          if (useEl) useEl.setAttribute('href', '#i-copy');
+        }, 1600);
+      });
+    }
+    return;
+  }
   const continueBtn = e.target.closest('.turn-continue-btn');
   if (continueBtn) {
     if (!continueBtn.disabled) {
@@ -3767,6 +3996,33 @@ for (const area of [$('events'), $('live')]) {
   area.addEventListener('pointerout', handleRichPointerOut);
   area.addEventListener('contextmenu', handleRichContextMenu);
 }
+$('events').addEventListener('input', e => {
+  const input = e.target.closest('.q-other-input');
+  if (!input) return;
+  const card = input.closest('.ai-question-card.active');
+  const item = input.closest('.q-item');
+  const questionId = card?.dataset.questionId;
+  const qid = input.dataset.qid;
+  if (!card || !item || !questionId || !qid) return;
+  const draft = getQuestionDraft(questionId);
+  draft.other[qid] = input.value;
+  input.closest('.q-other-wrap')?.classList.toggle('filled', Boolean(input.value.trim()));
+  if (item.dataset.multi !== '1' && input.value.trim()) {
+    draft.picked[qid] = [];
+    for (const btn of item.querySelectorAll('.q-option.selected')) {
+      syncQuestionOptionButton(btn, false);
+    }
+  }
+  syncQuestionCardControls(card, questionId);
+});
+$('events').addEventListener('keydown', e => {
+  const input = e.target.closest('.q-other-input');
+  if (!input || e.key !== 'Enter' || e.isComposing) return;
+  e.preventDefault();
+  const card = input.closest('.ai-question-card.active');
+  const submitBtn = card?.querySelector('.q-submit-btn');
+  if (card && submitBtn && !submitBtn.disabled) void submitQuestionCard(card, { skipped: false });
+});
 $('timeline').addEventListener('scroll', () => { hideLinkHover(); hideLinkMenu(); }, { passive: true });
 document.addEventListener('pointerdown', e => {
   if (!$('link-context-menu').hidden && !e.target.closest('#link-context-menu')) hideLinkMenu();

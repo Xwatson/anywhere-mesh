@@ -26,6 +26,12 @@ import {
   resolveToolBudget,
   summarizeCallArgs,
 } from './tool-budget.mjs';
+import {
+  formatQuestionAnswerTranscript,
+  formatQuestionPromptTranscript,
+  normalizeQuestions,
+  stripAgyQuestionFallback,
+} from './questions.mjs';
 
 const MCP_NAME = 'anywhere_workspace';
 const MCP_PREFIX = `mcp_${MCP_NAME}_`;
@@ -769,6 +775,7 @@ export class AntigravityTurns {
     if (!before) return '';
     let cursor = 0;
     const lines = [];
+    const promptMap = new Map();
     while (cursor < before) {
       const page = this.db.page(t.sessionId, cursor);
       if (!page.events.length) break;
@@ -778,6 +785,13 @@ export class AntigravityTurns {
         else if (event.type === 'assistant_text') lines.push(`Assistant: ${event.text}`);
         else if (event.type === 'tool_call' && ['completed', 'failed'].includes(event.status)) {
           lines.push(`[Tool ${event.name} (${event.status})]: ${(event.output ?? '').slice(0, 400)}`);
+        } else if (event.type === 'question_prompt') {
+          promptMap.set(event.id, event);
+          const txt = formatQuestionPromptTranscript(event);
+          if (txt) lines.push(`Assistant: ${txt}`);
+        } else if (event.type === 'question_answer') {
+          const txt = formatQuestionAnswerTranscript(event, promptMap.get(event.id));
+          if (txt) lines.push(`User: ${txt}`);
         }
       }
       cursor = page.throughSeq;
@@ -842,6 +856,7 @@ export class AntigravityTurns {
       socket, acp: null, sessionId: null, mcpServer: null, queue: Promise.resolve(),
       tools: new Set(), callSeq: 0, ending: false, prompting: false,
       text: '', thinking: '', usage: null, context: null, model: null,
+      pendingQuestion: null, suppressQuestionFallback: false, questionFallbackBuf: '',
       guard: new TurnToolGuard(this.toolBudget, this.db.listTurnCalls(t.id)),
     };
     this.active.set(t.id, run);
@@ -887,9 +902,34 @@ export class AntigravityTurns {
             const window = typeof u.size === 'number' && u.size > 0 ? u.size : (run.context?.window ?? 1048576);
             run.context = { used: u.used, window };
             this.host.delta(t.sessionId, { kind: 'context', used: u.used, window });
+          } else if (run.prompting && (u.sessionUpdate === 'tool_call' || u.sessionUpdate === 'tool_call_update') && u.name === 'ask_question') {
+            const rawQs = u.args?.questions ?? u.rawInput?.questions;
+            if (u.sessionUpdate === 'tool_call' || u.status === 'pending') {
+              const questions = normalizeQuestions(rawQs);
+              if (questions.length) {
+                run.pendingQuestion = {
+                  id: run.pendingQuestion?.id || randomUUID(),
+                  toolCallId: u.toolCallId ?? run.pendingQuestion?.toolCallId ?? null,
+                  questions,
+                };
+                run.suppressQuestionFallback = true;
+              }
+            } else if (u.status === 'completed' && run.pendingQuestion && (!u.toolCallId || u.toolCallId === run.pendingQuestion.toolCallId)) {
+              run.pendingQuestion = null;
+              run.suppressQuestionFallback = false;
+              if (run.questionFallbackBuf) {
+                run.text += run.questionFallbackBuf;
+                this.host.delta(t.sessionId, { kind: 'text', id: t.id, text: run.questionFallbackBuf });
+                run.questionFallbackBuf = '';
+              }
+            }
           } else if (run.prompting && u.sessionUpdate === 'agent_message_chunk' && u.content?.type === 'text' && u.content.text) {
-            run.text += u.content.text;
-            this.host.delta(t.sessionId, { kind: 'text', id: t.id, text: u.content.text });
+            if (run.suppressQuestionFallback) {
+              run.questionFallbackBuf += u.content.text;
+            } else {
+              run.text += u.content.text;
+              this.host.delta(t.sessionId, { kind: 'text', id: t.id, text: u.content.text });
+            }
           } else if (run.prompting && u.sessionUpdate === 'agent_thought_chunk' && u.content?.type === 'text' && u.content.text) {
             run.thinking += u.content.text;
             this.host.delta(t.sessionId, { kind: 'thinking', id: t.id, text: u.content.text });
@@ -973,7 +1013,16 @@ export class AntigravityTurns {
       if (result?.stopReason && result.stopReason !== 'end_turn') {
         throw Error(`ANTIGRAVITY_STOP:${result.stopReason}`);
       }
-      if (!run.text.trim()) throw Error('ANTIGRAVITY_EMPTY_RESPONSE');
+      if (run.pendingQuestion) {
+        if (run.questionFallbackBuf) {
+          const extra = stripAgyQuestionFallback(run.questionFallbackBuf, run.pendingQuestion.questions);
+          if (extra.trim()) run.text = run.text ? `${run.text.trimEnd()}\n\n${extra.trim()}` : extra.trim();
+        }
+        if (run.text.trim()) {
+          run.text = stripAgyQuestionFallback(run.text, run.pendingQuestion.questions);
+        }
+      }
+      if (!run.text.trim() && !run.pendingQuestion) throw Error('ANTIGRAVITY_EMPTY_RESPONSE');
       const durationMs = Date.now() - startedAt;
       const u = result?.usage;
       const usage = u ? { inputTokens: u.inputTokens, outputTokens: u.outputTokens, cachedInputTokens: u.cachedReadTokens } : undefined;
@@ -981,8 +1030,20 @@ export class AntigravityTurns {
         if (run.thinking.trim()) {
           this.db.append(t.sessionId, { type: 'thinking', id: randomUUID(), text: run.thinking.trim().slice(0, 6000), engine: 'antigravity' });
         }
-        for (let pos = 0; pos < run.text.length; pos += 16000) {
-          this.db.append(t.sessionId, { type: 'assistant_text', id: t.id + '-' + pos, text: run.text.slice(pos, pos + 16000), engine: 'antigravity' });
+        if (run.text.trim()) {
+          for (let pos = 0; pos < run.text.length; pos += 16000) {
+            this.db.append(t.sessionId, { type: 'assistant_text', id: t.id + '-' + pos, text: run.text.slice(pos, pos + 16000), engine: 'antigravity' });
+          }
+        }
+        if (run.pendingQuestion) {
+          this.db.append(t.sessionId, {
+            type: 'question_prompt',
+            id: run.pendingQuestion.id,
+            turnId: t.id,
+            engine: 'antigravity',
+            mode: 'next_turn',
+            questions: run.pendingQuestion.questions,
+          });
         }
         this.save(t.id, { modelFinished: true, durationMs, usage, ...(run.context ? { context: run.context } : {}), model: run.model });
       });

@@ -503,6 +503,14 @@ export class DeviceClient {
     if (method === 'historyBefore') return this.api('GET', base + '/events?beforeSeq=' + p.beforeSeq);
     if (method === 'send') return this.api('POST', base + '/messages', { requestId: p.requestId, text: p.text, ...(p.attachments?.length ? { attachments: p.attachments } : {}) });
     if (method === 'stop') return this.api('POST', base + '/stop', { requestId: p.requestId, turnId: p.turnId });
+    if (method === 'answerQuestion') {
+      return this.api('POST', base + '/answer', {
+        requestId: p.requestId,
+        questionId: p.questionId,
+        ...(p.answers !== undefined ? { answers: p.answers } : {}),
+        ...(p.skipped !== undefined ? { skipped: p.skipped } : {}),
+      });
+    }
     if (method === 'compactSession') return this.api('POST', base + '/compact', {});
     if (method === 'uploadAttachment') {
       const bytes = Buffer.from(p.dataBase64, 'base64');

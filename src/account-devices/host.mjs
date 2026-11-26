@@ -627,7 +627,7 @@ export async function startServer(config) {
       });
       res.end(bytes); return;
     }
-    const match = path.match(/^\/api\/sessions\/([a-f0-9-]{36})\/(events|messages|stop|stream|attachments|compact)$/);
+    const match = path.match(/^\/api\/sessions\/([a-f0-9-]{36})\/(events|messages|stop|stream|attachments|compact|answer)$/);
     if (!match) throw Error('NOT_FOUND');
     const s = host.session(match[1]);
     if (req.method === 'GET' && match[2] === 'events') {
@@ -705,6 +705,18 @@ export async function startServer(config) {
       json(res, 200, prior ?? await host.send(s.id, b)); return;
     }
     if (req.method === 'POST' && match[2] === 'stop') { json(res, 200, await host.stop(s.id, await body(req))); return; }
+    if (req.method === 'POST' && match[2] === 'answer') {
+      const b = await body(req);
+      fields(b, ['requestId', 'questionId'], ['answers', 'skipped']);
+      const prior = host.store.request(b.requestId, {
+        kind: 'answer',
+        sessionId: s.id,
+        questionId: b.questionId,
+        skipped: Boolean(b.skipped),
+      });
+      if (!prior && !host.codex?.hasPendingQuestion?.(b.questionId) && !online.has(s.deviceId)) throw Error('DEVICE_OFFLINE');
+      json(res, 200, prior ?? await host.answerQuestion(s.id, b)); return;
+    }
     if (req.method === 'POST' && match[2] === 'compact') { json(res, 200, await host.compactSession(s.id)); return; }
     throw Error('NOT_FOUND');
   }
@@ -716,6 +728,7 @@ export async function startServer(config) {
         NETWORK_ENROLLMENT_UNAVAILABLE: 503, NETWORK_ADDRESS_LIMIT: 503, NOT_FOUND: 404, SESSION_NOT_FOUND: 404, ATTACHMENT_NOT_FOUND: 404,
         LOGIN_THROTTLED: 429, PASSWORD_THROTTLED: 429, INVALID_FIELDS: 400, INVALID_ID: 400, INVALID_TEXT: 400, INVALID_USERNAME: 400,
         INVALID_MEMORY_SCOPE: 400, MEMORY_TOO_LARGE: 400, MEMORY_LIMIT_REACHED: 409, MEMORY_STORAGE_LIMIT: 409,
+        QUESTION_NOT_FOUND: 404, QUESTION_ALREADY_ANSWERED: 409, QUESTION_EXPIRED: 409, INVALID_ANSWER: 400,
         INVALID_ATTACHMENT: 400, BODY_LIMIT: 413, USERNAME_TAKEN: 409, LAST_ADMIN_PROTECTED: 400, CANNOT_DELETE_SELF: 400, DEVICE_BUSY: 409,
         INCORRECT_CURRENT_PASSWORD: 400, INVALID_NEW_PASSWORD: 400, PASSWORD_UNCHANGED: 400 }[message] ?? 409;
       if (!res.headersSent) json(res, status, { error: /^[A-Z0-9_]+$/.test(message) ? message : 'REQUEST_FAILED' });
