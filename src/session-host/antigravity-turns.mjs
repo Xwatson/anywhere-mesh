@@ -497,11 +497,19 @@ export class AntigravityTurns {
   }
 
   async waitForWorkspaceReady(t, run, waitMs = 20000) {
+    if (typeof this.host.reconcileWorkspaceBlockers === 'function') {
+      return this.host.reconcileWorkspaceBlockers(t.workspaceId, {
+        waitMs,
+        shouldStop: () => Boolean(run.ending || this.turn(t.id)?.cancelRequested),
+        onProgress: () => run.touch?.(),
+      });
+    }
     const deadline = Date.now() + waitMs;
     while (!run.ending && !this.turn(t.id)?.cancelRequested) {
       try {
         const info = await this.broker(t, 'workspace');
-        if (info.confirmed && info.phase === 'ready') return info;
+        if (info.unknownOperations?.length) return info;
+        if (info.confirmed && info.phase === 'ready' && !info.blockers?.length && !info.activeOperations?.length) return info;
       } catch {}
       if (Date.now() >= deadline) return null;
       await delay(500);
@@ -662,16 +670,46 @@ export class AntigravityTurns {
         const until = Date.now() + 180000;
         let outputSeq = 0;
         let notReceivedCancelSent = false;
-        while (result.structuredContent?.task && !result.structuredContent.task.resultReady) {
+        let preparedSince = null;
+        while (!result?.structuredContent?.task?.resultReady) {
           run.touch?.();
-          const taskState = result.structuredContent.task.state;
-          if (run.ending || taskState === 'unknown' || Date.now() > until) throw Error('WORKSPACE_RESULT_PENDING');
+          const task = result?.structuredContent?.task;
+          if (run.ending || Date.now() > until) {
+            if (!run.ending && task && task.state !== 'unknown' && !task.cancelRequested) {
+              await h.client.callTool({ name: 'workspace_task_cancel', arguments: { operationId: ticket.operationId } }).catch(() => {});
+            }
+            throw Error('WORKSPACE_RESULT_PENDING');
+          }
+          if (!task) {
+            // Transient dispatch/status transport error (e.g. CONTROL_TIMEOUT) after broker.prepare created ticket.operationId.
+            // Keep polling workspace_task_status instead of abandoning the prepared/dispatched operation unconsumed.
+            if (this.turn(t.id)?.cancelRequested && !notReceivedCancelSent) {
+              notReceivedCancelSent = true;
+              result = await h.client.callTool({ name: 'workspace_task_cancel', arguments: { operationId: ticket.operationId } });
+              continue;
+            }
+            await delay(150);
+            result = await h.client.callTool({ name: 'workspace_task_status', arguments: { operationId: ticket.operationId } });
+            continue;
+          }
+          const taskState = task.state;
+          if (taskState === 'unknown') throw Error('WORKSPACE_RESULT_PENDING');
+          if (taskState === 'prepared') {
+            preparedSince ??= Date.now();
+            if (!notReceivedCancelSent && (this.turn(t.id)?.cancelRequested || Date.now() - preparedSince >= 3000)) {
+              notReceivedCancelSent = true;
+              result = await h.client.callTool({ name: 'workspace_task_cancel', arguments: { operationId: ticket.operationId } });
+              if (result?.structuredContent?.task?.resultReady) break;
+            }
+          } else {
+            preparedSince = null;
+          }
           if (taskState === 'not_received' && !notReceivedCancelSent) {
             notReceivedCancelSent = true;
             result = await h.client.callTool({ name: 'workspace_task_cancel', arguments: { operationId: ticket.operationId } });
-            if (result.structuredContent?.task?.resultReady) break;
+            if (result?.structuredContent?.task?.resultReady) break;
           }
-          const receivedSeq = result.structuredContent.task.receivedSeq ?? 0;
+          const receivedSeq = task.receivedSeq ?? 0;
           if (receivedSeq > outputSeq) {
             try {
               const out = await h.executor.output(ticket.operationId, outputSeq);

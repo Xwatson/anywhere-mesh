@@ -230,3 +230,39 @@ test('stopTurn preserves unknown ops requiring local operator review', async (t)
   assert.equal(current.state, 'unknown');
   assert.equal(current.cancelId, null);
 });
+
+test('LocalAgent batches streaming output writes while flushing synchronously before reads and completion', async (t) => {
+  const { agent, journal } = setup(t, { outputFlushMs: 50 });
+  const r = request({ steps: 1, intervalMs: 100, bytesPerStep: 10 });
+  // Manually register a running op so we can drive bursty output deterministically.
+  journal.put('ops', r.operationId, { ...r, taskId: id(), state: 'running', lastSeq: 0, result: null, pid: null, starts: 1, reason: null, cancelId: null, acknowledgedSeq: 0 });
+  let txCount = 0;
+  let changedEvents = 0;
+  const origTx = journal.tx.bind(journal);
+  journal.tx = (fn) => { txCount++; return origTx(fn); };
+  agent.on('changed', () => { changedEvents++; });
+
+  for (let i = 0; i < 40; i++) {
+    agent.output(r.operationId, 'stdout', `line-${i}\n`);
+  }
+  // Small lines coalesce into <= 2048B rows and stay buffered until flush/read (0 synchronous fsyncs during burst).
+  assert.equal(txCount, 0);
+  assert.equal(changedEvents, 0);
+
+  // Reading output via handle('output') flushes synchronously in one single tx.
+  const out = agent.handle('output', { ...r, afterSeq: 0 }, 1);
+  assert.equal(txCount, 1);
+  assert.equal(changedEvents, 1);
+  const combined = out.rows.map((row) => row.data).join('');
+  assert.ok(combined.startsWith('line-0\n'));
+  assert.ok(combined.endsWith('line-39\n'));
+  assert.equal(out.rows.length, 1);
+
+  // Large burst (>= 16 KiB) auto-flushes immediately without waiting for timer.
+  for (let i = 0; i < 10; i++) {
+    agent.output(r.operationId, 'stdout', 'X'.repeat(2048));
+  }
+  assert.ok(txCount >= 2);
+  const after = agent.handle('status', r, 1);
+  assert.ok(after.lastSeq >= 10);
+});

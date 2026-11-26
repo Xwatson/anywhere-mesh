@@ -16,13 +16,13 @@ export async function serveControl(socketPath, broker) {
       respond(200, { result: await broker.control(request.method, request.params) });
     } catch (e) { respond(400, { error: e.code || 'INVALID_REQUEST' }); }
   });
-  server.headersTimeout = 10000; server.requestTimeout = 15000;
+  server.headersTimeout = 15000; server.requestTimeout = 40000;
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(socketPath, resolve); });
   chmodSync(socketPath, 0o660); return server;
 }
 export function control(socketPath, method, params = {}) {
   return new Promise((resolve, reject) => {
-    const req = http.request({ socketPath, path: '/rpc', method: 'POST', timeout: 12000,
+    const req = http.request({ socketPath, path: '/rpc', method: 'POST', timeout: 35000,
       headers: { 'content-type': 'application/json' } }, (res) => {
       const chunks = []; let bytes = 0;
       res.on('data', (c) => { bytes += c.length; if (bytes > 1048576) req.destroy(new Error('RESPONSE_TOO_LARGE')); else chunks.push(c); });

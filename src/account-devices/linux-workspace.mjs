@@ -1,14 +1,18 @@
-import { execFileSync, spawn } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync,
   renameSync, rmSync, statSync, unlinkSync, writeFileSync,
 } from 'node:fs';
+import { lstat, readdir, readFile } from 'node:fs/promises';
 import { dirname, extname, join, resolve } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
+import { promisify } from 'node:util';
 import { applyHunks, parsePatch } from '../workspace/patch.mjs';
 import { WORKSPACE_CATALOG, PROCESS_TOOL_NAMES } from '../workspace/catalog.mjs';
 import { BackgroundProcessManager } from '../workspace/bg-processes.mjs';
+
+const execFileAsync = promisify(execFile);
 
 const MAX_READ_BYTES = 2 * 1024 * 1024;
 const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
@@ -137,41 +141,44 @@ function readOneFile(root, rel, offset = 0, length = 200) {
   };
 }
 
-function listDirTree(root, rel, maxDepth = 2) {
+async function listDirTree(root, rel, maxDepth = 2, signal) {
   const { fullPath, stat } = resolveNoSymlink(root, rel);
   if (!stat.isDirectory()) fail('NOT_A_DIRECTORY');
   const lines = [];
-  const walk = (dir, prefix, depth) => {
+  const walk = async (dir, prefix, depth) => {
     if (lines.length >= 400) return;
-    const entries = readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
+    if (signal?.aborted) fail('READ_CANCELLED');
+    const entries = (await readdir(dir, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name));
     for (const ent of entries) {
       if (lines.length >= 400) break;
+      if (signal?.aborted) fail('READ_CANCELLED');
       if (ent.isSymbolicLink()) continue;
       const entryRel = prefix ? `${prefix}/${ent.name}` : ent.name;
       if (ent.isDirectory()) {
         lines.push(`${entryRel}/`);
-        if (depth < maxDepth && !SKIP_DIRS.has(ent.name)) walk(join(dir, ent.name), entryRel, depth + 1);
+        if (depth < maxDepth && !SKIP_DIRS.has(ent.name)) await walk(join(dir, ent.name), entryRel, depth + 1);
       } else if (ent.isFile()) {
         lines.push(entryRel);
       }
     }
   };
-  walk(fullPath, rel === '.' ? '' : rel, 1);
+  await walk(fullPath, rel === '.' ? '' : rel, 1);
   return {
     content: [{ type: 'text', text: lines.length ? lines.join('\n') : '(empty directory)' }],
   };
 }
 
-function searchWithRipgrep(root, rel, fullPath, stat, { pattern, searchType, literalSearch, maxResults }) {
+async function searchWithRipgrep(root, rel, fullPath, stat, { pattern, searchType, literalSearch, maxResults }, signal) {
   if (!hasRipgrep()) return null;
   try {
+    if (signal?.aborted) fail('READ_CANCELLED');
     if (searchType === 'files') {
       const target = stat.isFile() ? fullPath : fullPath;
-      const out = execFileSync('rg', [
+      const { stdout: out } = await execFileAsync('rg', [
         '--files', '--no-follow', '--hidden', '--no-ignore',
         '--glob', '!.git', '--glob', '!.git/**', '--glob', '!node_modules', '--glob', '!node_modules/**',
         target,
-      ], { encoding: 'utf8', timeout: 8000, maxBuffer: 4 * 1024 * 1024 });
+      ], { encoding: 'utf8', timeout: 8000, maxBuffer: 4 * 1024 * 1024, ...(signal ? { signal } : {}) });
       const re = literalSearch ? null : new RegExp(pattern, 'i');
       const needle = pattern.toLowerCase();
       const matches = [];
@@ -194,9 +201,10 @@ function searchWithRipgrep(root, rel, fullPath, stat, { pattern, searchType, lit
     ];
     let out = '';
     try {
-      out = execFileSync('rg', args, { encoding: 'utf8', timeout: 8000, maxBuffer: 4 * 1024 * 1024 });
+      ({ stdout: out } = await execFileAsync('rg', args, { encoding: 'utf8', timeout: 8000, maxBuffer: 4 * 1024 * 1024, ...(signal ? { signal } : {}) }));
     } catch (err) {
-      if (err.status === 1) out = '';
+      if (signal?.aborted || err?.name === 'AbortError') fail('READ_CANCELLED');
+      if (err.code === 1 || err.status === 1) out = '';
       else return null;
     }
     const prefix = root.endsWith('/') ? root : root + '/';
@@ -215,26 +223,28 @@ function searchWithRipgrep(root, rel, fullPath, stat, { pattern, searchType, lit
       }
     }
     return { content: [{ type: 'text', text: matches.length ? matches.join('\n') : '(no matches)' }] };
-  } catch {
+  } catch (err) {
+    if (err?.code === 'READ_CANCELLED' || signal?.aborted || err?.name === 'AbortError') fail('READ_CANCELLED');
     return null;
   }
 }
 
-function searchWorkspace(root, { path: rel, pattern, searchType, literalSearch, maxResults }) {
+async function searchWorkspace(root, { path: rel, pattern, searchType, literalSearch, maxResults }, signal) {
   const { fullPath, stat } = resolveNoSymlink(root, rel);
   if (!stat.isDirectory() && !stat.isFile()) fail('FILE_NOT_FOUND');
   let re;
   try {
     re = literalSearch ? null : new RegExp(pattern, 'i');
   } catch { fail('INVALID_REGEX'); }
-  const fast = searchWithRipgrep(root, rel, fullPath, stat, { pattern, searchType, literalSearch, maxResults });
+  const fast = await searchWithRipgrep(root, rel, fullPath, stat, { pattern, searchType, literalSearch, maxResults }, signal);
   if (fast) return fast;
   const needle = pattern.toLowerCase();
   const matches = [];
   let visited = 0;
 
-  const inspectFile = (fp, fileRel) => {
+  const inspectFile = async (fp, fileRel) => {
     if (matches.length >= maxResults || visited >= MAX_SEARCH_FILES) return;
+    if (signal?.aborted) fail('READ_CANCELLED');
     visited++;
     if (searchType === 'files') {
       const hit = re ? re.test(fileRel) : fileRel.toLowerCase().includes(needle);
@@ -242,10 +252,10 @@ function searchWorkspace(root, { path: rel, pattern, searchType, literalSearch, 
       return;
     }
     let st;
-    try { st = lstatSync(fp); } catch { return; }
+    try { st = await lstat(fp); } catch { return; }
     if (!st.isFile() || st.size > MAX_SEARCH_FILE_BYTES) return;
     let buf;
-    try { buf = readFileSync(fp); } catch { return; }
+    try { buf = await readFile(fp); } catch { return; }
     if (buf.subarray(0, 4096).includes(0)) return;
     const lines = buf.toString('utf8').replace(/\r\n/g, '\n').split('\n');
     for (let i = 0; i < lines.length && matches.length < maxResults; i++) {
@@ -255,25 +265,27 @@ function searchWorkspace(root, { path: rel, pattern, searchType, literalSearch, 
     }
   };
 
-  const walk = (dir, prefix) => {
+  const walk = async (dir, prefix) => {
     if (matches.length >= maxResults || visited >= MAX_SEARCH_FILES) return;
+    if (signal?.aborted) fail('READ_CANCELLED');
     let entries;
-    try { entries = readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name)); }
+    try { entries = (await readdir(dir, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name)); }
     catch { return; }
     for (const ent of entries) {
       if (matches.length >= maxResults || visited >= MAX_SEARCH_FILES) break;
+      if (signal?.aborted) fail('READ_CANCELLED');
       if (ent.isSymbolicLink()) continue;
       const entryRel = prefix ? `${prefix}/${ent.name}` : ent.name;
       if (ent.isDirectory()) {
-        if (!SKIP_DIRS.has(ent.name)) walk(join(dir, ent.name), entryRel);
+        if (!SKIP_DIRS.has(ent.name)) await walk(join(dir, ent.name), entryRel);
       } else if (ent.isFile()) {
-        inspectFile(join(dir, ent.name), entryRel);
+        await inspectFile(join(dir, ent.name), entryRel);
       }
     }
   };
 
-  if (stat.isFile()) inspectFile(fullPath, rel);
-  else walk(fullPath, rel === '.' ? '' : rel);
+  if (stat.isFile()) await inspectFile(fullPath, rel);
+  else await walk(fullPath, rel === '.' ? '' : rel);
 
   return {
     content: [{ type: 'text', text: matches.length ? matches.join('\n') : '(no matches)' }],
@@ -423,10 +435,10 @@ export function linuxWorkspace({ browserManager = null } = {}) {
 
       return {
         mutates,
-        read: !mutates ? async () => {
+        read: !mutates ? async (signal) => {
           assertRoot(root, rootIdentity);
           if (req.kind === 'dc.search') {
-            return { version: 1, ok: true, calls: 1, response: searchWorkspace(root, req.args) };
+            return { version: 1, ok: true, calls: 1, response: await searchWorkspace(root, req.args, signal) };
           }
           const a = req.args.arguments;
           if (tool === 'read_file') {
@@ -447,7 +459,7 @@ export function linuxWorkspace({ browserManager = null } = {}) {
             return { version: 1, ok: true, calls: 1, fileVersions, response: { content } };
           }
           if (tool === 'list_directory') {
-            return { version: 1, ok: true, calls: 1, response: listDirTree(root, a.path, a.depth ?? 2) };
+            return { version: 1, ok: true, calls: 1, response: await listDirTree(root, a.path, a.depth ?? 2, signal) };
           }
           if (tool === 'get_file_info') {
             const { fullPath, stat } = resolveNoSymlink(root, a.path);

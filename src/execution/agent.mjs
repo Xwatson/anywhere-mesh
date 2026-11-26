@@ -22,9 +22,10 @@ export function groupAlive(group) {
 const signalGroup = (pid, signal) => { try { process.kill(-pid, signal); } catch (e) { if (e.code !== 'ESRCH') throw e; } };
 
 export class LocalAgent extends EventEmitter {
-  constructor(journal, grant, { stateDir, fault = () => {}, outputBytes = 65536, launcher, maxChildren = 4, workspace } = {}) {
+  constructor(journal, grant, { stateDir, fault = () => {}, outputBytes = 65536, outputFlushMs = 40, launcher, maxChildren = 4, workspace } = {}) {
     super(); this.journal = journal; this.grant = grant; this.stateDir = stateDir;
-    this.fault = fault; this.outputBytes = outputBytes; this.children = new Map();
+    this.fault = fault; this.outputBytes = outputBytes; this.outputFlushMs = outputFlushMs;
+    this.children = new Map(); this.pendingOutputs = new Map();
     this.launcher = launcher; this.maxChildren = maxChildren;
     this.workspace = workspace;
     if (workspace) { this.authority = new GrantAuthority(journal, grant); this.grant = this.authority.current; }
@@ -179,6 +180,7 @@ export class LocalAgent extends EventEmitter {
       tool = { version: 1, ok: false, error: reason, response: { isError: true, content: [{ type: 'text', text: reason }] } };
     } finally { clearTimeout(timer); }
     // A confirmed commit wins a late cancellation. An interrupted commit needs local review.
+    this.flushOutput(op.operationId);
     op = this.journal.get('ops', op.operationId);
     if (uncertain) {
       op.state = 'unknown'; op.reason = 'WORKSPACE_COMMIT_UNCERTAIN'; op.result = null;
@@ -192,12 +194,59 @@ export class LocalAgent extends EventEmitter {
   }
   output(operationId, stream, data) {
     if (!data) return;
+    if (this.outputFlushMs <= 0) {
+      this.journal.tx(() => {
+        const op = this.journal.get('ops', operationId); if (!op) return;
+        op.lastSeq++;
+        this.journal.append(operationId, op.lastSeq, stream, data);
+        this.journal.trim(operationId, this.outputBytes); this.journal.put('ops', operationId, op);
+      });
+      this.emit('changed');
+      return;
+    }
+    let entry = this.pendingOutputs.get(operationId);
+    if (!entry) {
+      entry = { chunks: [], bytes: 0, timer: null };
+      this.pendingOutputs.set(operationId, entry);
+    }
+    const chunkBytes = Buffer.byteLength(data);
+    const last = entry.chunks.at(-1);
+    if (last && last.stream === stream && last.bytes + chunkBytes <= 2048) {
+      last.data += data;
+      last.bytes += chunkBytes;
+    } else {
+      entry.chunks.push({ stream, data, bytes: chunkBytes });
+    }
+    entry.bytes += chunkBytes;
+    if (entry.bytes >= 16384 || entry.chunks.length >= 16) {
+      this.flushOutput(operationId);
+    } else if (!entry.timer) {
+      entry.timer = setTimeout(() => this.flushOutput(operationId), this.outputFlushMs);
+      entry.timer.unref?.();
+    }
+  }
+  flushOutput(operationId) {
+    if (operationId === undefined) {
+      for (const id of [...this.pendingOutputs.keys()]) this.flushOutput(id);
+      return;
+    }
+    const entry = this.pendingOutputs.get(operationId);
+    if (!entry) return;
+    this.pendingOutputs.delete(operationId);
+    if (entry.timer) clearTimeout(entry.timer);
+    if (!entry.chunks.length) return;
+    let wrote = false;
     this.journal.tx(() => {
-      const op = this.journal.get('ops', operationId); op.lastSeq++;
-      this.journal.append(operationId, op.lastSeq, stream, data);
-      this.journal.trim(operationId, this.outputBytes); this.journal.put('ops', operationId, op);
+      const op = this.journal.get('ops', operationId); if (!op) return;
+      for (const chunk of entry.chunks) {
+        op.lastSeq++;
+        this.journal.append(operationId, op.lastSeq, chunk.stream, chunk.data);
+      }
+      this.journal.trim(operationId, this.outputBytes);
+      this.journal.put('ops', operationId, op);
+      wrote = true;
     });
-    this.emit('changed');
+    if (wrote) this.emit('changed');
   }
   finish(operationId, code, signal, error) {
     const entry = this.children.get(operationId); if (!entry || entry.finishing) return;
@@ -209,6 +258,7 @@ export class LocalAgent extends EventEmitter {
         if (Date.now() < deadline) { setTimeout(confirm, 25); return; }
       }
       this.fault('agent_before_result');
+      this.flushOutput(operationId);
       const op = this.journal.get('ops', operationId);
       let toolResult;
       if (entry.structured && entry.resultBytes <= 204800) {
@@ -281,6 +331,7 @@ export class LocalAgent extends EventEmitter {
     if (method === 'workspaceInfo' && this.authority) { exact(params, []); return this.workspaceInfo(); }
     if (method === 'consumeResult' && this.workspace?.reliability) {
       exact(params, ['operationId', 'requestHash', 'request', 'digest']);
+      this.flushOutput(params.operationId);
       const op = this.authorize(envelopeOf(params), true);
       if (!op || !TERMINAL.has(op.state) || resultDigest(op) !== params.digest || op.acknowledgedSeq < op.lastSeq) fail('RESULT_NOT_READY');
       op.resultConsumed = true; this.journal.put('ops', op.operationId, op);
@@ -292,6 +343,7 @@ export class LocalAgent extends EventEmitter {
       if (!Array.isArray(params.items) || params.items.length > 2) fail('INVALID_BATCH');
       return params.items.map((item) => {
         exact(item, ['operationId', 'requestHash', 'request', 'afterSeq']);
+        this.flushOutput(item.operationId);
         const op = this.authorize(envelopeOf(item), Boolean(this.authority));
         if (!op) return { operationId: item.operationId, state: 'not_received' };
         integer(item.afterSeq, 0, op.lastSeq);
@@ -299,10 +351,12 @@ export class LocalAgent extends EventEmitter {
       });
     }
     if (method === 'status') {
+      if (typeof params?.operationId === 'string') this.flushOutput(params.operationId);
       const op = this.authorize(params, Boolean(this.authority)); return op ? summary(op) : { state: 'not_received' };
     }
     if (method === 'output' || method === 'ackOutput') {
       exact(params, ['operationId', 'requestHash', 'request', 'afterSeq']);
+      this.flushOutput(params.operationId);
       const op = this.authorize(envelopeOf(params), Boolean(this.authority)); if (!op) fail('NOT_FOUND');
       integer(params.afterSeq, 0, op.lastSeq);
       if (method === 'output') return this.journal.output(op.operationId, params.afterSeq, op.lastSeq);
@@ -385,6 +439,7 @@ export class LocalAgent extends EventEmitter {
       this.cancel({ ...envelopeOf(op), cancelId: `shutdown:${op.operationId}` });
     }
     while (this.children.size) await new Promise((resolve) => setTimeout(resolve, 25));
+    this.flushOutput();
     try { await this.workspace?.onClose?.(); } catch {}
   }
 }

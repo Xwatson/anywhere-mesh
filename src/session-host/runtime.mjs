@@ -2,10 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { EventEmitter } from 'node:events';
+import { setTimeout as delay } from 'node:timers/promises';
 import { control } from '../execution/control.mjs';
 import { WorkspaceExecutor } from '../workspace/executor.mjs';
 import { LIFECYCLE } from '../workspace/catalog.mjs';
-import { exact, fail, hash } from '../execution/protocol.mjs';
+import { TERMINAL, exact, fail, hash } from '../execution/protocol.mjs';
 import { SessionStore, uuid, fields, text } from './store.mjs';
 import { parseMock } from './mock.mjs';
 import { TurnLaunchLimiter } from './launch-limiter.mjs';
@@ -64,6 +65,150 @@ export class SessionHost extends EventEmitter {
     this.workspaceLocks.set(workspaceId, settled);
     settled.finally(() => { if (this.workspaceLocks.get(workspaceId) === settled) this.workspaceLocks.delete(workspaceId); });
     return run;
+  }
+  async trySettleWorkspaceOp(w, opId) {
+    let op;
+    try { op = await this.broker(w, 'operation', { operationId: opId }); }
+    catch { return false; }
+    if (!op || op.state === 'unknown') return false;
+    if ((op.state === 'not_received' || op.state === 'prepared') && !op.cancelId) {
+      await this.broker(w, 'cancel', { operationId: opId }).catch(() => {});
+      return true;
+    }
+    if (!TERMINAL.has(op.state) || op.receivedSeq < op.lastSeq || op.delivery === 'consumed') {
+      return false;
+    }
+    const ref = this.store.get('operations', opId);
+    const callRec = ref ? this.store.get('calls', ref.key) : null;
+    if (!callRec?.binding) return false;
+    const binding = callRec.binding;
+    const callId = callRec.params?.toolCallId ?? '';
+    const executorFor = (ownerTurn) => {
+      const existing = ownerTurn ? this.hosts.get(ownerTurn.id) : null;
+      return existing?.executor ?? new WorkspaceExecutor({
+        journal: this.store,
+        binding,
+        control: (m, p) => this.broker(w, m, p),
+      });
+    };
+    if (callId.startsWith('preload-docs:')) {
+      const exec = executorFor(null);
+      await exec.consumeAfterPersist({
+        operationId: opId,
+        resultDigest: op.resultDigest,
+        receiptId: 'preload-docs:' + opId,
+      });
+      return true;
+    }
+    const ownerTurn = this.store.get('turns', binding.turnId) ??
+      this.store.all('turns').find(t => t.sessionId === binding.sessionId && (t.modelTurnId === binding.turnId || t.binding?.turnId === binding.turnId));
+    if (!ownerTurn) return false;
+    if (ownerTurn.engine === 'antigravity' && this.antigravity) {
+      const exec = executorFor(ownerTurn);
+      const saved = this.store.get('agyResults', opId);
+      if (saved) {
+        await exec.consumeAfterPersist(saved.receipt);
+        if (callId) {
+          this.store.updateTurnCall(ownerTurn.id, callId, {
+            operationId: opId,
+            state: saved.reply?.isError ? 'failed' : 'completed',
+            ok: !saved.reply?.isError,
+            consumed: true,
+            counted: true,
+          });
+        }
+        return true;
+      }
+      const status = await exec.status(opId);
+      if (!status?.structuredContent?.task?.resultReady) return false;
+      const tc = callId ? this.store.getTurnCall(ownerTurn.id, callId) : null;
+      await this.antigravity.capture(
+        ownerTurn,
+        {
+          id: callId || opId,
+          tool: tc?.tool ?? callRec.toolName,
+          effectiveTool: tc?.effectiveTool ?? callRec.toolName,
+          args: tc?.argsSummary ?? callRec.params?.args?.arguments ?? callRec.params?.args ?? {},
+          inputHash: tc?.inputHash ?? callRec.inputHash ?? '',
+        },
+        { executor: exec },
+        opId,
+        status,
+      );
+      return true;
+    }
+    if (ownerTurn.engine === 'codex' && this.codex) {
+      const exec = executorFor(ownerTurn);
+      const saved = this.store.get('codexResults', opId);
+      if (saved) {
+        await exec.consumeAfterPersist(saved.receipt);
+        if (callId) {
+          this.store.updateTurnCall(ownerTurn.id, callId, {
+            operationId: opId,
+            state: saved.reply?.success === false ? 'failed' : 'completed',
+            ok: saved.reply?.success !== false,
+            consumed: true,
+            counted: true,
+          });
+        }
+        return true;
+      }
+      const status = await exec.status(opId);
+      if (!status?.structuredContent?.task?.resultReady) return false;
+      const tc = callId ? this.store.getTurnCall(ownerTurn.id, callId) : null;
+      await this.codex.capture(
+        ownerTurn,
+        {
+          id: callId || opId,
+          tool: tc?.tool ?? callRec.toolName,
+          effectiveTool: tc?.effectiveTool ?? callRec.toolName,
+          args: tc?.argsSummary ?? callRec.params?.args?.arguments ?? callRec.params?.args ?? {},
+          inputHash: tc?.inputHash ?? callRec.inputHash ?? '',
+        },
+        { executor: exec },
+        opId,
+        status,
+      );
+      return true;
+    }
+    if (!ownerTurn.engine && !ownerTurn.consumed) {
+      await this.refresh(ownerTurn.id);
+      return true;
+    }
+    return false;
+  }
+  async reconcileWorkspaceBlockers(workspaceId, { waitMs = 20000, shouldStop = () => false, onProgress } = {}) {
+    const w = this.workspaces.get(workspaceId);
+    if (!w) return null;
+    const deadline = Date.now() + waitMs;
+    let lastInfo = null;
+    while (!this.closing && !shouldStop()) {
+      onProgress?.();
+      try {
+        const info = await this.broker(w, 'workspace');
+        lastInfo = info;
+        if (info.unknownOperations?.length) return info;
+        const blockers = info.blockers ?? [];
+        const activeOps = info.activeOperations ?? [];
+        if (info.confirmed && info.phase === 'ready' && !blockers.length && !activeOps.length) {
+          return info;
+        }
+        if (info.confirmed && info.phase === 'ready') {
+          const candidates = [...new Set([...blockers, ...activeOps])];
+          let progressed = false;
+          for (const opId of candidates) {
+            if (shouldStop()) break;
+            try {
+              if (await this.trySettleWorkspaceOp(w, opId)) progressed = true;
+            } catch {}
+          }
+          if (progressed) continue;
+        }
+      } catch {}
+      if (Date.now() >= deadline) return lastInfo;
+      await delay(200);
+    }
+    return lastInfo;
   }
   workspace(id) { uuid(id); const w = this.workspaces.get(id); if (!w) throw Error('WORKSPACE_NOT_ALLOWED'); return w; }
   broker(w, method, params = {}) { return control(w.brokerDir + '/control.sock', method, params); }
@@ -236,10 +381,32 @@ export class SessionHost extends EventEmitter {
           const callId = 'preload-docs:' + t.id;
           const args = { paths: [...PROJECT_DOC_CANDIDATES] };
           const ticket = await executor.issue(callId, 'workspace_read_files', args, { expiresAt: Date.now() + 15000 });
-          const result = await executor.invoke('workspace_read_files', args, ticket.ticket, { waitMs: 6000 });
-          const task = result?.structuredContent?.task;
+          let result = null;
+          try {
+            result = await executor.invoke('workspace_read_files', args, ticket.ticket, { waitMs: 6000 });
+          } catch {}
+          let task = result?.structuredContent?.task;
           if (!task?.resultReady) {
-            await executor.cancel(ticket.operationId).catch(() => {});
+            if (task?.state !== 'unknown') {
+              await executor.cancel(ticket.operationId).catch(() => {});
+            }
+            const drainUntil = Date.now() + 8000;
+            while (Date.now() < drainUntil) {
+              try {
+                const st = await executor.status(ticket.operationId);
+                task = st?.structuredContent?.task;
+                if (task?.resultReady) {
+                  await executor.consumeAfterPersist({
+                    operationId: ticket.operationId,
+                    resultDigest: task.resultDigest,
+                    receiptId: 'preload-docs:' + ticket.operationId,
+                  });
+                  break;
+                }
+                if (task?.state === 'unknown') break;
+              } catch {}
+              await delay(100);
+            }
             return { docs: [], fileVersions: [] };
           }
           const extracted = extractProjectDocsFromReadResult(PROJECT_DOC_CANDIDATES, result);
