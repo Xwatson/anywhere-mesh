@@ -658,12 +658,15 @@ export class AntigravityTurns {
       const saved = this.db.get('agyResults', ticket.operationId);
       if (saved) {
         await h.executor.consumeAfterPersist(saved.receipt);
-        this.db.updateTurnCall(t.id, callId, {
-          operationId: ticket.operationId,
-          state: saved.reply?.isError ? 'failed' : 'completed',
-          ok: !saved.reply?.isError,
-          consumed: true,
-          counted: true,
+        this.db.tx(() => {
+          this.db.updateTurnCall(t.id, callId, {
+            operationId: ticket.operationId,
+            state: saved.reply?.isError ? 'failed' : 'completed',
+            ok: !saved.reply?.isError,
+            consumed: true,
+            counted: true,
+          });
+          this.db.deleteRecord('agyResults', ticket.operationId);
         });
         return appendAgyWarning(saved.reply, run.guard.softWarning(effectiveTool));
       }
@@ -749,7 +752,8 @@ export class AntigravityTurns {
     const receipt = { operationId, resultDigest: task.resultDigest, receiptId: 'antigravity:' + operationId };
     const eventInput = boundEventInput(call.args);
     this.db.tx(() => {
-      if (!this.db.get('agyResults', operationId)) {
+      const alreadyCaptured = Boolean(this.db.get('agyResults', operationId) || this.db.get('receipts', operationId));
+      if (!alreadyCaptured) {
         this.db.put('agyResults', operationId, { receipt, reply, task, callId: call.id, fileVersions: data.result?.fileVersions });
         for (const version of data.result?.fileVersions ?? []) {
           this.db.put('revisions', hash({ sessionId: t.sessionId, workspaceId: t.workspaceId, path: version.path }), version);
@@ -760,7 +764,10 @@ export class AntigravityTurns {
     });
     this.host.emit('events', t.sessionId);
     await h.executor.consumeAfterPersist(receipt);
-    this.db.updateTurnCall(t.id, call.id, { consumed: true });
+    this.db.tx(() => {
+      this.db.updateTurnCall(t.id, call.id, { consumed: true });
+      this.db.deleteRecord('agyResults', operationId);
+    });
     if (guard) {
       const effectiveTool = call.effectiveTool ?? call.tool;
       const outcome = guard.recordWorkspaceOutcome(effectiveTool, call.inputHash ?? '', ok);

@@ -223,7 +223,8 @@ test('reconcileWorkspaceBlockers self-heals unconsumed terminal op from another 
   assert.deepEqual(info.blockers, []);
   assert.equal(broker.get(ticketA.operationId).delivery, 'consumed');
   assert.equal(host.store.getTurnCall(sessA.turn.id, 'call-a-1').consumed, true);
-  assert.ok(host.store.get('agyResults', ticketA.operationId));
+  assert.equal(host.store.get('agyResults', ticketA.operationId), undefined, 'ephemeral agyResults must be purged immediately after consumeAfterPersist');
+  assert.ok(host.store.page(sessA.session.id, 0).events.some(e => e.event.type === 'tool_call' && e.event.output === 'FROM_A'));
 
   // Now Session B can immediately issue a fresh op without WORKSPACE_RECOVERING.
   const hB = await host.host(sessB.turn);
@@ -303,4 +304,52 @@ test('linuxWorkspace async searchWorkspace and listDirTree work and honor AbortS
   aborted.abort();
   await assert.rejects(() => searchSpec.read(aborted.signal), /READ_CANCELLED/);
   await assert.rejects(() => listSpec.read(aborted.signal), /READ_CANCELLED/);
+});
+
+test('SessionStore scales capacity, subtracts freelist on remove, and prunes leaked consumed result caches', async t => {
+  const { SessionStore } = await import('../../session-host/store.mjs');
+  const dir = mkdtempSync(join(tmpdir(), 'anywhere-store-cap-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const dbPath = join(dir, 'history.sqlite');
+
+  // 1. Default limits: Journal = 256 MiB, SessionStore = 512 MiB
+  const j = new Journal(join(dir, 'ws.sqlite'));
+  assert.equal(j.storage().maxBytes, 256 * 1024 * 1024);
+  j.close();
+
+  const store = new SessionStore(dbPath);
+  assert.equal(store.storage().maxBytes, 512 * 1024 * 1024);
+
+  // 2. Inject leaked consumed agyResults/codexResults and stale unsubmitted marker, then reopen to verify startup prune.
+  const wsId = randomUUID();
+  const sess = store.create({ requestId: randomUUID(), workspaceId: wsId, title: 'Leak Test' });
+  store.put('turns', 'turn-done', { id: 'turn-done', sessionId: sess.id, done: true, consumed: true });
+  store.put('receipts', 'op-leaked-1', { resultDigest: 'd1', receiptId: 'antigravity:op-leaked-1' });
+  store.put('agyResults', 'op-leaked-1', { reply: { content: [{ type: 'text', text: 'A'.repeat(20000) }] } });
+  store.put('agyResults', 'op-unconsumed', { reply: { content: [{ type: 'text', text: 'KEEP_ME' }] } });
+  store.put('agyUnsubmitted', 'turn-done:call-1', true);
+  store.close();
+
+  const reopened = new SessionStore(dbPath);
+  t.after(() => reopened.close());
+  assert.equal(reopened.get('agyResults', 'op-leaked-1'), undefined);
+  assert.ok(reopened.get('agyResults', 'op-unconsumed'), 'unconsumed result cache must be preserved');
+  assert.equal(reopened.get('agyUnsubmitted', 'turn-done:call-1'), undefined);
+
+  // 3. Removing a heavy session frees pages via freelist accounting + WAL checkpoint so ensureCapacity succeeds.
+  const bigSess = reopened.create({ requestId: randomUUID(), workspaceId: wsId, title: 'Heavy' });
+  for (let i = 0; i < 40; i++) {
+    reopened.append(bigSess.id, { type: 'assistant_text', id: `m-${i}`, text: 'Z'.repeat(8000) });
+  }
+  reopened.checkpoint();
+  const fullBytes = reopened.storage().bytes;
+  assert.ok(fullBytes > 200 * 1024);
+
+  reopened.maxHistoryBytes = fullBytes + 32 * 1024;
+  assert.throws(() => reopened.ensureCapacity(64 * 1024), /HISTORY_STORAGE_FULL/);
+
+  reopened.remove(bigSess.id);
+  const afterRemoveBytes = reopened.storage().bytes;
+  assert.ok(afterRemoveBytes < fullBytes - 150 * 1024, `expected freelist reclamation (${afterRemoveBytes} < ${fullBytes})`);
+  assert.doesNotThrow(() => reopened.ensureCapacity(64 * 1024));
 });

@@ -3,10 +3,15 @@ import { mkdirSync, statSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { fail } from './protocol.mjs';
 
+const DEFAULT_JOURNAL_MAX_BYTES = (() => {
+  const env = Number(process.env.ANYWHERE_MAX_JOURNAL_BYTES);
+  return Number.isSafeInteger(env) && env >= 1024 * 1024 ? env : 256 * 1024 * 1024;
+})();
+
 // Active records are bounded independently of retained identities. Reads always
 // consult the archive; compaction never makes an old call executable again.
 export class Journal {
-  constructor(path, { maxHistoryBytes = 64 * 1024 * 1024 } = {}) {
+  constructor(path, { maxHistoryBytes = DEFAULT_JOURNAL_MAX_BYTES } = {}) {
     this.path = path; this.maxHistoryBytes = maxHistoryBytes;
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     this.db = new DatabaseSync(path);
@@ -44,11 +49,19 @@ export class Journal {
   storage() {
     const activeRecords = Number(this.db.prepare('SELECT COUNT(*) AS n FROM records').get().n);
     const archivedRecords = Number(this.db.prepare('SELECT COUNT(*) AS n FROM archive_records').get().n);
-    const databaseBytes = Number(this.db.prepare('PRAGMA page_count').get().page_count) * Number(this.db.prepare('PRAGMA page_size').get().page_size);
+    const pageCount = Number(this.db.prepare('PRAGMA page_count').get().page_count);
+    const pageSize = Number(this.db.prepare('PRAGMA page_size').get().page_size);
+    const freelistCount = Number(this.db.prepare('PRAGMA freelist_count').get().freelist_count);
+    const databaseBytes = Math.max(0, pageCount - freelistCount) * pageSize;
     let walBytes = 0; try { walBytes = statSync(`${this.path}-wal`).size; } catch {}
     return { activeRecords, archivedRecords, bytes: databaseBytes + walBytes, maxBytes: this.maxHistoryBytes };
   }
+  checkpoint() {
+    try { this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch {}
+  }
   ensureCapacity(reserveBytes = 262144) {
+    if (this.storage().bytes + reserveBytes <= this.maxHistoryBytes) return;
+    this.checkpoint();
     if (this.storage().bytes + reserveBytes > this.maxHistoryBytes) fail('HISTORY_STORAGE_FULL');
   }
   tx(fn) {

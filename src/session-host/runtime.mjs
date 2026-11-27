@@ -109,15 +109,18 @@ export class SessionHost extends EventEmitter {
       const saved = this.store.get('agyResults', opId);
       if (saved) {
         await exec.consumeAfterPersist(saved.receipt);
-        if (callId) {
-          this.store.updateTurnCall(ownerTurn.id, callId, {
-            operationId: opId,
-            state: saved.reply?.isError ? 'failed' : 'completed',
-            ok: !saved.reply?.isError,
-            consumed: true,
-            counted: true,
-          });
-        }
+        this.store.tx(() => {
+          if (callId) {
+            this.store.updateTurnCall(ownerTurn.id, callId, {
+              operationId: opId,
+              state: saved.reply?.isError ? 'failed' : 'completed',
+              ok: !saved.reply?.isError,
+              consumed: true,
+              counted: true,
+            });
+          }
+          this.store.deleteRecord('agyResults', opId);
+        });
         return true;
       }
       const status = await exec.status(opId);
@@ -143,15 +146,18 @@ export class SessionHost extends EventEmitter {
       const saved = this.store.get('codexResults', opId);
       if (saved) {
         await exec.consumeAfterPersist(saved.receipt);
-        if (callId) {
-          this.store.updateTurnCall(ownerTurn.id, callId, {
-            operationId: opId,
-            state: saved.reply?.success === false ? 'failed' : 'completed',
-            ok: saved.reply?.success !== false,
-            consumed: true,
-            counted: true,
-          });
-        }
+        this.store.tx(() => {
+          if (callId) {
+            this.store.updateTurnCall(ownerTurn.id, callId, {
+              operationId: opId,
+              state: saved.reply?.success === false ? 'failed' : 'completed',
+              ok: saved.reply?.success !== false,
+              consumed: true,
+              counted: true,
+            });
+          }
+          this.store.deleteRecord('codexResults', opId);
+        });
         return true;
       }
       const status = await exec.status(opId);

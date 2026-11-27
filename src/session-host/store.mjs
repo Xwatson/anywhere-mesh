@@ -38,9 +38,14 @@ export function validateOptions(options) {
   return out;
 }
 
+const DEFAULT_SESSION_STORE_MAX_BYTES = (() => {
+  const env = Number(process.env.ANYWHERE_MAX_HISTORY_BYTES);
+  return Number.isSafeInteger(env) && env >= 1024 * 1024 ? env : 512 * 1024 * 1024;
+})();
+
 export class SessionStore extends Journal {
-  constructor(path) {
-    super(path);
+  constructor(path, { maxHistoryBytes = DEFAULT_SESSION_STORE_MAX_BYTES } = {}) {
+    super(path, { maxHistoryBytes });
     this.db.exec('CREATE TABLE IF NOT EXISTS chat_events(session_id TEXT,seq INTEGER,ts INTEGER,event TEXT,PRIMARY KEY(session_id,seq))');
     this.db.exec(`CREATE TABLE IF NOT EXISTS memories(
       scope TEXT NOT NULL,
@@ -70,6 +75,38 @@ export class SessionStore extends Journal {
     )`);
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_turn_calls_turn_seq ON turn_calls(turn_id, seq)');
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_turn_calls_session ON turn_calls(session_id)');
+    this.pruneConsumedResults();
+  }
+  pruneConsumedResults() {
+    let pruned = 0;
+    try {
+      this.tx(() => {
+        const res = this.db.prepare(`
+          DELETE FROM records
+          WHERE bucket IN ('agyResults', 'codexResults')
+            AND (
+              key IN (SELECT key FROM records WHERE bucket = 'receipts')
+              OR key IN (SELECT key FROM archive_records WHERE bucket = 'receipts')
+            )
+        `).run();
+        pruned += Number(res.changes ?? 0);
+        const doneTurns = new Set(
+          this.all('turns').filter(t => t?.done && t?.consumed).map(t => t.id),
+        );
+        const allTurnIds = new Set(this.all('turns').map(t => t?.id));
+        for (const bucket of ['agyUnsubmitted', 'codexUnsubmitted']) {
+          for (const row of this.db.prepare('SELECT key FROM records WHERE bucket=?').all(bucket)) {
+            const tid = String(row.key).split(':', 1)[0];
+            if (doneTurns.has(tid) || !allTurnIds.has(tid)) {
+              this.db.prepare('DELETE FROM records WHERE bucket=? AND key=?').run(bucket, row.key);
+              pruned += 1;
+            }
+          }
+        }
+      });
+      if (pruned > 0) this.checkpoint();
+    } catch {}
+    return pruned;
   }
   session(id) { uuid(id); const s = this.get('sessions', id); if (!s) throw Error('SESSION_NOT_FOUND'); return s; }
   request(id, payload) {
@@ -112,11 +149,13 @@ export class SessionStore extends Journal {
     });
   }
   remove(sessionId) {
-    return this.tx(() => {
+    const removed = this.tx(() => {
       const s = this.session(sessionId);
       if (s.activeTurnId) throw Error('SESSION_BUSY');
       this.db.prepare('DELETE FROM chat_events WHERE session_id=?').run(sessionId);
       this.db.prepare('DELETE FROM turn_calls WHERE session_id=?').run(sessionId);
+      this.db.prepare("DELETE FROM records WHERE bucket='turns' AND json_extract(value,'$.sessionId')=?").run(sessionId);
+      this.db.prepare("DELETE FROM archive_records WHERE bucket='turns' AND json_extract(value,'$.sessionId')=?").run(sessionId);
       this.db.prepare("DELETE FROM records WHERE bucket='sessions' AND key=?").run(sessionId);
       this.db.prepare("DELETE FROM archive_records WHERE bucket='sessions' AND key=?").run(sessionId);
       for (const att of this.attachments(sessionId)) {
@@ -124,6 +163,8 @@ export class SessionStore extends Journal {
       }
       return s;
     });
+    this.checkpoint();
+    return removed;
   }
   addAttachment(sessionId, att) {
     this.session(sessionId);
