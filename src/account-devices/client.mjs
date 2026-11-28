@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync, realpathSync, statSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync, realpathSync, statSync } from 'node:fs';
 import { basename, extname, join } from 'node:path';
 import https from 'node:https';
 import WebSocket from '../execution/node_modules/ws/wrapper.mjs';
@@ -86,7 +86,16 @@ function rootInfo(path) {
   if (realpathSync(path) !== path || !st.isDirectory()) throw Error('WORKSPACE_ROOT_CHANGED');
   return st.dev.toString() + ':' + st.ino.toString();
 }
-function installation(cfg, identifyRoot) {
+function writeProfileFile(file, secret, projects) {
+  const temp = file + '.' + randomUUID() + '.tmp';
+  try {
+    writeFileSync(temp, JSON.stringify({ secret, projects }), { flag: 'wx', mode: 0o600, flush: true });
+    renameSync(temp, file);
+  } finally {
+    rmSync(temp, { force: true });
+  }
+}
+function installation(cfg, identifyRoot, canMigrateRoot) {
   mkdirSync(cfg.stateDir, { recursive: true, mode: 0o700 });
   const file = join(cfg.stateDir, 'installation.json');
   let identity;
@@ -102,22 +111,48 @@ function installation(cfg, identifyRoot) {
     const defaults = new Map(cfg.projects.map(p => [p.path, p.label]));
     return { file, secret: identity.secret, projects: identity.projects.map(p => ({ ...p, label: p.label ?? defaults.get(p.path) })) };
   }
+  let mutated = false;
   const projects = cfg.projects.map(p => {
     const known = identity.projects.find(k => k.path === p.path);
-    if (!known || known.inode !== identifyRoot(p.path)) throw Error('WORKSPACE_ROOT_CHANGED');
+    if (!known) throw Error('WORKSPACE_ROOT_CHANGED');
+    const current = identifyRoot(p.path);
+    if (known.inode !== current) {
+      if (canMigrateRoot && canMigrateRoot(known.inode, current)) {
+        known.inode = current;
+        mutated = true;
+      } else {
+        throw Error('WORKSPACE_ROOT_CHANGED');
+      }
+    }
     return { ...p, ...known };
   });
-  return { secret: identity.secret, projects };
+  if (mutated) writeProfileFile(file, identity.secret, identity.projects);
+  return { file, secret: identity.secret, projects };
 }
 export class DeviceClient {
-  constructor(cfg, { identifyRoot = rootInfo, launcher = makeLauncher, modes, sandbox, getSandbox, onGrantChange, onClose, browserManager = null, loginProtection, onStream } = {}) {
-    this.cfg = cfg; this.identifyRoot = identifyRoot; this.launcher = launcher; this.modes = modes;
+  constructor(cfg, { identifyRoot = rootInfo, canMigrateRoot = null, launcher = makeLauncher, modes, sandbox, getSandbox, onGrantChange, onClose, browserManager = null, loginProtection, onStream } = {}) {
+    this.cfg = cfg; this.identifyRoot = identifyRoot; this.canMigrateRoot = canMigrateRoot; this.launcher = launcher; this.modes = modes;
     this.sandbox = sandbox; this.getSandbox = getSandbox; this.onGrantChange = onGrantChange; this.onClose = onClose;
     this.browserManager = browserManager;
     this.onStream = onStream;
-    this.profile = installation(cfg, identifyRoot); this.tls = { ca: cfg.ca === null ? undefined : readFileSync(cfg.ca), rejectUnauthorized: true, minVersion: 'TLSv1.3' };
+    this.profile = installation(cfg, identifyRoot, canMigrateRoot); this.tls = { ca: cfg.ca === null ? undefined : readFileSync(cfg.ca), rejectUnauthorized: true, minVersion: 'TLSv1.3' };
     this.loginFile = rememberedLogin(cfg.stateDir, this.profile.secret, cfg.url, loginProtection);
     this.locals = new Map(); this.queue = Promise.resolve(); this.nextRestore = 0; this.streamReq = null;
+  }
+  persistProfileProjects(projects = this.profile.projects) {
+    if (!this.profile.file) return;
+    writeProfileFile(this.profile.file, this.profile.secret, projects);
+    this.profile.projects = projects;
+  }
+  verifyAndMigrateRoot(root) {
+    const current = this.identifyRoot(root.path);
+    if (current === root.inode) return true;
+    if (this.canMigrateRoot && this.canMigrateRoot(root.inode, current)) {
+      root.inode = current;
+      this.persistProfileProjects();
+      return true;
+    }
+    return false;
   }
   notifyWorkspaceChanged() {
     for (const local of this.locals.values()) {
@@ -230,7 +265,7 @@ export class DeviceClient {
   }
   attachProject(signed, root, mapped, freshLogin) {
     let available = false;
-    try { available = this.identifyRoot(root.path) === root.inode; }
+    try { available = this.verifyAndMigrateRoot(root); }
     catch (error) { if (!this.cfg.workspacePicker) throw error; }
     if (!available && !this.cfg.workspacePicker) throw Error('WORKSPACE_ROOT_CHANGED');
     const stateDir = join(this.cfg.stateDir, mapped.id);

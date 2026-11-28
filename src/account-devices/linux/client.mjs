@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { realpathSync } from 'node:fs';
 import { basename, isAbsolute, resolve, sep } from 'node:path';
 import { DeviceClient, request } from '../client.mjs';
 import contract from '../contract.cjs';
@@ -102,18 +102,20 @@ export class LinuxClient extends DeviceClient {
     try { inode = this.identifyRoot(folder); }
     catch { throw Error('LOCAL_PROJECT_REQUIRED'); }
     let root = this.profile.projects.find(p => p.path === folder);
-    if (root && root.inode !== inode) throw Error('WORKSPACE_ROOT_CHANGED');
+    let migrated = false;
+    if (root && root.inode !== inode) {
+      if (this.canMigrateRoot && this.canMigrateRoot(root.inode, inode)) {
+        root.inode = inode;
+        this.persistProfileProjects();
+        migrated = true;
+      } else {
+        throw Error('WORKSPACE_ROOT_CHANGED');
+      }
+    }
     if (!root) {
       if (this.profile.projects.length >= contract.workspaceLimit) throw Error('WORKSPACE_LIMIT');
       root = { path: folder, inode, localId: randomUUID(), label: basename(folder).trim().slice(0, 80) || '本机项目' };
-      const { file, secret } = this.profile;
-      const projects = [...this.profile.projects, root];
-      const temp = file + '.' + randomUUID() + '.tmp';
-      try {
-        writeFileSync(temp, JSON.stringify({ secret, projects }), { flag: 'wx', mode: 0o600, flush: true });
-        renameSync(temp, file);
-      } finally { rmSync(temp, { force: true }); }
-      this.profile.projects = projects;
+      this.persistProfileProjects([...this.profile.projects, root]);
     }
     const signed = this.signed;
     let mapped;
@@ -121,10 +123,18 @@ export class LinuxClient extends DeviceClient {
     catch (error) { if (error.message === 'NOT_FOUND') throw Error('WORKSPACE_REGISTRATION_UNAVAILABLE'); throw error; }
     if (mapped.localId !== root.localId || mapped.deviceId !== signed.deviceId) throw Error('WORKSPACE_BINDING_MISMATCH');
     contract.validate('permission', { workspaceId: mapped.id, mode: 'revoked' });
-    const existing = this.locals.get(mapped.id);
-    const local = existing ?? this.attachProject(signed, root, mapped, true);
+    let existing = this.locals.get(mapped.id);
+    if (existing && migrated) {
+      clearTimeout(existing.retry);
+      existing.rpc?.close();
+      await existing.agent.close();
+      existing.store.close();
+      this.locals.delete(mapped.id);
+      existing = null;
+    }
+    const local = existing ?? this.attachProject(signed, root, mapped, !migrated);
     if (existing) {
-      try { local.available = this.identifyRoot(root.path) === root.inode; }
+      try { local.available = this.verifyAndMigrateRoot(root); }
       catch { local.available = false; }
     }
     if (!local.available) {
@@ -148,14 +158,8 @@ export class LinuxClient extends DeviceClient {
     await local.agent.close();
     local.store.close();
     this.locals.delete(workspaceId);
-    const { file, secret } = this.profile;
     const projects = this.profile.projects.filter(p => p.localId !== local.localId);
-    const temp = file + '.' + randomUUID() + '.tmp';
-    try {
-      writeFileSync(temp, JSON.stringify({ secret, projects }), { flag: 'wx', mode: 0o600, flush: true });
-      renameSync(temp, file);
-    } finally { rmSync(temp, { force: true }); }
-    this.profile.projects = projects;
+    this.persistProfileProjects(projects);
     return { ok: true, id: workspaceId };
   }
   async authenticate(params, requestedUrl) {

@@ -44,9 +44,81 @@ function hasRipgrep() {
 const fail = code => { const e = Error(code); e.code = code; throw e; };
 const revisionOf = bytes => 'file-v1:' + createHash('sha256').update(bytes).digest('hex');
 
-export function identifyLinuxRoot(path) {
+const MAC_VOLUME_CACHE_TTL_MS = 30000;
+const macVolumeUuidCache = new Map();
+
+export function parseDfDevice(output) {
+  if (typeof output !== 'string') return null;
+  const lines = output.trim().split(/\r?\n/);
+  if (lines.length < 2) return null;
+  const line = lines[lines.length - 1].trim();
+  const device = line.split(/\s+/)[0] ?? '';
+  return device.startsWith('/dev/') ? device : null;
+}
+
+export function parseDiskutilVolumeUuid(plistXml) {
+  if (typeof plistXml !== 'string') return null;
+  for (const key of ['VolumeUUID', 'FilesystemUUID', 'DiskUUID']) {
+    const re = new RegExp(`<key>${key}</key>\\s*<string>\\s*([A-Fa-f0-9-]{8,64})\\s*</string>`);
+    const match = re.exec(plistXml);
+    if (match?.[1]) return match[1].toUpperCase();
+  }
+  return null;
+}
+
+export function resolveMacVolumeUuid(
+  path,
+  devKey = null,
+  { execSyncFn = execFileSync, cache = macVolumeUuidCache, now = Date.now } = {},
+) {
+  const key = devKey === null ? null : String(devKey);
+  const cached = key !== null ? cache.get(key) : null;
+  if (cached && now() - cached.checkedAt < MAC_VOLUME_CACHE_TTL_MS) return cached.uuid;
+  let device = null;
+  try {
+    const dfOut = execSyncFn('/bin/df', ['-P', path], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 3000,
+    });
+    device = parseDfDevice(dfOut);
+  } catch {
+    return cached?.uuid ?? null;
+  }
+  if (!device) return cached?.uuid ?? null;
+  let uuid = null;
+  try {
+    const plist = execSyncFn('/usr/sbin/diskutil', ['info', '-plist', device], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 5000,
+    });
+    uuid = parseDiskutilVolumeUuid(plist);
+  } catch {
+    return cached?.uuid ?? null;
+  }
+  if (!uuid) return cached?.uuid ?? null;
+  if (key !== null) cache.set(key, { uuid, checkedAt: now() });
+  return uuid;
+}
+
+export function canMigrateLegacyRootIdentity(savedIdentity, currentIdentity) {
+  if (typeof savedIdentity !== 'string' || typeof currentIdentity !== 'string') return false;
+  const legacy = /^\d+:(\d+)$/.exec(savedIdentity);
+  const modern = /^vol:[A-Za-z0-9-]+:(\d+)$/.exec(currentIdentity);
+  return Boolean(legacy && modern && legacy[1] === modern[1]);
+}
+
+export function identifyLinuxRoot(
+  path,
+  { platform = process.platform, resolveVolumeUuid = resolveMacVolumeUuid } = {},
+) {
   const st = statSync(path, { bigint: true });
   if (realpathSync(path) !== path || !st.isDirectory()) fail('WORKSPACE_ROOT_CHANGED');
+  if (platform === 'darwin') {
+    const volUuid = resolveVolumeUuid(path, st.dev);
+    if (volUuid) return 'vol:' + volUuid + ':' + st.ino.toString();
+  }
   return st.dev.toString() + ':' + st.ino.toString();
 }
 
@@ -615,6 +687,7 @@ export function linuxWorkspace({ browserManager = null } = {}) {
 
   return {
     identifyRoot: identifyLinuxRoot,
+    canMigrateRoot: canMigrateLegacyRootIdentity,
     modes: ['revoked', 'read', 'edit', 'execute'],
     sandbox: buildSandbox(),
     getSandbox: buildSandbox,

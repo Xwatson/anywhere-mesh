@@ -109,6 +109,20 @@ codesign --verify --deep --strict "$bundle"
 
 test "$("$tools/node" -p process.arch)" = "$arch"
 "$tools/easytier-core" --version
+mkdir -p "$stage/apfs-check"
+(cd "$resources/app" && SMOKE_DIR="$stage/apfs-check" "$tools/node" --input-type=module -e '
+import assert from "node:assert/strict";
+import { statSync, realpathSync } from "node:fs";
+import { identifyLinuxRoot, canMigrateLegacyRootIdentity } from "./src/account-devices/linux-workspace.mjs";
+const root = realpathSync(process.env.SMOKE_DIR);
+const id = identifyLinuxRoot(root);
+const st = statSync(root, { bigint: true });
+assert.match(id, /^vol:[A-F0-9-]+:\d+$/, "expected stable APFS Volume UUID identity, got: " + id);
+assert.ok(id.endsWith(":" + st.ino.toString()), "inode mismatch: " + id);
+assert.equal(canMigrateLegacyRootIdentity("99999999:" + st.ino.toString(), id), true);
+assert.equal(canMigrateLegacyRootIdentity("99999999:" + (st.ino + 1n).toString(), id), false);
+console.log("macOS APFS root identity check passed:", id);
+')
 smoke_log="$stage/smoke.log"
 ANYWHERE_MESH_DATA_DIR="$stage/smoke" "$bundle/Contents/MacOS/AnywhereMesh" --macos-package-smoke > "$smoke_log" 2>&1 || {
   cat "$smoke_log"
