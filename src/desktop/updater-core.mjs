@@ -1,6 +1,6 @@
 import { createHash, createPublicKey, createPrivateKey, randomUUID, sign as cryptoSign, verify as cryptoVerify } from 'node:crypto';
 import {
-  chmodSync, copyFileSync, createReadStream, createWriteStream, existsSync,
+  chmodSync, copyFileSync, cpSync, createReadStream, createWriteStream, existsSync,
   mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync,
 } from 'node:fs';
 import http from 'node:http';
@@ -118,7 +118,7 @@ export function validateManifestShape(manifest) {
       if (typeof art.sha256 !== 'string' || !SHA256_RE.test(art.sha256)) return false;
       if (!Number.isSafeInteger(art.size) || art.size <= 0 || art.size > MAX_FULL_ARTIFACT_BYTES) return false;
       if (tier === 'bundle' && (typeof art.runtimeAbi !== 'string' || !art.runtimeAbi.trim() || art.runtimeAbi.length > 128)) return false;
-      if (tier === 'full' && !['nsis', 'linux-tar'].includes(art.kind)) return false;
+      if (tier === 'full' && !['nsis', 'linux-tar', 'macos-zip'].includes(art.kind)) return false;
     }
   }
   return true;
@@ -743,6 +743,12 @@ function renameWithRetry(from, to, retries = 12, delayMs = 250) {
       return;
     } catch (err) {
       lastErr = err;
+      if (err.code === 'EXDEV') {
+        mkdirSync(dirname(to), { recursive: true });
+        cpSync(from, to, { recursive: true, preserveTimestamps: true });
+        rmSync(from, { recursive: true, force: true });
+        return;
+      }
       if (i === retries || !['EPERM', 'EBUSY', 'EACCES'].includes(err.code)) throw err;
       sleepSync(delayMs);
     }
@@ -793,6 +799,7 @@ export async function applyBundleUpdate({
       copyFileSync(src, dst);
     }
 
+    mkdirSync(dirname(resolvedBackup), { recursive: true, mode: 0o700 });
     if (existsSync(resolvedBackup)) {
       rmSync(resolvedBackup, { recursive: true, force: true });
     }
@@ -817,6 +824,7 @@ export function rollbackBundleUpdate({ appDir, backupDir = appDir + '.prev' }) {
   const resolvedBackup = resolve(backupDir);
   if (!existsSync(resolvedBackup)) return false;
   const brokenDir = `${resolvedApp}.broken.${Date.now()}`;
+  mkdirSync(dirname(brokenDir), { recursive: true });
   try {
     if (existsSync(resolvedApp)) {
       renameWithRetry(resolvedApp, brokenDir, 6, 200);

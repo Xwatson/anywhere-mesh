@@ -1,7 +1,7 @@
 'use strict';
 const { app, BrowserWindow, ipcMain, protocol, session, net, screen, clipboard, dialog, Menu, nativeTheme } = require('electron');
 const { spawn } = require('node:child_process');
-const { realpathSync, mkdirSync, existsSync, copyFileSync, constants } = require('node:fs');
+const { accessSync, realpathSync, mkdirSync, existsSync, copyFileSync, readFileSync, constants } = require('node:fs');
 const { homedir } = require('node:os');
 const { resolve, sep, extname } = require('node:path');
 const { pathToFileURL } = require('node:url');
@@ -32,11 +32,33 @@ let updater = null;
 let builtinBrowser = null;
 let windowLoaded = false;
 
-if (installedWindows || installedLinux) {
+function readInstalledVersion(dir) {
+  try {
+    const raw = JSON.parse(readFileSync(resolve(dir, 'package.json'), 'utf8'));
+    if (typeof raw?.version === 'string' && raw.version.trim()) return raw.version.trim();
+  } catch {}
+  return app.getVersion();
+}
+
+function isMacBundleWritable(bundleDir, appDirPath) {
+  if (!bundleDir || !appDirPath || bundleDir.includes('/AppTranslocation/')) return false;
+  try {
+    accessSync(appDirPath, constants.W_OK);
+    accessSync(resolve(appDirPath, '..'), constants.W_OK);
+    accessSync(resolve(bundleDir, 'Contents/Info.plist'), constants.W_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const macBundleDir = installedMac ? resolve(process.resourcesPath, '../..') : null;
+if (installedWindows || installedLinux || installedMac) {
   const rollback = checkStartupRollbackSync({
-    dataRoot: installedWindows ? windowsRoot : linuxRoot,
+    dataRoot: installedWindows ? windowsRoot : installedLinux ? linuxRoot : macRoot,
     appDir: packageRootDir,
-    currentVersion: app.getVersion(),
+    installDir: macBundleDir,
+    currentVersion: readInstalledVersion(packageRootDir),
   });
   if (rollback.rolledBack) {
     app.relaunch();
@@ -156,18 +178,23 @@ if (single) app.whenReady().then(async () => {
     pending.delete(msg.id); clearTimeout(waiter.timer);
     msg.error ? waiter.reject(Error(msg.error)) : waiter.resolve(msg.value);
   });
-  if (windowsDevice || linuxDesktop) {
-    const dataRoot = windowsDevice ? windowsRoot : linuxRoot;
-    const installDir = (installedWindows || installedLinux) ? resolve(process.resourcesPath, '..') : null;
+  if (windowsDevice || linuxDesktop || installedMac) {
+    const dataRoot = windowsDevice ? windowsRoot : linuxDesktop ? linuxRoot : macRoot;
+    const installDir = installedMac
+      ? macBundleDir
+      : (installedWindows || installedLinux) ? resolve(process.resourcesPath, '..') : null;
     const relaunchExe = installedWindows ? process.execPath :
       installedLinux ? resolve(process.resourcesPath, '../bin/anywhere-mesh') : process.execPath;
+    const canInstall = installedWindows || installedLinux ||
+      (installedMac && isMacBundleWritable(macBundleDir, packageRootDir)) ||
+      process.env.ANYWHERE_MESH_UPDATE_ALLOW_DEV === '1';
     updater = new DesktopUpdater({
       dataRoot,
       appDir: packageRootDir,
       installDir,
       nodeBin: backend,
       relaunchExe,
-      canInstall: installedWindows || installedLinux || process.env.ANYWHERE_MESH_UPDATE_ALLOW_DEV === '1',
+      canInstall,
       getExtraPids: () => (child?.pid ? [child.pid] : []),
       onStateChange: snap => {
         if (win && !win.isDestroyed()) {
@@ -263,6 +290,9 @@ if (single) app.whenReady().then(async () => {
     try {
       const state = await request('state', {});
       if (!state) throw Error('DESKTOP_STATE_UNAVAILABLE');
+      if (!updater || !updater.canInstall || updater.runtimeAbi !== 'e45.3.3-n24.21.0-et2.6.4-mac') {
+        throw Error('MACOS_UPDATER_NOT_CONFIGURED');
+      }
       console.log('macOS desktop smoke passed');
       app.quit();
     } catch (error) {

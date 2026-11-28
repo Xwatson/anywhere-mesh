@@ -4,7 +4,8 @@
 Produces:
   - anywhere-mesh-app-<version>-win32-x64.tar.gz   (~300 KB delta bundle)
   - anywhere-mesh-app-<version>-linux-x64.tar.gz   (~300 KB delta bundle)
-  - optional full installers copied alongside (--win-installer / --linux-archive)
+  - anywhere-mesh-app-<version>-darwin.tar.gz      (~300 KB delta bundle for darwin-arm64 & darwin-x64)
+  - optional full installers copied alongside (--win-installer / --linux-archive / --mac-arm64-zip / --mac-x64-zip)
   - manifest.json signed with an offline Ed25519 private key
   - SHA256SUMS.txt
 
@@ -26,6 +27,7 @@ import tempfile
 WS_INTEGRITY = "sha512-Ydggc987+RO0AnWtZ/7Wq9FtNvcrL1b/RO0ud9mWjUPgDrsAAwQSF51sm2hm1XofbU/4jkpGEsLFsZZxU+1DOg=="
 MANIFEST_DOMAIN_PREFIX = "anywhere-mesh-update-v1\n"
 LINUX_RUNTIME_ABI = "e45.3.3-n24.21.0-et2.6.4-lin"
+MAC_RUNTIME_ABI = "e45.3.3-n24.21.0-et2.6.4-mac"
 
 WIN_FILES = {
     "desktop": ["main.cjs", "builtin-browser.cjs", "package.json", "contract.cjs", "updater-core.mjs", "updater.cjs", "apply-update.mjs"],
@@ -56,6 +58,7 @@ LINUX_FILES = {
         "ui/manifest.webmanifest", "ui/sw.js", "ui/icon-192.png", "ui/icon-512.png",
     ],
 }
+MAC_FILES = LINUX_FILES
 
 
 def sha256_file(path: Path) -> str:
@@ -203,6 +206,8 @@ def main():
     parser.add_argument("--notes-file", type=Path, default=None, help="Path to release notes markdown file")
     parser.add_argument("--win-installer", type=Path, default=None, help="Optional full Windows Setup.exe")
     parser.add_argument("--linux-archive", type=Path, default=None, help="Optional full Linux x64 tar.gz")
+    parser.add_argument("--mac-arm64-zip", type=Path, default=None, help="Optional full macOS arm64 .zip")
+    parser.add_argument("--mac-x64-zip", type=Path, default=None, help="Optional full macOS x64 .zip")
     parser.add_argument("--deploy-ssh", default=None, help="Optional SSH target (e.g. root@mesh.example.com)")
     parser.add_argument("--remote-dir", default="/var/lib/anywhere-wan/updates", help="Remote updates directory")
     args = parser.parse_args()
@@ -211,6 +216,7 @@ def main():
     version = json.loads((src_root / "package.json").read_text(encoding="utf-8"))["version"]
     win_abi = compute_windows_runtime_abi(src_root)
     lin_abi = LINUX_RUNTIME_ABI
+    mac_abi = MAC_RUNTIME_ABI
 
     notes = args.notes
     if args.notes_file is not None:
@@ -221,10 +227,18 @@ def main():
 
     win_bundle_name = f"anywhere-mesh-app-{version}-win32-x64.tar.gz"
     lin_bundle_name = f"anywhere-mesh-app-{version}-linux-x64.tar.gz"
+    mac_bundle_name = f"anywhere-mesh-app-{version}-darwin.tar.gz"
 
     win_bundle = build_app_bundle(src_root, WIN_FILES, args.ws, args.dc, version, win_abi, out_dir / win_bundle_name)
     lin_bundle = build_app_bundle(src_root, LINUX_FILES, args.ws, None, version, lin_abi, out_dir / lin_bundle_name)
+    mac_bundle = build_app_bundle(src_root, MAC_FILES, args.ws, None, version, mac_abi, out_dir / mac_bundle_name)
 
+    mac_bundle_entry = {
+        "url": f"/updates/{mac_bundle_name}",
+        "sha256": mac_bundle["sha256"],
+        "size": mac_bundle["size"],
+        "runtimeAbi": mac_abi,
+    }
     targets = {
         "win32-x64": {
             "bundle": {
@@ -242,11 +256,14 @@ def main():
                 "runtimeAbi": lin_abi,
             },
         },
+        "darwin-arm64": {"bundle": dict(mac_bundle_entry)},
+        "darwin-x64": {"bundle": dict(mac_bundle_entry)},
     }
 
     checksums = [
         f"{win_bundle['sha256']}  {win_bundle_name}",
         f"{lin_bundle['sha256']}  {lin_bundle_name}",
+        f"{mac_bundle['sha256']}  {mac_bundle_name}",
     ]
 
     if args.win_installer is not None:
@@ -277,6 +294,21 @@ def main():
         }
         checksums.append(f"{sha}  {dst_name}")
 
+    for target_key, zip_path in (("darwin-arm64", args.mac_arm64_zip), ("darwin-x64", args.mac_x64_zip)):
+        if zip_path is not None:
+            dst_name = zip_path.name
+            dst_path = out_dir / dst_name
+            if zip_path.resolve() != dst_path:
+                shutil.copyfile(zip_path, dst_path)
+            sha = sha256_file(dst_path)
+            targets[target_key]["full"] = {
+                "url": f"/updates/{dst_name}",
+                "sha256": sha,
+                "size": dst_path.stat().st_size,
+                "kind": "macos-zip",
+            }
+            checksums.append(f"{sha}  {dst_name}")
+
     manifest = {
         "schemaVersion": 1,
         "channel": args.channel,
@@ -292,6 +324,7 @@ def main():
     print(f"Published signed update manifest v{version} -> {out_dir}")
     print(f"  win32-x64 bundle: {win_bundle_name} ({win_bundle['size'] / 1024:.1f} KiB, abi={win_abi})")
     print(f"  linux-x64 bundle: {lin_bundle_name} ({lin_bundle['size'] / 1024:.1f} KiB, abi={lin_abi})")
+    print(f"  darwin    bundle: {mac_bundle_name} ({mac_bundle['size'] / 1024:.1f} KiB, abi={mac_abi})")
 
     if args.deploy_ssh:
         deploy_over_ssh(out_dir, args.deploy_ssh, args.remote_dir)

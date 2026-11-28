@@ -32,7 +32,7 @@ import deviceContract from '../../account-devices/contract.cjs';
 const { DesktopUpdater, checkStartupRollbackSync } = updaterMod;
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, '../../..');
-const labRoot = resolve(repoRoot, '..');
+const labRoot = existsSync(resolve(repoRoot, '../images/ws-8.22.0.tgz')) ? resolve(repoRoot, '..') : resolve(repoRoot, '../..');
 
 function makeKeyPair() {
   return generateKeyPairSync('ed25519', {
@@ -444,7 +444,7 @@ test('cross-language publish-update.py generates signed manifest verifiable by b
   const manifest = JSON.parse(readFileSync(join(outDir, 'manifest.json'), 'utf8'));
   assert.equal(verifyManifestSignature(manifest, DEFAULT_UPDATE_PUBLIC_KEY), true);
 
-  for (const key of ['win32-x64', 'linux-x64']) {
+  for (const key of ['win32-x64', 'linux-x64', 'darwin-arm64', 'darwin-x64']) {
     const bundle = manifest.targets[key].bundle;
     const filename = bundle.url.split('/').pop();
     const archiveBytes = readFileSync(join(outDir, filename));
@@ -567,4 +567,97 @@ test('server-config normalizes & persists serverUrl, contract validates login.se
   updater.setBaseUrl('https://selfhosted.example.com/');
   assert.equal(updater.updateBaseUrl, 'https://selfhosted.example.com');
   updater.dispose();
+});
+
+test('macOS updater targets darwin-arm64/x64, places backup & runner node outside .app, and supports macos-zip full fallback', async t => {
+  const { publicKey, privateKey } = makeKeyPair();
+  const runtimeAbi = 'e45.3.3-n24.21.0-et2.6.4-mac';
+  const bundleBytes = createTarGz([
+    { name: 'package.json', content: JSON.stringify({ name: 'anywhere-mesh', version: '0.5.6', runtimeAbi, main: 'src/desktop/main.cjs' }) + '\n' },
+    { name: 'src/desktop/main.cjs', content: '// mac v0.5.6\n' },
+  ]);
+  const bundleSha = sha256(bundleBytes);
+  const signedManifest = signManifest({
+    schemaVersion: 1,
+    channel: 'stable',
+    version: '0.5.6',
+    publishedAt: '2026-11-28T10:00:00Z',
+    notes: 'macOS auto-update',
+    targets: {
+      'darwin-arm64': {
+        bundle: { url: '/updates/app-darwin.tar.gz', sha256: bundleSha, size: bundleBytes.length, runtimeAbi },
+        full: { url: '/updates/AnywhereMesh-0.5.6-macos-arm64.zip', sha256: 'd'.repeat(64), size: 168000000, kind: 'macos-zip' },
+      },
+      'darwin-x64': {
+        bundle: { url: '/updates/app-darwin.tar.gz', sha256: bundleSha, size: bundleBytes.length, runtimeAbi },
+      },
+    },
+  }, privateKey);
+  assert.equal(verifyManifestSignature(signedManifest, publicKey), true);
+
+  // ABI match -> bundle; ABI mismatch -> macos-zip full
+  const macFast = selectUpdateArtifact(signedManifest, { currentVersion: '0.5.5', platformKey: 'darwin-arm64', runtimeAbi });
+  assert.equal(macFast.available, true);
+  assert.equal(macFast.mode, 'bundle');
+  const macFull = selectUpdateArtifact(signedManifest, { currentVersion: '0.5.5', platformKey: 'darwin-arm64', runtimeAbi: 'old-abi' });
+  assert.equal(macFull.available, true);
+  assert.equal(macFull.mode, 'full');
+  assert.equal(macFull.kind, 'macos-zip');
+
+  const server = http.createServer((req, res) => {
+    if (req.url === '/updates/manifest.json') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(signedManifest));
+      return;
+    }
+    if (req.url === '/updates/app-darwin.tar.gz') {
+      res.writeHead(200, { 'Content-Type': 'application/gzip', 'Content-Length': bundleBytes.length });
+      res.end(bundleBytes);
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  await new Promise(r => server.listen(0, '127.0.0.1', r));
+  t.after(() => server.close());
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  const dir = mkdtempSync(join(tmpdir(), 'anywhere-mac-upd-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const bundleDir = join(dir, 'AnywhereMesh.app');
+  const appDir = join(bundleDir, 'Contents/Resources/app');
+  const fakeNode = join(bundleDir, 'Contents/Resources/tools/node');
+  const dataRoot = join(dir, 'data');
+  mkdirSync(join(appDir, 'src/desktop'), { recursive: true });
+  mkdirSync(dirname(fakeNode), { recursive: true });
+  writeFileSync(join(appDir, 'package.json'), JSON.stringify({ name: 'anywhere-mesh', version: '0.5.5', runtimeAbi, main: 'src/desktop/main.cjs' }));
+  writeFileSync(join(appDir, 'src/desktop/main.cjs'), '// old\n');
+  writeFileSync(fakeNode, '#!/bin/sh\n', { mode: 0o755 });
+
+  const updater = new DesktopUpdater({
+    dataRoot,
+    appDir,
+    installDir: bundleDir,
+    nodeBin: fakeNode,
+    relaunchExe: join(bundleDir, 'Contents/MacOS/AnywhereMesh'),
+    canInstall: true,
+    platform: 'darwin',
+    arch: 'arm64',
+    updateBaseUrl: baseUrl,
+    publicKeyPem: publicKey,
+    allowHttpLocalhost: true,
+  });
+  t.after(() => updater.dispose());
+  await updater.init();
+  await updater.check({ manual: true });
+  await updater.download();
+  await updater.prepareInstall({ relaunch: false });
+
+  assert.ok(updater.quitJob);
+  assert.equal(updater.quitJob.runnerNode, join(dataRoot, 'updates/runner/node'));
+  assert.equal(existsSync(updater.quitJob.runnerNode), true);
+  const job = JSON.parse(readFileSync(updater.quitJob.jobPath, 'utf8'));
+  assert.equal(job.backupDir, join(dataRoot, 'updates/app.prev'));
+  assert.equal(job.backupDir.startsWith(bundleDir), false);
+  assert.equal(job.installDir, bundleDir);
 });

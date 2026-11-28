@@ -91,6 +91,7 @@ with tarfile.open(archive, "r:gz") as tar:
     "name": "anywhere-mesh",
     "productName": "AnywhereMesh",
     "version": version,
+    "runtimeAbi": "e45.3.3-n24.21.0-et2.6.4-mac",
     "main": "src/desktop/main.cjs",
 }, indent=2) + "\n")
 PY
@@ -123,6 +124,72 @@ assert.equal(canMigrateLegacyRootIdentity("99999999:" + st.ino.toString(), id), 
 assert.equal(canMigrateLegacyRootIdentity("99999999:" + (st.ino + 1n).toString(), id), false);
 console.log("macOS APFS root identity check passed:", id);
 ')
+mkdir -p "$stage/updater-test"
+ditto "$bundle" "$stage/updater-test/AnywhereMesh.app"
+cp "$tools/node" "$stage/updater-test/runner-node"
+chmod 755 "$stage/updater-test/runner-node"
+TEST_BUNDLE="$stage/updater-test/AnywhereMesh.app" TEST_DATA="$stage/updater-test/data" TEST_NODE="$stage/updater-test/runner-node" BASE_VERSION="$version" "$stage/updater-test/runner-node" --input-type=module -e '
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { createRequire } from "node:module";
+const bundleDir = process.env.TEST_BUNDLE;
+const dataRoot = process.env.TEST_DATA;
+const runnerNode = process.env.TEST_NODE;
+const baseVer = process.env.BASE_VERSION;
+const nextVer = `${baseVer}-test.1`;
+const appDir = join(bundleDir, "Contents/Resources/app");
+const core = await import(join(appDir, "src/desktop/updater-core.mjs"));
+const req = createRequire(import.meta.url);
+const { checkStartupRollbackSync } = req(join(appDir, "src/desktop/updater.cjs"));
+const tarGz = core.createTarGz([
+  { name: "package.json", content: JSON.stringify({ name: "anywhere-mesh", productName: "AnywhereMesh", version: nextVer, runtimeAbi: "e45.3.3-n24.21.0-et2.6.4-mac", main: "src/desktop/main.cjs" }) + "\n" },
+  { name: "src/desktop/main.cjs", content: readFileSync(join(appDir, "src/desktop/main.cjs")) },
+]);
+mkdirSync(join(dataRoot, "updates/runner"), { recursive: true });
+const archivePath = join(dataRoot, "updates/test-bundle.tar.gz");
+writeFileSync(archivePath, tarGz);
+const sha = createHash("sha256").update(tarGz).digest("hex");
+const runnerApply = join(dataRoot, "updates/runner/apply-update.mjs");
+const runnerCore = join(dataRoot, "updates/runner/updater-core.mjs");
+writeFileSync(runnerApply, readFileSync(join(appDir, "src/desktop/apply-update.mjs")));
+writeFileSync(runnerCore, readFileSync(join(appDir, "src/desktop/updater-core.mjs")));
+const backupDir = join(dataRoot, "updates/app.prev");
+const stateFile = join(dataRoot, "updates/state.json");
+const jobPath = join(dataRoot, "updates/runner/job.json");
+writeFileSync(jobPath, JSON.stringify({
+  mode: "bundle", kind: "app-bundle", fromVersion: baseVer, targetVersion: nextVer,
+  archivePath, sha256: sha, appDir, backupDir, installDir: bundleDir, stateFile, relaunch: false, waitPids: [],
+}));
+execFileSync(runnerNode, [runnerApply, jobPath], { stdio: "inherit", timeout: 60000 });
+assert.equal(core.readInstalledMeta(appDir).version, nextVer);
+assert.equal(existsSync(appDir + ".prev"), false, "backup must stay outside .app bundle");
+assert.equal(existsSync(backupDir), true);
+const plistVer = execFileSync("/usr/bin/defaults", ["read", join(bundleDir, "Contents/Info.plist"), "CFBundleShortVersionString"], { encoding: "utf8" }).trim();
+assert.equal(plistVer, nextVer);
+execFileSync("/usr/bin/codesign", ["--verify", "--deep", "--strict", bundleDir], { stdio: "inherit" });
+// Simulate startup crash rollback and verify codesign stays valid after rollback
+const st = JSON.parse(readFileSync(stateFile, "utf8"));
+st.appliedAttempt.bootCount = 1;
+writeFileSync(stateFile, JSON.stringify(st));
+const rb = checkStartupRollbackSync({ dataRoot, appDir, installDir: bundleDir, currentVersion: nextVer });
+assert.equal(rb.rolledBack, true);
+assert.equal(core.readInstalledMeta(appDir).version, baseVer);
+const plistRestored = execFileSync("/usr/bin/defaults", ["read", join(bundleDir, "Contents/Info.plist"), "CFBundleShortVersionString"], { encoding: "utf8" }).trim();
+assert.equal(plistRestored, baseVer);
+execFileSync("/usr/bin/codesign", ["--verify", "--deep", "--strict", bundleDir], { stdio: "inherit" });
+// Re-apply once more and delete external backup (markBootHealthy) to ensure codesign remains valid
+writeFileSync(jobPath, JSON.stringify({
+  mode: "bundle", kind: "app-bundle", fromVersion: baseVer, targetVersion: nextVer,
+  archivePath, sha256: sha, appDir, backupDir, installDir: bundleDir, stateFile, relaunch: false, waitPids: [],
+}));
+execFileSync(runnerNode, [runnerApply, jobPath], { stdio: "inherit", timeout: 60000 });
+rmSync(backupDir, { recursive: true, force: true });
+execFileSync("/usr/bin/codesign", ["--verify", "--deep", "--strict", bundleDir], { stdio: "inherit" });
+console.log("macOS auto-update + codesign + rollback check passed");
+'
 smoke_log="$stage/smoke.log"
 ANYWHERE_MESH_DATA_DIR="$stage/smoke" "$bundle/Contents/MacOS/AnywhereMesh" --macos-package-smoke > "$smoke_log" 2>&1 || {
   cat "$smoke_log"

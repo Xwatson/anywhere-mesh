@@ -1,6 +1,6 @@
 'use strict';
-const { spawn } = require('node:child_process');
-const { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } = require('node:fs');
+const { execFileSync, spawn } = require('node:child_process');
+const { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } = require('node:fs');
 const { basename, dirname, join, resolve } = require('node:path');
 const { pathToFileURL } = require('node:url');
 
@@ -35,7 +35,28 @@ function writeJsonAtomic(filePath, obj) {
   }
 }
 
-function checkStartupRollbackSync({ dataRoot, appDir, currentVersion }) {
+function moveDirSync(from, to) {
+  mkdirSync(dirname(to), { recursive: true });
+  try {
+    renameSync(from, to);
+  } catch (err) {
+    if (err.code !== 'EXDEV') throw err;
+    cpSync(from, to, { recursive: true, preserveTimestamps: true });
+    rmSync(from, { recursive: true, force: true });
+  }
+}
+
+function syncMacBundleMetadataAndSign(bundleDir, version) {
+  if (process.platform !== 'darwin' || !bundleDir || !bundleDir.endsWith('.app')) return;
+  const plist = join(bundleDir, 'Contents', 'Info.plist');
+  if (existsSync(plist) && version) {
+    execFileSync('/usr/bin/plutil', ['-replace', 'CFBundleShortVersionString', '-string', version, plist], { stdio: 'ignore', timeout: 10000 });
+    execFileSync('/usr/bin/plutil', ['-replace', 'CFBundleVersion', '-string', version, plist], { stdio: 'ignore', timeout: 10000 });
+  }
+  execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', bundleDir], { stdio: 'ignore', timeout: 60000 });
+}
+
+function checkStartupRollbackSync({ dataRoot, appDir, installDir = null, currentVersion }) {
   if (!dataRoot || !appDir) return { rolledBack: false };
   const stateFile = join(dataRoot, 'updates', 'state.json');
   const st = readJsonSafe(stateFile);
@@ -45,11 +66,16 @@ function checkStartupRollbackSync({ dataRoot, appDir, currentVersion }) {
   const backupDir = attempt.backupDir || (appDir + '.prev');
 
   if (attempt.bootCount >= 1 && attempt.toVersion === currentVersion && existsSync(backupDir)) {
-    const brokenDir = `${appDir}.broken.${Date.now()}`;
+    const brokenDir = process.platform === 'darwin'
+      ? join(dataRoot, 'updates', `app.broken.${Date.now()}`)
+      : `${appDir}.broken.${Date.now()}`;
     try {
-      if (existsSync(appDir)) renameSync(appDir, brokenDir);
-      renameSync(backupDir, appDir);
+      if (existsSync(appDir)) moveDirSync(appDir, brokenDir);
+      moveDirSync(backupDir, appDir);
       rmSync(brokenDir, { recursive: true, force: true });
+      if (process.platform === 'darwin') {
+        try { syncMacBundleMetadataAndSign(attempt.installDir || installDir, attempt.fromVersion); } catch {}
+      }
 
       const failed = st.failedVersions && typeof st.failedVersions === 'object' ? { ...st.failedVersions } : {};
       const prev = failed[attempt.toVersion] ?? { count: 0 };
@@ -66,7 +92,7 @@ function checkStartupRollbackSync({ dataRoot, appDir, currentVersion }) {
       return { rolledBack: true, failedVersion: attempt.toVersion };
     } catch {
       if (!existsSync(appDir) && existsSync(brokenDir)) {
-        try { renameSync(brokenDir, appDir); } catch {}
+        try { moveDirSync(brokenDir, appDir); } catch {}
       }
       return { rolledBack: false };
     }
@@ -216,6 +242,10 @@ class DesktopUpdater {
     if (attempt.toVersion === this.currentVersion) {
       if (attempt.backupDir && existsSync(attempt.backupDir)) {
         try { rmSync(attempt.backupDir, { recursive: true, force: true }); } catch {}
+      }
+      const runnerNode = join(this.runnerDir, 'node');
+      if (existsSync(runnerNode)) {
+        try { rmSync(runnerNode, { force: true }); } catch {}
       }
       this.justUpdatedFrom = attempt.fromVersion || null;
       this.persisted.lastUpdatedTo = {
@@ -518,6 +548,12 @@ class DesktopUpdater {
     const runnerCore = join(this.runnerDir, 'updater-core.mjs');
     copyFileSync(resolve(__dirname, 'apply-update.mjs'), runnerApply);
     copyFileSync(resolve(__dirname, 'updater-core.mjs'), runnerCore);
+    let runnerNode = null;
+    if (this.platform === 'darwin' && this.nodeBin && existsSync(this.nodeBin)) {
+      runnerNode = join(this.runnerDir, 'node');
+      copyFileSync(this.nodeBin, runnerNode);
+      try { chmodSync(runnerNode, 0o755); } catch {}
+    }
 
     const jobPath = join(this.runnerDir, `job-${Date.now()}.json`);
     const job = {
@@ -528,7 +564,7 @@ class DesktopUpdater {
       archivePath: pending.filePath,
       sha256: pending.sha256,
       appDir: this.appDir,
-      backupDir: this.appDir + '.prev',
+      backupDir: this.platform === 'darwin' ? join(this.updatesDir, 'app.prev') : (this.appDir + '.prev'),
       installDir: this.installDir,
       stateFile: this.stateFile,
       cacheDir: this.cacheDir,
@@ -539,7 +575,7 @@ class DesktopUpdater {
       waitPids: [process.pid, ...this.getExtraPids()].filter(p => Number.isInteger(p) && p > 0),
     };
     writeJsonAtomic(jobPath, job);
-    this.quitJob = { jobPath, runnerApply, relaunch: Boolean(relaunch) };
+    this.quitJob = { jobPath, runnerApply, runnerNode, relaunch: Boolean(relaunch) };
 
     if (relaunch) {
       this.status = 'installing';
@@ -559,10 +595,11 @@ class DesktopUpdater {
       }
     }
     if (!this.quitJob) return false;
-    const { jobPath, runnerApply } = this.quitJob;
+    const { jobPath, runnerApply, runnerNode } = this.quitJob;
     this.quitJob = null;
-    if (!existsSync(this.nodeBin) || !existsSync(runnerApply) || !existsSync(jobPath)) return false;
-    const child = spawn(this.nodeBin, [runnerApply, jobPath], {
+    const nodeExec = (runnerNode && existsSync(runnerNode)) ? runnerNode : this.nodeBin;
+    if (!existsSync(nodeExec) || !existsSync(runnerApply) || !existsSync(jobPath)) return false;
+    const child = spawn(nodeExec, [runnerApply, jobPath], {
       cwd: this.runnerDir,
       detached: true,
       stdio: 'ignore',
