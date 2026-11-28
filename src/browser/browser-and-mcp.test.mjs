@@ -40,15 +40,16 @@ test('browser settings enforce loopback-only CDP URLs and persist atomically', t
   let changes = 0;
   const store = new BrowserSettingsStore(dir, { onChange: () => { changes++; } });
   assert.equal(store.get().builtin.enabled, false);
+  assert.equal(store.get().builtin.autoShow, false);
   assert.equal(store.get().daily.enabled, false);
 
   const updated = store.update({
-    builtin: { enabled: true, autoShow: false },
+    builtin: { enabled: true, autoShow: true },
     daily: { enabled: true, access: 'read', backend: 'playwright-mcp', cdpUrl: '9222' },
   });
   assert.equal(changes, 1);
   assert.equal(updated.builtin.enabled, true);
-  assert.equal(updated.builtin.autoShow, false);
+  assert.equal(updated.builtin.autoShow, true);
   assert.equal(updated.daily.access, 'read');
   assert.equal(updated.daily.backend, 'playwright-mcp');
   assert.equal(updated.daily.cdpUrl, 'http://127.0.0.1:9222');
@@ -68,11 +69,19 @@ test('desktop contract strictly validates all browser control IPC routes', () =>
   contract.validate('browserShowBuiltin', {});
   contract.validate('browserHideBuiltin', {});
   contract.validate('browserResetBuiltin', {});
+  contract.validate('browserDockSync', { open: true, covered: false, bounds: { x: 640, y: 98, width: 520, height: 700 } });
+  contract.validate('browserDockNavigate', { action: 'goto', url: 'http://localhost:3000/' });
+  contract.validate('browserDockNavigate', { action: 'back' });
+  contract.validate('browserDockNavigate', { action: 'selectTab', tabId: 'tab-1234' });
 
   assert.throws(() => contract.validate('browserUpdateSettings', { builtin: { enabled: 'yes' } }), /INVALID_FIELDS/);
   assert.throws(() => contract.validate('browserUpdateSettings', { daily: { access: 'admin' } }), /INVALID_FIELDS/);
   assert.throws(() => contract.validate('browserUpdateSettings', { daily: { backend: 'evil-mcp' } }), /INVALID_FIELDS/);
   assert.throws(() => contract.validate('browserLaunchDaily', { port: 80 }), /INVALID_FIELDS/);
+  assert.throws(() => contract.validate('browserDockSync', { bounds: { x: -1, y: 0, width: 100, height: 100 } }), /INVALID_FIELDS/);
+  assert.throws(() => contract.validate('browserDockNavigate', { action: 'goto', url: 'file:///etc/passwd' }), /URL_SCHEME_DENIED/);
+  assert.throws(() => contract.validate('browserDockNavigate', { action: 'selectTab' }), /INVALID_FIELDS/);
+  assert.throws(() => contract.validate('browserDockNavigate', { action: 'eval' }), /INVALID_FIELDS/);
 });
 
 test('buildAccessibilitySnapshot compacts AX tree and emits stable refs mapped to backendDOMNodeId', () => {

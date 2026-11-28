@@ -102,7 +102,11 @@ function postLoopbackJson(urlStr, token, body, timeoutMs = 25000) {
       });
     });
     req.on('error', reject);
-    req.on('timeout', () => req.destroy(Error('BUILTIN_BRIDGE_TIMEOUT')));
+    req.on('timeout', () => {
+      const err = Error('BUILTIN_BRIDGE_TIMEOUT');
+      err.code = 'BUILTIN_BRIDGE_TIMEOUT';
+      req.destroy(err);
+    });
     req.end(raw);
   });
 }

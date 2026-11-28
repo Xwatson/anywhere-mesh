@@ -6,7 +6,7 @@ import { fail } from '../execution/protocol.mjs';
 export const DEFAULT_BROWSER_SETTINGS = Object.freeze({
   builtin: Object.freeze({
     enabled: false,
-    autoShow: true,
+    autoShow: false,
   }),
   daily: Object.freeze({
     enabled: false,
@@ -45,7 +45,7 @@ export function normalizeBrowserSettings(input, base = DEFAULT_BROWSER_SETTINGS)
   const dIn = src.daily && typeof src.daily === 'object' && !Array.isArray(src.daily) ? src.daily : {};
 
   const builtinEnabled = typeof bIn.enabled === 'boolean' ? bIn.enabled : Boolean(cur.builtin?.enabled);
-  const builtinAutoShow = typeof bIn.autoShow === 'boolean' ? bIn.autoShow : (cur.builtin?.autoShow ?? true);
+  const builtinAutoShow = typeof bIn.autoShow === 'boolean' ? bIn.autoShow : (cur.builtin?.autoShow ?? false);
   const dailyEnabled = typeof dIn.enabled === 'boolean' ? dIn.enabled : Boolean(cur.daily?.enabled);
   const dailyAccess = dIn.access !== undefined ? String(dIn.access) : (cur.daily?.access ?? 'full');
   if (!VALID_ACCESS.has(dailyAccess)) fail('INVALID_BROWSER_ACCESS');

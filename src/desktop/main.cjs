@@ -145,7 +145,13 @@ if (single) app.whenReady().then(async () => {
     (linuxDesktop || installedMac) ? posixEnv : { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: '/home/lab', LANG: 'C.UTF-8' };
   let builtinEnv = {};
   if (standaloneDevice) {
-    builtinBrowser = new BuiltinBrowserBridge();
+    builtinBrowser = new BuiltinBrowserBridge({
+      onStateChange: snapshot => {
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('desktop:event', { type: 'builtin_browser_state', payload: snapshot });
+        }
+      },
+    });
     const bridgeInfo = await builtinBrowser.start();
     builtinEnv = {
       ANYWHERE_BUILTIN_BROWSER_URL: bridgeInfo.url,
@@ -225,6 +231,7 @@ if (single) app.whenReady().then(async () => {
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', event => event.preventDefault());
   win.webContents.on('will-attach-webview', event => event.preventDefault());
+  builtinBrowser?.attachHostWindow(win);
   if (standaloneDevice) win.webContents.on('context-menu', (_event, params) => {
     const {editFlags, isEditable, selectionText, frame, x, y}=params;
     if (!isEditable && !selectionText) return;
@@ -252,6 +259,11 @@ if (single) app.whenReady().then(async () => {
     if (method === 'updateInstall') return updater ? updater.prepareInstall({ relaunch: params?.relaunch !== false }) : { supported: false };
     if (method === 'updateSettings') return updater ? updater.updateSettings(params) : { supported: false };
     if (method === 'updateDismiss') return updater ? updater.dismissVersion(params.version) : { supported: false };
+    if (method === 'browserDockSync') return builtinBrowser ? builtinBrowser.syncDock(params) : { connected: false, docked: false };
+    if (method === 'browserDockNavigate') {
+      if (!builtinBrowser) throw Error('BUILTIN_WINDOW_UNAVAILABLE');
+      return builtinBrowser.dockNavigate(params);
+    }
     if (standaloneDevice && method === 'chooseAttachment') {
       const picked = await dialog.showOpenDialog(win, { title: '选择附件', buttonLabel: '添加附件',
         properties: ['openFile', 'dontAddToRecent'] });
@@ -303,6 +315,9 @@ if (single) app.whenReady().then(async () => {
   }
   if (updater && win && !win.isDestroyed()) {
     win.webContents.send('desktop:event', { type: 'update_state', payload: updater.snapshot() });
+  }
+  if (builtinBrowser && win && !win.isDestroyed()) {
+    win.webContents.send('desktop:event', { type: 'builtin_browser_state', payload: builtinBrowser.uiSnapshot() });
   }
   if (windowsDevice && !installedWindows && process.argv.includes('--lab-windows-smoke')) {
     const { smoke } = await import('../account-devices/windows/smoke.mjs');

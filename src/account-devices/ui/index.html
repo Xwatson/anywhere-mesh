@@ -56,6 +56,7 @@
   <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
   <symbol id="i-compress" viewBox="0 0 24 24"><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M10 14l-7 7"/></symbol>
   <symbol id="i-update" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 16V8m-3.5 3.5L12 8l3.5 3.5"/></symbol>
+  <symbol id="i-back" viewBox="0 0 24 24"><path d="M15 6 9 12l6 6"/></symbol>
 </defs></svg>
 <main id="signin">
   <div class="wordmark login-brand"><span class="brand-mark" aria-hidden="true"><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-terminal"></use></svg></span><span>AnywhereMesh</span></div>
@@ -118,9 +119,18 @@
         <button id="rename-session" class="icon-button" type="button" title="重命名会话" aria-label="重命名会话"><svg class="icon" aria-hidden="true"><use href="#i-edit"></use></svg></button>
         <button id="delete-session" class="icon-button" type="button" title="删除会话" aria-label="删除会话"><svg class="icon" aria-hidden="true"><use href="#i-trash"></use></svg></button>
       </div>
-      <button id="topbar-update-btn" class="topbar-update-pill" type="button" hidden><i class="update-dot" aria-hidden="true"></i><span id="topbar-update-label">重启更新</span></button>
-      <button id="device-status" class="presence-chip" aria-haspopup="dialog"><i id="status-dot" class="dot"></i><span id="target">本机</span><span id="presence">连接中</span><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-down"></use></svg></button>
+      <div class="topbar-right">
+        <button id="topbar-update-btn" class="topbar-update-pill" type="button" hidden><i class="update-dot" aria-hidden="true"></i><span id="topbar-update-label">重启更新</span></button>
+        <button id="browser-dock-toggle" class="browser-topbar-chip" type="button" aria-pressed="false" title="打开侧边内置浏览器" hidden>
+          <i id="browser-dock-dot" class="dot" aria-hidden="true" hidden></i>
+          <svg class="icon" aria-hidden="true" focusable="false"><use href="#i-globe"></use></svg>
+          <span id="browser-dock-label">浏览器</span>
+        </button>
+        <button id="device-status" class="presence-chip" aria-haspopup="dialog"><i id="status-dot" class="dot"></i><span id="target">本机</span><span id="presence">连接中</span><svg class="icon " aria-hidden="true" focusable="false"><use href="#i-down"></use></svg></button>
+      </div>
     </header>
+    <div class="workspace-stage">
+      <div class="workspace-main">
     <div id="pwa-install-bar" class="pwa-banner" role="region" aria-label="安装应用" hidden>
       <span class="brand-mark pwa-banner-mark" aria-hidden="true"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-terminal"></use></svg></span>
       <div class="pwa-banner-copy">
@@ -252,6 +262,30 @@
         <p id="usage-footnote" class="usage-footnote muted"></p>
       </div>
     </section>
+      </div>
+      <div id="browser-resizer" class="browser-resizer" role="separator" aria-orientation="vertical" aria-label="调整侧边浏览器宽度" tabindex="0" hidden></div>
+      <aside id="browser-dock" class="browser-dock" aria-label="内置开发浏览器" hidden>
+        <div class="browser-dock-bar">
+          <div class="browser-dock-nav">
+            <button id="browser-nav-back" class="icon-button browser-dock-btn" type="button" title="后退" aria-label="后退" disabled><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-back"></use></svg></button>
+            <button id="browser-nav-forward" class="icon-button browser-dock-btn" type="button" title="前进" aria-label="前进" disabled><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-right"></use></svg></button>
+            <button id="browser-nav-reload" class="icon-button browser-dock-btn" type="button" title="刷新" aria-label="刷新"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-refresh"></use></svg></button>
+          </div>
+          <form id="browser-url-form" class="browser-url-form">
+            <input id="browser-url-input" type="text" inputmode="url" spellcheck="false" autocomplete="off" maxlength="4096" aria-label="内置浏览器地址栏" placeholder="输入网址，例如 http://localhost:3000">
+          </form>
+          <select id="browser-tab-select" class="browser-tab-select" aria-label="切换标签页" title="切换标签页" hidden></select>
+          <button id="browser-dock-close" class="icon-button browser-dock-btn" type="button" title="收起侧边浏览器" aria-label="收起侧边浏览器"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-close"></use></svg></button>
+        </div>
+        <div id="browser-viewport" class="browser-viewport">
+          <div id="browser-empty-state" class="browser-empty-state">
+            <div class="browser-empty-icon" aria-hidden="true"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-globe"></use></svg></div>
+            <strong>内置浏览器已就绪</strong>
+            <p>可在上方地址栏输入网址，或让 AI 打开网页进行预览与联调。</p>
+          </div>
+        </div>
+      </aside>
+    </div>
   </section>
 </main>
 
@@ -469,7 +503,7 @@
             <strong id="browser-builtin-title">内置开发浏览器</strong>
             <span id="browser-builtin-badge" class="browser-pill">未开启</span>
           </div>
-          <p class="browser-card-desc">使用客户端内置隔离的 Electron Chromium，适合前端开发、本地页面联调与截图验证，与日常浏览器数据完全隔离。</p>
+          <p class="browser-card-desc">内嵌于客户端右侧的隔离 Chromium 预览面板，默认折叠不打扰对话，可点击右上角状态随时展开查看或手动输入地址。</p>
         </div>
         <label class="toggle-switch" title="开关内置开发浏览器">
           <input id="browser-builtin-toggle" type="checkbox" aria-label="允许 AI 操作内置开发浏览器">
@@ -477,10 +511,10 @@
         </label>
       </div>
       <div id="browser-builtin-opts" class="browser-sub">
-        <label class="checkbox-row"><input id="browser-builtin-autoshow" type="checkbox"><span>AI 打开或操作网页时自动弹出显示窗口</span></label>
+        <label class="checkbox-row"><input id="browser-builtin-autoshow" type="checkbox"><span>AI 打开或操作网页时自动展开侧边浏览器</span></label>
         <div class="browser-actions">
-          <button id="browser-builtin-show" class="secondary" type="button">显示窗口</button>
-          <button id="browser-builtin-hide" class="secondary" type="button">隐藏窗口</button>
+          <button id="browser-builtin-show" class="secondary" type="button">打开侧边浏览器</button>
+          <button id="browser-builtin-hide" class="secondary" type="button">收起侧边浏览器</button>
           <button id="browser-builtin-reset" class="secondary danger-btn" type="button">清空会话数据</button>
         </div>
       </div>

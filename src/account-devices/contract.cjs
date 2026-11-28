@@ -19,6 +19,7 @@ const routes = {
   memoriesList: ['scope'], memoriesSave: ['scope','key','content'], memoriesDelete: ['scope','key'], memoriesClear: ['scope'],
   updateStatus: [], updateCheck: [], updateDownload: [], updateCancel: [], updateInstall: [], updateSettings: [], updateDismiss: ['version'],
   browserStatus: [], browserUpdateSettings: [], browserTestDaily: [], browserLaunchDaily: [], browserShowBuiltin: [], browserHideBuiltin: [], browserResetBuiltin: [],
+  browserDockSync: [], browserDockNavigate: ['action'],
 };
 const optional = {
   login: ['serverUrl'],
@@ -38,6 +39,8 @@ const optional = {
   browserUpdateSettings: ['builtin','daily'],
   browserTestDaily: ['cdpUrl'],
   browserLaunchDaily: ['port'],
+  browserDockSync: ['open','covered','bounds'],
+  browserDockNavigate: ['url','tabId'],
 };
 const AGENTS = new Set(['codex','antigravity']);
 const EFFORTS = new Set(['minimal','low','medium','high','xhigh','max']);
@@ -140,6 +143,33 @@ function validate(method, p = {}) {
     if ('access' in d && d.access !== 'full' && d.access !== 'read') throw Error('INVALID_FIELDS');
     if ('backend' in d && !['cdp', 'chrome-devtools-mcp', 'playwright-mcp'].includes(d.backend)) throw Error('INVALID_FIELDS');
     if ('cdpUrl' in d && (typeof d.cdpUrl !== 'string' || d.cdpUrl.length > 256 || /[\s\0-\x1f\x7f]/.test(d.cdpUrl))) throw Error('INVALID_CDP_URL');
+  }
+  if (method === 'browserDockSync') {
+    if ('open' in p && typeof p.open !== 'boolean') throw Error('INVALID_FIELDS');
+    if ('covered' in p && typeof p.covered !== 'boolean') throw Error('INVALID_FIELDS');
+    if ('bounds' in p) {
+      const b = p.bounds;
+      if (!b || typeof b !== 'object' || Array.isArray(b)) throw Error('INVALID_FIELDS');
+      const keys = Object.keys(b);
+      if (keys.length !== 4 || !['x', 'y', 'width', 'height'].every(k => Object.hasOwn(b, k))) throw Error('INVALID_FIELDS');
+      for (const k of ['x', 'y', 'width', 'height']) {
+        if (typeof b[k] !== 'number' || !Number.isFinite(b[k]) || b[k] < 0 || b[k] > 20000) throw Error('INVALID_FIELDS');
+      }
+    }
+  }
+  if (method === 'browserDockNavigate') {
+    if (!['goto', 'back', 'forward', 'reload', 'selectTab', 'closeTab', 'newTab'].includes(p.action)) throw Error('INVALID_FIELDS');
+    if ('tabId' in p && (typeof p.tabId !== 'string' || !p.tabId.trim() || p.tabId.length > 128)) throw Error('INVALID_FIELDS');
+    if (p.action === 'selectTab' && !p.tabId) throw Error('INVALID_FIELDS');
+    if (p.action === 'goto' && typeof p.url !== 'string') throw Error('INVALID_URL');
+    if ('url' in p) {
+      if (typeof p.url !== 'string' || !p.url.trim() || p.url.length > 4096) throw Error('INVALID_URL');
+      if (p.url !== 'about:blank') {
+        let u;
+        try { u = new URL(p.url); } catch { throw Error('INVALID_URL'); }
+        if (u.protocol !== 'http:' && u.protocol !== 'https:') throw Error('URL_SCHEME_DENIED');
+      }
+    }
   }
   if ('attachments' in p) {
     if (!Array.isArray(p.attachments) || p.attachments.length > 8 || !p.attachments.every(x => typeof x === 'string' && UUID_RE.test(x))) throw Error('INVALID_ID');

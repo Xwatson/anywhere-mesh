@@ -234,6 +234,12 @@ let browserStatus = null;
 let browserBusy = false;
 let browserFeedbackText = '';
 let browserFeedbackIsError = false;
+let browserDockState = null;
+let browserDockOpen = false;
+let browserDockSyncRaf = null;
+let browserDockLastSyncKey = '';
+let browserDockDragging = false;
+const BROWSER_DOCK_WIDTH_KEY = 'anywhere-browser-dock-width';
 
 const MIME_EXT = {
   'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp',
@@ -883,7 +889,15 @@ function applyStreamMessage(msg) {
   if (msg?.type === 'browser_state') {
     if (state) state.localBrowser = msg.payload;
     renderBrowserSummary();
+    if (!msg.payload?.builtin?.enabled && !browserDockState?.hasActivePage && browserDockOpen) {
+      browserDockOpen = false;
+    }
+    renderBrowserDockUI();
     if ($('browser-dialog')?.open) void refreshBrowserStatus();
+    return;
+  }
+  if (msg?.type === 'builtin_browser_state') {
+    applyBuiltinBrowserState(msg.payload);
     return;
   }
   if (msg?.type === 'delta' && msg.payload?.delta?.kind === 'queue' && state?.sessions) {
@@ -1224,6 +1238,7 @@ function drawer(open) {
   $('rail-scrim').hidden = !isOpen;
   document.querySelector('.workspace').inert = isOpen;
   if (isOpen) $('hide-rail').focus();
+  scheduleBrowserDockSync(true);
 }
 function openThread(id) {
   if (busy) return;
@@ -1269,11 +1284,15 @@ function showDialog(id) {
   const error = dialog.querySelector('.dialog-error');
   if (error) error.textContent = '';
   dialog.showModal();
+  scheduleBrowserDockSync(true);
 }
 function loginView(localName, restore = false, detail, serverUrl) {
   if (state || !$('app').hidden) {
     activeDialog()?.close();
     drawer(false);
+    browserDockOpen = false;
+    browserDockState = null;
+    browserDockLastSyncKey = '';
     resetHistory();
     sessionCache.clearMemory();
     prunedSessionsKey = null;
@@ -1298,6 +1317,7 @@ function loginView(localName, restore = false, detail, serverUrl) {
   if (!restore) connectState.clear();
   restoring = restore;
   $('restoring').hidden = !restoring; $('login').hidden = restoring;
+  renderBrowserDockUI();
   $('restore-title').textContent = restore === 'connecting' ? '正在建立连接' : '正在恢复登录';
   $('restore-status').textContent = detail ? detail + '稍后会自动重试。' :
     restore === 'connecting' ? '账号已验证，正在配置并连接加密隧道…' :
@@ -2059,6 +2079,7 @@ function openCtxPopover({ pin = false } = {}) {
   btn.setAttribute('aria-expanded', 'true');
   renderContextMeter();
   positionCtxPopover();
+  scheduleBrowserDockSync(true);
 }
 function closeCtxPopover(force = false) {
   clearTimeout(ctxHoverTimer);
@@ -2069,6 +2090,7 @@ function closeCtxPopover(force = false) {
   const btn = $('ctx-meter-btn');
   if (pop) pop.hidden = true;
   if (btn) btn.setAttribute('aria-expanded', 'false');
+  scheduleBrowserDockSync(true);
 }
 function scheduleCloseCtxPopover() {
   clearTimeout(ctxHoverTimer);
@@ -2341,6 +2363,7 @@ function render() {
   updatePwaInstallUI();
   renderUpdateUI();
   renderBrowserSummary();
+  renderBrowserDockUI();
   if ($('devices-dialog').open) renderDevices();
   if ($('search-dialog').open) searchResults();
   if ($('quota-dialog').open) renderQuotaDialog();
@@ -3427,13 +3450,15 @@ $('web-devices').onclick = () => state.user.isAdmin ? showAdmin() : showDevices(
 $('hide-rail').onclick = () => {
   if (narrow.matches) drawer(false); else $('app').classList.add('folded');
   $('show-rail').focus();
+  scheduleBrowserDockSync();
 };
 $('show-rail').onclick = () => {
   if (narrow.matches) drawer(true); else { $('app').classList.remove('folded'); $('hide-rail').focus(); }
+  scheduleBrowserDockSync();
 };
 $('rail-scrim').onclick = () => { drawer(false); $('show-rail').focus(); };
-narrow.addEventListener('change', () => { if (!narrow.matches) drawer(false); fitAllModelSelects(); });
-window.addEventListener('resize', fitAllModelSelects);
+narrow.addEventListener('change', () => { if (!narrow.matches) drawer(false); fitAllModelSelects(); scheduleBrowserDockSync(); });
+window.addEventListener('resize', () => { fitAllModelSelects(); scheduleBrowserDockSync(); });
 document.fonts?.ready.then(fitAllModelSelects);
 $('new-chat').onclick = () => openThread(null);
 $('find-chat').onclick = openSearch;
@@ -4147,7 +4172,7 @@ function renderBrowserProbe(dailyInfo) {
 
 function renderBrowserDialog() {
   const s = browserStatus?.settings ?? {
-    builtin: { enabled: false, autoShow: true },
+    builtin: { enabled: false, autoShow: false },
     daily: { enabled: false, access: 'full', backend: 'cdp', cdpUrl: 'auto' },
   };
   const bOn = Boolean(s.builtin?.enabled);
@@ -4157,13 +4182,15 @@ function renderBrowserDialog() {
 
   $('browser-builtin-toggle').checked = bOn;
   $('browser-builtin-toggle').disabled = browserBusy || !builtinAvail;
-  $('browser-builtin-autoshow').checked = s.builtin?.autoShow !== false;
+  $('browser-builtin-autoshow').checked = s.builtin?.autoShow === true;
   $('browser-builtin-autoshow').disabled = browserBusy || !bOn || !isElectronBuiltin;
   $('browser-builtin-show').disabled = browserBusy || !bOn || !isElectronBuiltin;
   $('browser-builtin-hide').disabled = browserBusy || !bOn || !isElectronBuiltin;
   $('browser-builtin-reset').disabled = browserBusy || !builtinAvail;
   const bBadge = $('browser-builtin-badge');
-  bBadge.textContent = !builtinAvail ? '不可用' : bOn ? (browserStatus?.builtin?.visible ? '已开启 · 窗口可见' : '已开启') : '未开启';
+  const dockOpened = Boolean(browserDockOpen || browserStatus?.builtin?.open);
+  const hasPage = Boolean(browserDockState?.hasActivePage || browserStatus?.builtin?.hasActivePage);
+  bBadge.textContent = !builtinAvail ? '不可用' : bOn ? (dockOpened ? '已开启 · 侧边已展开' : hasPage ? '已开启 · 浏览器已打开' : '已开启') : '未开启';
   bBadge.className = 'browser-pill' + (bOn ? ' on' : '');
 
   $('browser-daily-toggle').checked = dOn;
@@ -4241,23 +4268,20 @@ $('browser-control-menu').onclick = () => void openBrowserDialog();
 $('browser-close').onclick = () => $('browser-dialog').close();
 $('browser-builtin-toggle').onchange = e => {
   const on = Boolean(e.target.checked);
-  void runBrowserAction(() => action('browserUpdateSettings', { builtin: { enabled: on } }), on ? '已开启内置开发浏览器，AI 现在可直接调试并截图查看页面。' : '已关闭内置开发浏览器。');
+  if (!on && browserDockOpen) setBrowserDockOpen(false);
+  void runBrowserAction(() => action('browserUpdateSettings', { builtin: { enabled: on } }), on ? '已开启内置开发浏览器，默认折叠运行，可从右上角随时展开查看。' : '已关闭内置开发浏览器。');
 };
 $('browser-builtin-autoshow').onchange = e => {
   const on = Boolean(e.target.checked);
   void runBrowserAction(() => action('browserUpdateSettings', { builtin: { autoShow: on } }));
 };
 $('browser-builtin-show').onclick = () => {
-  void runBrowserAction(async () => {
-    await action('browserShowBuiltin');
-    return action('browserStatus');
-  }, '已显示内置开发浏览器窗口。');
+  $('browser-dialog').close();
+  setBrowserDockOpen(true);
 };
 $('browser-builtin-hide').onclick = () => {
-  void runBrowserAction(async () => {
-    await action('browserHideBuiltin');
-    return action('browserStatus');
-  }, '已隐藏内置开发浏览器窗口。');
+  setBrowserDockOpen(false);
+  void runBrowserAction(() => action('browserStatus'), '已收起侧边浏览器。');
 };
 $('browser-builtin-reset').onclick = () => {
   if (!confirm('确定清空内置开发浏览器的所有标签页、Cookie 和缓存？')) return;
@@ -4301,8 +4325,257 @@ $('browser-daily-launch').onclick = () => {
   });
 };
 $('browser-disable-all').onclick = () => {
+  if (browserDockOpen) setBrowserDockOpen(false);
   void runBrowserAction(() => action('browserUpdateSettings', { builtin: { enabled: false }, daily: { enabled: false } }), '已立即关闭所有浏览器控制授权。');
 };
+
+function isRealDockUrl(url) {
+  return Boolean(url && url !== 'about:blank' && (url.startsWith('http://') || url.startsWith('https://')));
+}
+
+function normalizeDockUrlInput(raw) {
+  const v = String(raw || '').trim();
+  if (!v) return '';
+  if (v === 'about:blank') return 'about:blank';
+  const withScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(v)
+    ? v
+    : (/^(?:localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0|(?:\d{1,3}\.){3}\d{1,3})(?::\d+)?(?:\/|$)/i.test(v) ? 'http://' + v : 'https://' + v);
+  try {
+    const u = new URL(withScheme);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return '';
+    return u.href;
+  } catch {
+    return '';
+  }
+}
+
+function isBuiltinBrowserEnabled() {
+  if (browserStatus?.settings?.builtin) return Boolean(browserStatus.settings.builtin.enabled);
+  return Boolean(state?.localBrowser?.builtin?.enabled);
+}
+
+function isBrowserDockCovered() {
+  if (!native || !state?.user || $('app').hidden || tab !== 'chat') return true;
+  if (activeDialog()) return true;
+  if (ctxPopoverOpen) return true;
+  if ($('app').classList.contains('drawer')) return true;
+  if (browserDockDragging) return true;
+  return false;
+}
+
+function applySavedBrowserDockWidth() {
+  const dock = $('browser-dock');
+  if (!dock) return;
+  try {
+    const saved = Number(localStorage.getItem(BROWSER_DOCK_WIDTH_KEY));
+    if (Number.isFinite(saved) && saved >= 320 && saved <= 1200) {
+      dock.style.setProperty('--browser-dock-width', `${Math.round(saved)}px`);
+    }
+  } catch {}
+}
+
+function syncBrowserDockNow(force = false) {
+  if (!native) return;
+  const canShow = Boolean(state?.user && !$('app').hidden && tab === 'chat' && (isBuiltinBrowserEnabled() || browserDockState?.hasActivePage));
+  const open = Boolean(canShow && browserDockOpen);
+  const covered = !open || isBrowserDockCovered();
+  let bounds;
+  if (open) {
+    const vp = $('browser-viewport');
+    if (vp) {
+      const r = vp.getBoundingClientRect();
+      if (r.width >= 1 && r.height >= 1) {
+        bounds = {
+          x: Math.max(0, Math.round(r.left)),
+          y: Math.max(0, Math.round(r.top)),
+          width: Math.max(0, Math.round(r.width)),
+          height: Math.max(0, Math.round(r.height)),
+        };
+      }
+    }
+  }
+  const payload = bounds ? { open, covered, bounds } : { open, covered };
+  const key = JSON.stringify(payload);
+  if (!force && key === browserDockLastSyncKey) return;
+  browserDockLastSyncKey = key;
+  void action('browserDockSync', payload).then(snap => {
+    if (snap && typeof snap === 'object' && snap.connected) {
+      browserDockState = snap;
+      renderBrowserDockChromeOnly();
+    }
+  }).catch(() => {});
+}
+
+function scheduleBrowserDockSync(force = false) {
+  if (!native) return;
+  if (force) browserDockLastSyncKey = '';
+  if (browserDockSyncRaf !== null) return;
+  browserDockSyncRaf = requestAnimationFrame(() => {
+    browserDockSyncRaf = null;
+    syncBrowserDockNow(force);
+  });
+}
+
+function setBrowserDockOpen(open) {
+  const next = Boolean(open);
+  if (next && !narrow.matches && window.innerWidth < 1160) {
+    $('app').classList.add('folded');
+  }
+  browserDockOpen = next;
+  renderBrowserDockUI();
+  scheduleBrowserDockSync(true);
+}
+
+function renderBrowserDockChromeOnly() {
+  const btn = $('browser-dock-toggle');
+  const dot = $('browser-dock-dot');
+  const label = $('browser-dock-label');
+  if (!btn || !dot || !label) return;
+  const enabled = isBuiltinBrowserEnabled();
+  const hasPage = Boolean(browserDockState?.hasActivePage);
+  const showChip = Boolean(native && state?.user && tab === 'chat' && (enabled || hasPage));
+  btn.hidden = !showChip;
+  if (!showChip) return;
+
+  dot.hidden = !hasPage;
+  dot.className = 'dot' + (hasPage ? ' online' : '');
+  label.textContent = hasPage ? '浏览器已打开' : '浏览器';
+  btn.className = 'browser-topbar-chip' + (hasPage ? ' has-page' : '') + (browserDockOpen ? ' open' : '') + (browserDockState?.loading ? ' loading' : '');
+  btn.setAttribute('aria-pressed', String(browserDockOpen));
+  const activeTitle = browserDockState?.activeTitle || '';
+  const activeUrl = isRealDockUrl(browserDockState?.activeUrl) ? browserDockState.activeUrl : '';
+  const pageInfo = activeTitle && activeUrl && activeTitle !== activeUrl ? `${activeTitle} (${activeUrl})` : (activeTitle || activeUrl);
+  btn.title = pageInfo
+    ? `${browserDockOpen ? '收起侧边浏览器' : '点击展开侧边浏览器'} · ${pageInfo}`
+    : (browserDockOpen ? '收起侧边浏览器' : '打开侧边内置浏览器');
+
+  const backBtn = $('browser-nav-back');
+  const fwdBtn = $('browser-nav-forward');
+  const reloadBtn = $('browser-nav-reload');
+  const urlInput = $('browser-url-input');
+  const tabSel = $('browser-tab-select');
+  const empty = $('browser-empty-state');
+  if (backBtn) backBtn.disabled = !browserDockState?.canGoBack;
+  if (fwdBtn) fwdBtn.disabled = !browserDockState?.canGoForward;
+  if (reloadBtn) {
+    const loading = Boolean(browserDockState?.loading);
+    reloadBtn.classList.toggle('loading', loading);
+    reloadBtn.title = loading ? '停止加载' : '刷新';
+    reloadBtn.setAttribute('aria-label', loading ? '停止加载' : '刷新');
+    reloadBtn.disabled = !activeUrl && !loading;
+  }
+  if (urlInput && document.activeElement !== urlInput) {
+    urlInput.value = activeUrl;
+  }
+  if (tabSel) {
+    const tabs = Array.isArray(browserDockState?.tabs) ? browserDockState.tabs : [];
+    tabSel.hidden = tabs.length <= 1;
+    if (tabs.length > 1) {
+      const sig = tabs.map(t => `${t.id}:${t.title}:${t.url}:${t.active}`).join('|');
+      if (tabSel.dataset.sig !== sig) {
+        tabSel.dataset.sig = sig;
+        tabSel.replaceChildren(...tabs.map((t, idx) => {
+          const opt = document.createElement('option');
+          opt.value = t.id;
+          let host = '';
+          try { if (isRealDockUrl(t.url)) host = new URL(t.url).host; } catch {}
+          opt.textContent = t.title || host || `标签页 ${idx + 1}`;
+          opt.selected = Boolean(t.active);
+          return opt;
+        }));
+      }
+      if (browserDockState?.activeTabId) tabSel.value = browserDockState.activeTabId;
+    }
+  }
+  if (empty) empty.hidden = Boolean(activeUrl);
+}
+
+function renderBrowserDockUI() {
+  const dock = $('browser-dock');
+  const resizer = $('browser-resizer');
+  const enabled = isBuiltinBrowserEnabled();
+  const hasPage = Boolean(browserDockState?.hasActivePage);
+  const showPanel = Boolean(native && state?.user && !$('app').hidden && tab === 'chat' && browserDockOpen && (enabled || hasPage));
+  if (dock) dock.hidden = !showPanel;
+  if (resizer) resizer.hidden = !showPanel;
+  renderBrowserDockChromeOnly();
+  scheduleBrowserDockSync();
+}
+
+function applyBuiltinBrowserState(snap) {
+  if (!snap || typeof snap !== 'object') return;
+  const prevOpen = browserDockOpen;
+  browserDockState = snap;
+  if (typeof snap.open === 'boolean' && snap.open !== prevOpen) {
+    if (snap.open && !narrow.matches && window.innerWidth < 1160) {
+      $('app').classList.add('folded');
+    }
+    browserDockOpen = snap.open;
+  }
+  renderBrowserDockUI();
+  if ($('browser-dialog')?.open) renderBrowserDialog();
+}
+
+if (native) {
+  applySavedBrowserDockWidth();
+  $('browser-dock-toggle').onclick = () => setBrowserDockOpen(!browserDockOpen);
+  $('browser-dock-close').onclick = () => setBrowserDockOpen(false);
+  $('browser-nav-back').onclick = () => void action('browserDockNavigate', { action: 'back' }).then(applyBuiltinBrowserState).catch(() => {});
+  $('browser-nav-forward').onclick = () => void action('browserDockNavigate', { action: 'forward' }).then(applyBuiltinBrowserState).catch(() => {});
+  $('browser-nav-reload').onclick = () => void action('browserDockNavigate', { action: 'reload' }).then(applyBuiltinBrowserState).catch(() => {});
+  $('browser-tab-select').onchange = e => {
+    const tabId = e.target.value;
+    if (tabId) void action('browserDockNavigate', { action: 'selectTab', tabId }).then(applyBuiltinBrowserState).catch(() => {});
+  };
+  $('browser-url-form').onsubmit = e => {
+    e.preventDefault();
+    const input = $('browser-url-input');
+    const normalized = normalizeDockUrlInput(input.value);
+    if (!normalized) return;
+    input.value = normalized;
+    input.blur();
+    void action('browserDockNavigate', { action: 'goto', url: normalized }).then(applyBuiltinBrowserState).catch(() => {});
+  };
+  if (typeof ResizeObserver === 'function') {
+    const ro = new ResizeObserver(() => scheduleBrowserDockSync());
+    ro.observe($('browser-viewport'));
+  }
+  const resizer = $('browser-resizer');
+  resizer.addEventListener('pointerdown', e => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const stage = document.querySelector('.workspace-stage');
+    const dock = $('browser-dock');
+    if (!stage || !dock) return;
+    browserDockDragging = true;
+    resizer.classList.add('dragging');
+    resizer.setPointerCapture(e.pointerId);
+    scheduleBrowserDockSync(true);
+    const onMove = ev => {
+      const stageRect = stage.getBoundingClientRect();
+      const minW = 320;
+      const maxW = Math.max(360, Math.round(stageRect.width * 0.72));
+      const nextW = Math.min(maxW, Math.max(minW, Math.round(stageRect.right - ev.clientX)));
+      dock.style.setProperty('--browser-dock-width', `${nextW}px`);
+    };
+    const onEnd = () => {
+      resizer.removeEventListener('pointermove', onMove);
+      resizer.removeEventListener('pointerup', onEnd);
+      resizer.removeEventListener('pointercancel', onEnd);
+      resizer.classList.remove('dragging');
+      browserDockDragging = false;
+      const finalW = Math.round(dock.getBoundingClientRect().width);
+      if (finalW >= 320) {
+        try { localStorage.setItem(BROWSER_DOCK_WIDTH_KEY, String(finalW)); } catch {}
+      }
+      scheduleBrowserDockSync(true);
+    };
+    resizer.addEventListener('pointermove', onMove);
+    resizer.addEventListener('pointerup', onEnd);
+    resizer.addEventListener('pointercancel', onEnd);
+  });
+  void action('browserDockSync', { open: false, covered: true }).then(applyBuiltinBrowserState).catch(() => {});
+}
 if (!native) {
   window.addEventListener('beforeinstallprompt', e => {
     e.preventDefault();
@@ -4339,6 +4612,7 @@ $('stop').onclick = () => {
 };
 for (const dialog of document.querySelectorAll('dialog')) {
   dialog.querySelector('.dialog-close').onclick = () => { if (!busy) dialog.close(); };
+  dialog.addEventListener('close', () => scheduleBrowserDockSync(true));
   dialog.addEventListener('cancel', e => { if (busy) e.preventDefault(); });
   dialog.addEventListener('click', e => {
     if (e.target !== dialog || busy) return;
